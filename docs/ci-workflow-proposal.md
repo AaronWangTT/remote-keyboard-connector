@@ -168,6 +168,16 @@ table. No serial port was opened and no actual device identity was generated.
 Hosted validation of the updated workflow and physical installation remain
 separate gates; the earlier runs below do not establish either.
 
+The first packaging-branch manual run built firmware and passed native/browser
+tests, but installer setup rejected the pinned image's esptool 5.3.1 because the
+initial guard required 5.4.x. The guard now accepts the two explicitly validated
+versions, 5.3.1 and 5.4.0. All 26 SDK tests pass locally with each version,
+including real esptool read/write/verify API contract tests with hardware mocked.
+Offline validation of the actual local build also passed with 5.3.1 and its
+unprefixed generated sdkconfig JSON. A fresh hosted run is still required for
+the corrected commit; no toolchain pin, configuration schema, or hardware safety
+gate was relaxed to bypass the failure.
+
 ## Historical Validation Record
 
 This records the original PR #1 workflow validation. Its ZIP, merged-BIN, and

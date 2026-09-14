@@ -31,7 +31,8 @@ esptool write containing only the three firmware images and the NVS image.
 ## Prerequisites
 
 - Use Node.js 22 and an activated ESP-IDF v6.1 terminal. The SDK Python needs
-  esptool 5.4.x and `esp_idf_nvs_partition_gen`, supplied by that SDK environment.
+  validated esptool 5.3.1 (the pinned CI image) or 5.4.0 (the local SDK), plus
+  `esp_idf_nvs_partition_gen`. Other esptool versions are refused until validated.
   Outside an activated terminal, pass `--idf-path <SDK>` and `--python <SDK-Python>`.
 - Run `npm ci --prefix tools --ignore-scripts` from the repository root.
 - Build with ESP-IDF or extract a trusted CI firmware artifact. The installer
@@ -71,6 +72,10 @@ build-security settings. Local builds use `config/sdkconfig.json`; downloaded
 artifacts use their image-hash-bound manifest. It displays
 the write layout but does not generate credentials, connect to a serial port,
 write flash, or change eFuses. `--help` works without an SDK environment.
+
+The generated ESP-IDF v6.1 JSON uses unprefixed keys such as `IDF_TARGET` and
+`SECURE_BOOT`, unlike the `CONFIG_` names in the raw sdkconfig file. The installer
+validates the generated JSON schema, not the raw configuration text.
 
 For a local build you intend to transfer to another sender machine, add
 `--write-manifest` to the offline command, then include `firmware-manifest.json`
@@ -171,7 +176,12 @@ The Node suite checks credential preparation, input rejection, explicit CLI
 consent, offline behavior, security/manifest validation, and private snapshot isolation. The Python suite uses
 the real SDK parsers/NVS generator with a fake device for security/MAC/capacity
 refusals, backup ordering and integrity, layout/NVS guards, sparse writes, and
-verification failure. CI runs the SDK suite and offline build check in the
+verification failure. Contract tests also call the real esptool `read_flash`,
+`write_flash`, and `verify_flash` functions with only the hardware access mocked:
+reads without an output path return bytes, and writes/verification accept byte
+payloads. All 26 Python tests pass with both validated esptool versions. The
+existing build passed offline validation with 5.3.1 as well. CI runs the SDK
+suite and the freshly built firmware's offline check in the
 firmware job; Node tests run with the existing browser/provisioning job.
 
 These checks passed locally on 2026-09-15 against the existing build. They do

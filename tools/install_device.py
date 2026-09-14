@@ -28,7 +28,8 @@ def load_sdk(idf_path):
     partitions = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(partitions)
     esptool = importlib.import_module("esptool")
-    require(esptool.__version__.split(".")[:2] == ["5", "4"], "Use ESP-IDF's esptool 5.4.x environment")
+    require(esptool.__version__ in ("5.3.1", "5.4.0"),
+            f"Use validated esptool 5.3.1 or 5.4.0 (found {esptool.__version__})")
     return SimpleNamespace(partitions=partitions, esptool=esptool,
                            images=importlib.import_module("esptool.bin_image"))
 

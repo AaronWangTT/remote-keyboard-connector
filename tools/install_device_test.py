@@ -8,6 +8,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 from install_device import generate_nvs, inspect_firmware, install, load_sdk, validate_identity
 
@@ -142,6 +143,43 @@ class InstallerTests(unittest.TestCase):
         plan = inspect_firmware(self.firmware, self.sdk)
         self.assertEqual(plan["nvs"], {"offset": 0x9000, "size": 0x6000})
         self.assertEqual(plan["partitionTable"]["offset"], 0x8000)
+
+    def test_real_esptool_read_flash_returns_bytes_without_output(self):
+        contents = b"\xff" * 4096
+        device = SimpleNamespace(read_flash=Mock(return_value=contents))
+        with patch("esptool.cmds._set_flash_parameters"):
+            result = self.sdk.esptool.read_flash(device, 0, len(contents), no_progress=True)
+        self.assertEqual(result, contents)
+        device.read_flash.assert_called_once_with(0, len(contents), None)
+
+    def test_real_esptool_write_and_verify_accept_byte_payloads(self):
+        contents = bytes(range(256)) * 16
+        device = Mock(CHIP_NAME="ESP32-S3", IS_STUB=True, secure_download_mode=False,
+                      BOOTLOADER_FLASH_OFFSET=0, FLASH_SECTOR_SIZE=4096, FLASH_WRITE_SIZE=4096,
+                      WRITE_FLASH_ATTEMPTS=1)
+        device.get_secure_boot_v1_enabled.return_value = False
+        device.get_secure_boot_enabled.return_value = False
+        device.get_flash_encryption_enabled.return_value = False
+        device.flash_md5sum.return_value = hashlib.md5(contents).hexdigest()
+        payloads = [(0x9000, contents)]
+        with patch("esptool.cmds._set_flash_parameters", return_value="2MB"), \
+                patch("esptool.cmds.detect_flash_size", return_value="16MB"):
+            self.sdk.esptool.write_flash(device, payloads, flash_size="2MB", erase_all=False,
+                                        force=False, no_compress=True, no_progress=True)
+            self.sdk.esptool.verify_flash(device, payloads, flash_size="2MB")
+        device.flash_begin.assert_called_once_with(len(contents), 0x9000, encrypted_write=False)
+        device.flash_block.assert_called_once_with(contents, 0, encrypted=False)
+        self.assertEqual(device.flash_md5sum.call_count, 2)
+        device.flash_md5sum.assert_called_with(0x9000, len(contents))
+
+    def test_sdk_guard_accepts_only_validated_esptool_versions(self):
+        for version in ("5.3.1", "5.4.0"):
+            with self.subTest(version=version), patch.object(self.sdk.esptool, "__version__", version):
+                self.assertIs(load_sdk(os.environ["IDF_PATH"]).esptool, self.sdk.esptool)
+        for version in ("4.9.0", "5.2.0", "5.3.0", "5.5.0", "6.0.0"):
+            with self.subTest(version=version), patch.object(self.sdk.esptool, "__version__", version):
+                with self.assertRaisesRegex(ValueError, f"found {version}"):
+                    load_sdk(os.environ["IDF_PATH"])
 
     def test_node_cli_validates_build_then_manifest_only_download_without_hardware(self):
         metadata = {"flash_settings": self.firmware["settings"], "flash_files": {},
