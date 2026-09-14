@@ -118,12 +118,18 @@ static bool request_allowed(httpd_req_t *request, bool mutation)
     network_status_t network;
     network_status(&network);
     char hostname[72];
+    char previous_hostname[72];
     snprintf(hostname, sizeof(hostname), "%s.local", network.hostname);
-    const char *allowed[] = {hostname, network.ap_ip, network.station_ip};
+    const char *allowed[] = {hostname, network.ap_ip, network.station_ip, previous_hostname};
+    size_t allowed_count = 3;
+    if (network.previous_hostname[0] != '\0') {
+        snprintf(previous_hostname, sizeof(previous_hostname), "%s.local", network.previous_hostname);
+        allowed_count++;
+    }
     bool valid = header(request, "Host", host, sizeof(host)) &&
-                 access_host_allowed(host, allowed, 3, false);
+                 access_host_allowed(host, allowed, allowed_count, false);
     if (mutation) valid = valid && header(request, "Origin", origin, sizeof(origin)) &&
-                          access_origin_allowed(host, origin, allowed, 3, false);
+                          access_origin_allowed(host, origin, allowed, allowed_count, false);
     if (!valid) problem(request, "403 Forbidden", "origin_denied");
     return valid;
 }
@@ -203,8 +209,8 @@ static void control_tick(void *argument)
 static void free_input_client(void *context)
 {
     input_client_t *client = context;
-    network_control_end(client->generation);
     if (active_client == client) {
+        network_control_end(client->generation);
         usb_keyboard_release(client->generation);
         active_client = NULL;
     }
@@ -390,6 +396,7 @@ static cJSON *network_json(void)
         cJSON_AddStringToObject(result, "requested_hostname", network.requested_hostname) &&
         cJSON_AddStringToObject(result, "ap_ssid", network.ap_ssid) &&
         cJSON_AddStringToObject(result, "saved_ssid", network.saved_ssid) &&
+        cJSON_AddStringToObject(result, "saved_ssid_hex", network.saved_ssid_hex) &&
         cJSON_AddStringToObject(result, "station_ssid", network.station_ssid) &&
         cJSON_AddStringToObject(result, "ap_ip", network.ap_ip) &&
         cJSON_AddStringToObject(result, "station_ip", network.station_ip);
@@ -399,6 +406,7 @@ static cJSON *network_json(void)
         cJSON *item = cJSON_CreateObject();
         if (item == NULL) { valid = false; break; }
         valid = cJSON_AddStringToObject(item, "ssid", network.scan[index].ssid) &&
+            cJSON_AddStringToObject(item, "ssid_hex", network.scan[index].ssid_hex) &&
                 cJSON_AddNumberToObject(item, "rssi", network.scan[index].rssi) &&
                 cJSON_AddBoolToObject(item, "supported", network.scan[index].supported);
         if (!valid || !cJSON_AddItemToArray(scan, item)) { cJSON_Delete(item); valid = false; }
@@ -447,8 +455,11 @@ static esp_err_t network_handler(httpd_req_t *request)
     response_headers(request);
     httpd_resp_set_status(request, "202 Accepted");
     httpd_resp_set_type(request, "application/json");
-    char reply[64];
-    snprintf(reply, sizeof(reply), "{\"job_id\":%" PRIu32 "}", job_id);
+    esp_ip4_addr_t address = {.addr = local_address(request)};
+    char management_url[32] = "";
+    if (address.addr != 0) snprintf(management_url, sizeof(management_url), "http://" IPSTR "/", IP2STR(&address));
+    char reply[128];
+    snprintf(reply, sizeof(reply), "{\"job_id\":%" PRIu32 ",\"management_url\":\"%s\"}", job_id, management_url);
     return httpd_resp_sendstr(request, reply);
 }
 

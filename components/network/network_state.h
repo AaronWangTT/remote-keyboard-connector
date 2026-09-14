@@ -6,6 +6,8 @@
 
 #define NETWORK_HOSTNAME_MAX 32
 #define NETWORK_REQUEST_MAX 1024
+#define NETWORK_SSID_MAX 32
+#define NETWORK_SSID_DISPLAY_MAX (NETWORK_SSID_MAX * 4)
 #define NETWORK_CONNECT_US INT64_C(30000000)
 #define NETWORK_HANDOVER_US INT64_C(15000000)
 
@@ -13,7 +15,7 @@ typedef struct {
     uint32_t version;
     uint8_t station;
     char hostname[NETWORK_HOSTNAME_MAX + 1];
-    char ssid[33];
+    char ssid[NETWORK_SSID_MAX + 1];
     char password[64];
 } network_config_t;
 
@@ -42,12 +44,14 @@ typedef enum {
 
 typedef struct {
     network_action_t action;
-    char ssid[33];
+    char ssid[NETWORK_SSID_MAX + 1];
     char password[64];
     char hostname[NETWORK_HOSTNAME_MAX + 1];
 } network_request_t;
 
 bool network_hostname_valid(const char *hostname);
+void network_ssid_display(const uint8_t *ssid, size_t length, char output[NETWORK_SSID_DISPLAY_MAX + 1]);
+void network_ssid_hex(const uint8_t *ssid, size_t length, char output[NETWORK_SSID_MAX * 2 + 1]);
 bool network_config_valid(const network_config_t *configuration);
 bool network_config_store(const network_config_t *configuration, uint8_t *active_slot,
                           bool (*stage)(void *, uint8_t, const network_config_t *),

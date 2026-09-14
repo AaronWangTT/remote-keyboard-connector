@@ -3,6 +3,66 @@
 #include <string.h>
 #include "cJSON.h"
 
+static size_t utf8_sequence_length(const uint8_t *value, size_t length)
+{
+    if (length >= 2 && value[0] >= 0xc2 && value[0] <= 0xdf && (value[1] & 0xc0) == 0x80) return 2;
+    if (length >= 3 && ((value[0] == 0xe0 && value[1] >= 0xa0 && value[1] <= 0xbf) ||
+        ((value[0] >= 0xe1 && value[0] <= 0xec) && (value[1] & 0xc0) == 0x80) ||
+        (value[0] == 0xed && value[1] >= 0x80 && value[1] <= 0x9f) ||
+        ((value[0] >= 0xee && value[0] <= 0xef) && (value[1] & 0xc0) == 0x80)) &&
+        (value[2] & 0xc0) == 0x80) return 3;
+    if (length >= 4 && ((value[0] == 0xf0 && value[1] >= 0x90 && value[1] <= 0xbf) ||
+        ((value[0] >= 0xf1 && value[0] <= 0xf3) && (value[1] & 0xc0) == 0x80) ||
+        (value[0] == 0xf4 && value[1] >= 0x80 && value[1] <= 0x8f)) &&
+        (value[2] & 0xc0) == 0x80 && (value[3] & 0xc0) == 0x80) return 4;
+    return 0;
+}
+
+void network_ssid_display(const uint8_t *ssid, size_t length, char output[NETWORK_SSID_DISPLAY_MAX + 1])
+{
+    static const char hex[] = "0123456789ABCDEF";
+    if (length > NETWORK_SSID_MAX) length = NETWORK_SSID_MAX;
+    size_t written = 0;
+    for (size_t index = 0; index < length;) {
+        if (ssid[index] >= 0x20 && ssid[index] < 0x7f) {
+            output[written++] = (char)ssid[index++];
+            continue;
+        }
+        size_t sequence = utf8_sequence_length(ssid + index, length - index);
+        if (sequence != 0) {
+            memcpy(output + written, ssid + index, sequence);
+            written += sequence;
+            index += sequence;
+            continue;
+        }
+        output[written++] = '\\';
+        output[written++] = 'x';
+        output[written++] = hex[ssid[index] >> 4];
+        output[written++] = hex[ssid[index] & 0x0f];
+        index++;
+    }
+    output[written] = '\0';
+}
+
+void network_ssid_hex(const uint8_t *ssid, size_t length, char output[NETWORK_SSID_MAX * 2 + 1])
+{
+    static const char hex[] = "0123456789abcdef";
+    if (length > NETWORK_SSID_MAX) length = NETWORK_SSID_MAX;
+    for (size_t index = 0; index < length; index++) {
+        output[index * 2] = hex[ssid[index] >> 4];
+        output[index * 2 + 1] = hex[ssid[index] & 0x0f];
+    }
+    output[length * 2] = '\0';
+}
+
+static int hex_digit(char value)
+{
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+    return -1;
+}
+
 bool network_hostname_valid(const char *hostname)
 {
     if (hostname == NULL) return false;
@@ -60,16 +120,32 @@ bool network_request_parse(const uint8_t *payload, size_t length, network_reques
     const cJSON *field;
     cJSON_ArrayForEach(field, root) {
         unsigned flag = 0;
+        bool encoded_ssid = false;
         if (strcmp(field->string, "action") == 0) flag = 1;
         else if (request->action == NETWORK_ACTION_CONNECT && strcmp(field->string, "ssid") == 0) flag = 2;
+        else if (request->action == NETWORK_ACTION_CONNECT && strcmp(field->string, "ssid_hex") == 0) {
+            flag = 2;
+            encoded_ssid = true;
+        }
         else if (request->action == NETWORK_ACTION_CONNECT && strcmp(field->string, "password") == 0) flag = 4;
         else if (request->action == NETWORK_ACTION_RENAME && strcmp(field->string, "hostname") == 0) flag = 8;
         if (flag == 0 || (seen & flag) || !cJSON_IsString(field)) goto done;
         seen |= flag;
         size_t count = strlen(field->valuestring);
         if (flag == 2) {
-            if (count == 0 || count > 32) goto done;
-            memcpy(request->ssid, field->valuestring, count + 1);
+            if (encoded_ssid) {
+                if (count == 0 || count > NETWORK_SSID_MAX * 2 || count % 2 != 0) goto done;
+                for (size_t index = 0; index < count / 2; index++) {
+                    int high = hex_digit(field->valuestring[index * 2]);
+                    int low = hex_digit(field->valuestring[index * 2 + 1]);
+                    if (high < 0 || low < 0 || (high == 0 && low == 0)) goto done;
+                    request->ssid[index] = (char)((high << 4) | low);
+                }
+                request->ssid[count / 2] = '\0';
+            } else {
+                if (count == 0 || count > NETWORK_SSID_MAX) goto done;
+                memcpy(request->ssid, field->valuestring, count + 1);
+            }
         } else if (flag == 4) {
             if (count < 8 || count > 63) goto done;
             memcpy(request->password, field->valuestring, count + 1);

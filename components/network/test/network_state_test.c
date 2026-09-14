@@ -66,15 +66,23 @@ int main(void)
     network_request_t request;
     const char *valid[] = {
         "{\"action\":\"connect\",\"ssid\":\"My network\",\"password\":\"test-password\"}",
+        "{\"action\":\"connect\",\"ssid_hex\":\"43616665ff\",\"password\":\"test-password\"}",
         "{\"action\":\"rename\",\"hostname\":\"kb-2\"}", "{\"action\":\"ap\"}",
         "{\"action\":\"station\"}", "{\"action\":\"cancel\"}", "{\"action\":\"confirm\"}", "{\"action\":\"forget\"}"
     };
     for (size_t index = 0; index < sizeof(valid) / sizeof(valid[0]); index++) assert(network_request_parse((const uint8_t *)valid[index], strlen(valid[index]), &request));
+    assert(network_request_parse((const uint8_t *)valid[1], strlen(valid[1]), &request));
+    const uint8_t encoded_ssid[] = {'C', 'a', 'f', 'e', 0xff, 0};
+    assert(memcmp(request.ssid, encoded_ssid, sizeof(encoded_ssid)) == 0);
     const char *invalid[] = {
         "{}", "[]", "null", "{\"action\":\"open\"}", "{\"action\":\"ap\",\"action\":\"ap\"}",
         "{\"action\":\"rename\",\"hostname\":\"kb.local\"}", "{\"action\":\"ap\",\"password\":\"test-password\"}",
         "{\"action\":\"connect\",\"ssid\":\"network\",\"password\":\"\"}",
         "{\"action\":\"connect\",\"ssid\":\"\",\"password\":\"test-password\"}",
+        "{\"action\":\"connect\",\"ssid_hex\":\"0\",\"password\":\"test-password\"}",
+        "{\"action\":\"connect\",\"ssid_hex\":\"00\",\"password\":\"test-password\"}",
+        "{\"action\":\"connect\",\"ssid_hex\":\"zz\",\"password\":\"test-password\"}",
+        "{\"action\":\"connect\",\"ssid\":\"network\",\"ssid_hex\":\"6e6574776f726b\",\"password\":\"test-password\"}",
         "{\"action\":\"connect\",\"ssid\":\"network\\u0000ignored\",\"password\":\"test-password\"}",
         "{\"action\":\"ap\"} {}"
     };
@@ -84,6 +92,36 @@ int main(void)
     }
     assert(!network_request_parse(NULL, 1, &request));
     assert(!network_request_parse((const uint8_t *)valid[0], SIZE_MAX, &request));
+    const uint8_t unsafe_ssid[] = {'C', 'a', 'f', 0xc3, 0xa9, 0xff, 0x01};
+    char display[NETWORK_SSID_DISPLAY_MAX + 1];
+    char hex[NETWORK_SSID_MAX * 2 + 1];
+    network_ssid_display(unsafe_ssid, sizeof(unsafe_ssid), display);
+    network_ssid_hex(unsafe_ssid, sizeof(unsafe_ssid), hex);
+    assert(strcmp(display, "Caf\xc3\xa9\\xFF\\x01") == 0);
+    assert(strcmp(hex, "436166c3a9ff01") == 0);
+    const char *malformed[] = {"\xc0\xaf", "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xe2\x82", "\x80"};
+    const char *escaped[] = {"\\xC0\\xAF", "\\xED\\xA0\\x80", "\\xF4\\x90\\x80\\x80", "\\xE2\\x82", "\\x80"};
+    for (size_t index = 0; index < sizeof(malformed) / sizeof(malformed[0]); index++) {
+        network_ssid_display((const uint8_t *)malformed[index], strlen(malformed[index]), display);
+        assert(strcmp(display, escaped[index]) == 0);
+    }
+    const char boundary_scalars[] = "\xc2\x80\xdf\xbf\xe0\xa0\x80\xed\x9f\xbf\xee\x80\x80\xef\xbf\xbf\xf0\x90\x80\x80\xf4\x8f\xbf\xbf";
+    network_ssid_display((const uint8_t *)boundary_scalars, strlen(boundary_scalars), display);
+    assert(strcmp(display, boundary_scalars) == 0);
+    uint8_t maximum_ssid[NETWORK_SSID_MAX];
+    memset(maximum_ssid, 0xff, sizeof(maximum_ssid));
+    network_ssid_display(maximum_ssid, SIZE_MAX, display);
+    network_ssid_hex(maximum_ssid, sizeof(maximum_ssid), hex);
+    assert(strlen(display) == NETWORK_SSID_DISPLAY_MAX && strlen(hex) == NETWORK_SSID_MAX * 2);
+    for (size_t index = 0; index < NETWORK_SSID_MAX; index++) assert(memcmp(display + index * 4, "\\xFF", 4) == 0);
+    char maximum_request[160];
+    snprintf(maximum_request, sizeof(maximum_request), "{\"action\":\"connect\",\"ssid_hex\":\"%s\",\"password\":\"test-password\"}", hex);
+    assert(network_request_parse((const uint8_t *)maximum_request, strlen(maximum_request), &request));
+    assert(memcmp(request.ssid, maximum_ssid, sizeof(maximum_ssid)) == 0 && request.ssid[NETWORK_SSID_MAX] == '\0');
+    memset(maximum_ssid, 'a', sizeof(maximum_ssid));
+    maximum_ssid[NETWORK_SSID_MAX - 1] = 0xf0;
+    network_ssid_display(maximum_ssid, SIZE_MAX, display);
+    assert(strcmp(display + NETWORK_SSID_MAX - 1, "\\xF0") == 0);
     network_state_t state;
     network_state_init(&state, false, 0);
     assert(network_state_tick(&state, INT64_C(90000000), false) == NETWORK_WAIT && state.ap);

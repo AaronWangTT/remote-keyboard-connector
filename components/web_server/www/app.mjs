@@ -149,7 +149,11 @@ function renderNetwork() {
   document.querySelector("#network-job-status").dataset.error = String(Boolean(state.error));
   if (!networkFieldsInitialized) {
     document.querySelector(`[name="network-mode"][value="${state.desired_station ? "station" : "ap"}"]`).checked = true;
-    document.querySelector("#wifi-ssid").value = state.saved_ssid || "";
+    const input = document.querySelector("#wifi-ssid");
+    input.value = state.saved_ssid || "";
+    if (state.saved_ssid_hex) input.dataset.ssidHex = state.saved_ssid_hex;
+    else delete input.dataset.ssidHex;
+    document.querySelector("#wifi-network").value = "";
     document.querySelector("#network-hostname").value = state.requested_hostname || "kb";
     networkFieldsInitialized = true;
     renderNetwork();
@@ -161,8 +165,9 @@ function renderNetwork() {
     const selected = select.value;
     select.replaceChildren(new Option("Manual entry", ""));
     for (const result of state.scan ?? []) {
-      const option = new Option(`${result.ssid || "Hidden network"} (${result.rssi} dBm)${result.supported ? "" : " - unsupported"}`, result.ssid);
-      option.disabled = !result.supported || !result.ssid;
+      const option = new Option(`${result.ssid || "Hidden network"} (${result.rssi} dBm)${result.supported ? "" : " - unsupported"}`, result.ssid_hex || "");
+      option.dataset.ssid = result.ssid || "";
+      option.disabled = !result.supported || !result.ssid_hex;
       select.add(option);
     }
     select.value = selected;
@@ -197,6 +202,10 @@ async function submitNetwork(action, fields = {}) {
   try {
     const result = await api(action === "scan" ? "/api/v1/network/scan" : "/api/v1/network", "POST",
       action === "scan" ? undefined : { action, ...fields });
+    if (action === "rename" && location.hostname.endsWith(".local") && result.management_url) {
+      location.replace(result.management_url);
+      return;
+    }
     if (networkState) networkState = { ...networkState, job_id: result.job_id, busy: true, can_control: false, job: "queued", error: "" };
   } catch (error) {
     if (!error.status) networkUncertain = true;
@@ -516,6 +525,7 @@ document.querySelector("#network-settings").addEventListener("click", async () =
   disconnect();
   currentView = "network";
   networkFieldsInitialized = false;
+  renderedScan = "";
   notify();
   renderAccount();
   renderNetwork();
@@ -533,8 +543,14 @@ document.querySelector("#network-back").addEventListener("click", () => {
 });
 for (const radio of document.querySelectorAll('[name="network-mode"]')) radio.addEventListener("change", renderNetwork);
 document.querySelector("#wifi-network").addEventListener("change", event => {
-  if (event.target.value) document.querySelector("#wifi-ssid").value = event.target.value;
+  const input = document.querySelector("#wifi-ssid");
+  const option = event.target.selectedOptions[0];
+  if (event.target.value && option?.dataset.ssid !== undefined) {
+    input.value = option.dataset.ssid;
+    input.dataset.ssidHex = event.target.value;
+  } else delete input.dataset.ssidHex;
 });
+document.querySelector("#wifi-ssid").addEventListener("input", event => delete event.target.dataset.ssidHex);
 document.querySelector("#network-scan").addEventListener("click", () => submitNetwork("scan"));
 document.querySelector("#network-cancel").addEventListener("click", () => submitNetwork("cancel"));
 document.querySelector("#network-confirm").addEventListener("click", () => submitNetwork("confirm"));
@@ -543,13 +559,16 @@ document.querySelector("#network-retry").addEventListener("click", pollNetwork);
 document.querySelector("#network-form").addEventListener("submit", event => {
   event.preventDefault();
   if (document.querySelector('[name="network-mode"]:checked').value === "ap") { submitNetwork("ap"); return; }
-  const ssid = document.querySelector("#wifi-ssid").value;
+  const input = document.querySelector("#wifi-ssid");
+  const ssid = input.value;
+  const ssidHex = input.dataset.ssidHex;
   const password = document.querySelector("#wifi-password").value;
-  if (new TextEncoder().encode(ssid).length > 32 || !/^[\x20-\x7e]{8,63}$/.test(password)) {
+  const ssidLength = ssidHex ? ssidHex.length / 2 : new TextEncoder().encode(ssid).length;
+  if (ssidLength < 1 || ssidLength > 32 || !/^[\x20-\x7e]{8,63}$/.test(password)) {
     notify("Use an SSID of at most 32 bytes and an 8 to 63 character WPA2 password.");
     return;
   }
-  submitNetwork("connect", { ssid, password });
+  submitNetwork("connect", ssidHex ? { ssid_hex: ssidHex, password } : { ssid, password });
 });
 document.querySelector("#hostname-form").addEventListener("submit", event => {
   event.preventDefault();

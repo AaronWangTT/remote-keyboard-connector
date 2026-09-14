@@ -47,7 +47,7 @@ async function takeControl(page) {
 }
 
 test("network jobs are owner-only, bounded and preserve the last working profile", { timeout: 10000 }, async context => {
-  const url = await startPreview(context);
+  const url = await startPreview(context, { PREVIEW_SCAN_TTL_MS: "1000" });
   const endpoint = new URL("/api/v1/network", url);
   assert.equal((await fetch(new URL("/api/v1/network/job", url))).status, 401);
   const session = await loginRequest(url);
@@ -60,10 +60,16 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   assert.equal(combined.network.ap_active, true);
   assert.equal((await submit({ action: "rename", hostname: "kb.local" })).status, 400);
   assert.equal((await fetch(endpoint, { method: "POST", headers: { ...headers, "X-CSRF-Token": "bad" }, body: '{"action":"ap"}' })).status, 403);
+  assert.equal((await fetch(new URL("/api/v1/network/scan", url), { method: "POST", headers })).status, 202);
+  await expect.poll(async () => (await status()).scan.length).toBe(5);
+  await expect.poll(async () => (await status()).scan.length).toBe(0);
+  assert.equal((await submit({ action: "connect", ssid_hex: "43616665ff", password: "test-router-password" })).status, 202);
+  await expect.poll(status).toMatchObject({ job: "awaiting_confirmation", has_profile: true, saved_ssid: "Cafe\\xFF", saved_ssid_hex: "43616665ff" });
+  assert.equal((await submit({ action: "cancel" })).status, 202);
   await takeRequest(url, session);
   assert.equal((await submit({ action: "ap" })).status, 409);
   await fetch(new URL("/api/v1/control/stop", url), { method: "POST", headers });
-  assert.equal((await submit({ action: "connect", ssid: "Home Wi-Fi", password: "test-router-password" })).status, 202);
+  assert.equal((await submit({ action: "connect", ssid_hex: "486f6d652057692d4669", password: "test-router-password" })).status, 202);
   assert.equal((await submit({ action: "rename", hostname: "kb-2" })).status, 409);
   await expect.poll(status).toMatchObject({ job: "awaiting_confirmation", station_online: true, ap_active: true, saved_ssid: "Home Wi-Fi" });
   assert.equal(JSON.stringify(await status()).includes("test-router-password"), false);
@@ -102,11 +108,14 @@ test("browser Network view scans, tests, confirms handover and forgets without U
   await page.getByRole("button", { name: "Scan networks", exact: true }).click();
   await expect(page.locator("#wifi-network")).toBeEnabled();
   await expect(page.locator("#wifi-network option")).toHaveCount(6);
-  await page.locator("#wifi-network").selectOption("<Office & Guests>");
-  await expect(page.getByLabel("Network name (SSID)")).toHaveValue("<Office & Guests>");
+  await page.locator("#wifi-network").selectOption("43616665ff");
+  await expect(page.getByLabel("Network name (SSID)")).toHaveValue("Cafe\\xFF");
   await page.getByLabel("Wi-Fi password", { exact: true }).fill("wrong-password");
   await page.getByRole("button", { name: "Test and Connect", exact: true }).click();
   await expect(page.locator("#network-job-status")).toHaveText("Wi-Fi authentication failed.");
+  const office = page.locator("#wifi-network option", { hasText: "<Office & Guests>" });
+  await page.locator("#wifi-network").selectOption(await office.getAttribute("value"));
+  await expect(page.getByLabel("Network name (SSID)")).toHaveValue("<Office & Guests>");
   await expect(page.getByLabel("Wi-Fi password", { exact: true })).toHaveValue("");
   await page.getByLabel("Wi-Fi password", { exact: true }).fill("test-router-password");
   await page.getByRole("button", { name: "Test and Connect", exact: true }).click();
@@ -130,6 +139,43 @@ test("browser Network view scans, tests, confirms handover and forgets without U
   await page.getByRole("button", { name: "Back to keyboard" }).click();
   await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
   await takeControl(page);
+});
+
+test("hostname rename recovers through the numeric address when the old mDNS endpoint disappears", { timeout: 20000 }, async context => {
+  const url = await startPreview(context);
+  const oldAddress = new URL(url);
+  oldAddress.hostname = "kb.local";
+  const browser = await chromium.launch();
+  context.after(() => browser.close());
+  const page = await browser.newPage();
+  let retired = false;
+  let renames = 0;
+  await page.route(`${oldAddress.origin}/**`, async route => {
+    if (retired) { await route.abort("namenotresolved"); return; }
+    const request = route.request();
+    const destination = new URL(new URL(request.url()).pathname, url);
+    const headers = { ...request.headers(), host: destination.host };
+    if (headers.origin) headers.origin = destination.origin;
+    const response = await fetch(destination, { method: request.method(), headers, body: request.postDataBuffer() ?? undefined });
+    if (request.method() === "POST" && request.postDataJSON()?.action === "rename") {
+      renames++;
+      retired = true;
+    }
+    await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
+  });
+  await page.goto(oldAddress.href);
+  await page.getByLabel("Owner password", { exact: true }).fill("preview-owner-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("button", { name: "Network settings", exact: true }).click();
+  await page.getByLabel("Local hostname", { exact: true }).fill("kb-desk");
+  await page.getByRole("button", { name: "Save name", exact: true }).click();
+  await expect(page).toHaveURL(url);
+  await page.getByLabel("Owner password", { exact: true }).fill("preview-owner-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("button", { name: "Network settings", exact: true }).click();
+  await expect(page.locator("#network-name")).toHaveText("kb-desk.local");
+  assert.equal(renames, 1);
+  assert.equal((await (await fetch(new URL("/__test__/input", url))).json()).down, 0);
 });
 
 test("lost network responses recover the existing job without resubmitting credentials", { timeout: 20000 }, async context => {
@@ -167,7 +213,7 @@ test("lost network responses recover the existing job without resubmitting crede
 for (const [engineName, engine] of [["chromium", chromium], ["webkit", webkit]]) {
   test(`${engineName} account and Network views fit mobile and desktop layouts`, { timeout: 20000 }, async context => {
     const url = await startPreview(context, { PREVIEW_CLAIMED: "0" });
-    const browser = await engine.launch();
+    const browser = await engine.launch(engineName === "webkit" ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
     context.after(() => browser.close());
     const page = await browser.newPage({ hasTouch: true, viewport: { width: 390, height: 844 } });
     const errors = [];
@@ -199,7 +245,8 @@ for (const [engineName, engine] of [["chromium", chromium], ["webkit", webkit]])
     await page.getByLabel("Join Wi-Fi", { exact: true }).check();
     await page.getByRole("button", { name: "Scan networks", exact: true }).click();
     await expect(page.locator("#wifi-network option")).toHaveCount(6);
-    await page.locator("#wifi-network").selectOption("A-very-long-network-name-123456789");
+    const longSsid = page.locator("#wifi-network option", { hasText: "A-very-long-network-name" });
+    await page.locator("#wifi-network").selectOption(await longSsid.getAttribute("value"));
     for (const [width, height] of [[320, 568], [390, 844], [568, 320], [768, 1024], [1366, 768]]) {
       await page.setViewportSize({ width, height });
       const diagnostic = await page.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth,

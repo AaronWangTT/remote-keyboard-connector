@@ -25,6 +25,8 @@ typedef struct {
 } network_command_t;
 
 static const char *const TAG = "network";
+static const int64_t SCAN_RESULTS_US = INT64_C(30000000);
+static const int64_t HOSTNAME_TRANSITION_US = INT64_C(60000000);
 static esp_netif_t *ap_interface;
 static esp_netif_t *station_interface;
 static QueueHandle_t commands;
@@ -49,6 +51,8 @@ static uint32_t ap_address;
 static uint32_t station_address;
 static int64_t management_until;
 static int64_t scan_deadline;
+static int64_t scan_expires;
+static int64_t hostname_transition_until;
 static char last_failure[40];
 
 static void disarm(bool only_ap, bool only_station)
@@ -65,7 +69,16 @@ static void disarm(bool only_ap, bool only_station)
 
 void network_status(network_status_t *status)
 {
+    int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&lock);
+    if (scan_expires != 0 && now >= scan_expires) {
+        snapshot.scan_count = 0;
+        scan_expires = 0;
+    }
+    if (hostname_transition_until != 0 && now >= hostname_transition_until) {
+        snapshot.previous_hostname[0] = '\0';
+        hostname_transition_until = 0;
+    }
     *status = snapshot;
     portEXIT_CRITICAL(&lock);
 }
@@ -176,6 +189,7 @@ static void wifi_event(void *argument, esp_event_base_t base, int32_t event_id, 
             portENTER_CRITICAL(&lock);
             lease_address = event->ip_info.ip.addr;
             connecting = false;
+            last_failure[0] = '\0';
             portEXIT_CRITICAL(&lock);
             if (event->ip_changed) disarm(false, true);
         }
@@ -207,7 +221,12 @@ static void wifi_event(void *argument, esp_event_base_t base, int32_t event_id, 
 static void hostname_changed(const char *hostname, void *argument)
 {
     (void)argument;
+    int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&lock);
+    if (snapshot.hostname[0] != '\0' && strcmp(snapshot.hostname, hostname) != 0) {
+        memcpy(snapshot.previous_hostname, snapshot.hostname, sizeof(snapshot.previous_hostname));
+        hostname_transition_until = now + HOSTNAME_TRANSITION_US;
+    }
     snprintf(snapshot.hostname, sizeof(snapshot.hostname), "%s", hostname);
     portEXIT_CRITICAL(&lock);
     disarm(false, false);
@@ -270,8 +289,9 @@ static void refresh_snapshot(void)
                            (state.phase == NETWORK_AP || state.phase == NETWORK_RECOVERY || state.phase == NETWORK_STATION);
     snprintf(snapshot.phase, sizeof(snapshot.phase), "%s", network_phase_name(state.phase));
     snprintf(snapshot.requested_hostname, sizeof(snapshot.requested_hostname), "%s", saved.hostname);
-    snprintf(snapshot.saved_ssid, sizeof(snapshot.saved_ssid), "%s", saved.ssid);
-    snprintf(snapshot.station_ssid, sizeof(snapshot.station_ssid), "%s", state.online ? saved.ssid : "");
+    network_ssid_display((const uint8_t *)saved.ssid, strnlen(saved.ssid, NETWORK_SSID_MAX), snapshot.saved_ssid);
+    network_ssid_hex((const uint8_t *)saved.ssid, strnlen(saved.ssid, NETWORK_SSID_MAX), snapshot.saved_ssid_hex);
+    network_ssid_display((const uint8_t *)saved.ssid, state.online ? strnlen(saved.ssid, NETWORK_SSID_MAX) : 0, snapshot.station_ssid);
     ap_address = snapshot.ap_active ? ap_info.ip.addr : 0;
     station_address = snapshot.station_online ? station_info.ip.addr : 0;
     snapshot.ap_ip[0] = '\0';
@@ -329,17 +349,20 @@ static void finish_scan(void)
     wifi_ap_record_t records[NETWORK_SCAN_LIMIT];
     uint16_t count = NETWORK_SCAN_LIMIT;
     esp_err_t result = esp_wifi_scan_get_ap_records(&count, records);
+    int64_t expires = result == ESP_OK ? esp_timer_get_time() + SCAN_RESULTS_US : 0;
     portENTER_CRITICAL(&lock);
     snapshot.scan_count = 0;
     if (result == ESP_OK) {
         for (size_t index = 0; index < count; index++) {
             network_scan_item_t *item = &snapshot.scan[snapshot.scan_count++];
-            memcpy(item->ssid, records[index].ssid, 32);
-            item->ssid[32] = '\0';
+            size_t length = strnlen((const char *)records[index].ssid, NETWORK_SSID_MAX);
+            network_ssid_display(records[index].ssid, length, item->ssid);
+            network_ssid_hex(records[index].ssid, length, item->ssid_hex);
             item->rssi = records[index].rssi;
             item->supported = supported_auth(records[index].authmode);
         }
     }
+    scan_expires = expires;
     portEXIT_CRITICAL(&lock);
     scanning = false;
     if (state.phase == NETWORK_AP) esp_wifi_set_mode(WIFI_MODE_AP);
@@ -354,6 +377,7 @@ static void run_command(const network_command_t *command)
         portENTER_CRITICAL(&lock);
         scan_done = false;
         snapshot.scan_count = 0;
+        scan_expires = 0;
         portEXIT_CRITICAL(&lock);
         scanning = true;
         scan_deadline = now + INT64_C(15000000);

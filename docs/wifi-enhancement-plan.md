@@ -214,6 +214,20 @@ resubmit a credential change after losing its response; recover the job first.
 Extend the existing preview/mock and test helpers without adding a second web
 server, frontend framework, or an unrelated protocol layer.
 
+Scan results expire 30 seconds after publication. Each entry carries a UTF-8
+display `ssid` and lossless `ssid_hex`; saved profiles expose `saved_ssid_hex`
+alongside their display name. Connect requests accept exactly one of `ssid` or
+`ssid_hex`, plus the password. Hexadecimal input represents 1-32 non-NUL bytes;
+the existing station profile does not support embedded NUL bytes. Manual edits
+discard the selected raw token, while an expired scan does not alter it.
+
+Accepted operations return a numeric `management_url` derived from the serving
+interface. After a rename request from a `.local` page, the UI uses that address
+to retrieve the committed state without relying on the retired mDNS name or
+resubmitting the operation. Host-only cookies require signing in on the new
+origin. The previous effective Host/Origin remains accepted for 60 seconds for
+in-flight requests; this grace period does not retain the old mDNS record.
+
 ## Security And Input Safety
 
 Authentication is a prerequisite to exposing keyboard control on a LAN, not a
@@ -322,16 +336,23 @@ followed by the physical matrix. Do not flash or replace NVS without that check.
 
 ## Implementation Record
 
-Date: 2026-09-14. Evidence is from native Windows tools and the loopback preview.
+Date: 2026-09-14. Initial validation used native Windows tools; the PR review
+follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 
 | Area | Executed result |
 | --- | --- |
-| Native C | Four suites passed: access/credential validation, network state/persistence selection, eight USB-state cases, and the full-state JSON parser. Zig 0.15.2 Windows host compiler; no ASan/UBSan on this run. |
+| Native C | Four suites passed: access/credential validation, network state/persistence selection, eight USB-state cases, and the full-state JSON parser. Initial Windows validation used Zig 0.15.2 without sanitizers; Linux review follow-up passed ASan/UBSan, including malformed UTF-8 and maximum-length raw SSID cases. |
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
-| Provisioning and browser/API | All 21 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, failed candidates, handover, lost-response recovery without resubmission, and keyboard regressions. The final combined-status change also passed its two focused API checks. |
+| Provisioning and browser/API | All 22 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, handover, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf27c0` bytes; `0xd840` bytes (5%) free in the existing app partition. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf2d60` bytes; `0xd2a0` bytes (53,920 bytes, 5%) free in the existing app partition. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
+
+An isolated Linux harness also executed the actual cleanup and status callbacks
+with hardware dependencies stubbed. It verified delayed cleanup cannot release
+a newer controller sharing the USB generation, scan expiry at its deadline, and
+preservation/expiry of the full collision-resolved previous hostname. This does
+not establish real radio, DHCP, or USB timing behavior.
 
 The native interrupted-save tests inject failure around the same stage/activate
 selection helper used by the NVS adapter. They verify old-or-new complete-record

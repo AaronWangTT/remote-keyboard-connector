@@ -1,7 +1,7 @@
 # CI Workflow Setup Proposal
 
 Date: 2026-09-14
-Status: hosted PR validation passed; required-check rollout pending.
+Status: implemented; both hosted checks are required on `main`.
 
 ## Objective
 
@@ -18,7 +18,7 @@ One workflow, two independent jobs with stable check names:
 
 | Check | Environment and sequence |
 | --- | --- |
-| Firmware and Native Tests | Pinned ESP-IDF v6.1 environment and Node.js 22. Build `esp32s3` from the committed defaults, run `bash tools/test-host.sh`, check dependency-lock drift, report image/partition size, and package the validated build. |
+| Firmware and Native Tests | Pinned ESP-IDF v6.1 environment and Node.js 22. Build `esp32s3` from the committed defaults, run `bash tools/test-host.sh`, check dependency-lock drift, report image/partition size, and upload separate images with flash metadata. |
 | Browser Integration | Ubuntu 24.04 and Node.js 22. Install the locked development dependencies, install Chromium/WebKit with their Linux runtime dependencies, and run `npm --prefix tools test`. |
 
 Run on pull requests targeting `main`, pushes to `main`, and manual dispatch.
@@ -63,45 +63,40 @@ option on the disposable hosted runner, not through local WSL path overrides.
 
 ## Artifacts
 
-- Upload a separate-image flash ZIP and SHA-256 sidecar, merged BIN and checksum,
-  and a size/build summary after successful firmware validation. Record the
-  checked-out commit and use unique artifact names containing the commit SHA.
+- Upload the separate application, bootloader, and partition-table images,
+  `flasher_args.json`, `flash_args`, and a size/build summary after successful
+  firmware validation. Record the checked-out commit and use unique artifact
+  names containing the commit SHA.
 - Label PR output as a test build, not a release or evidence of hardware testing.
   The PR workflow normally validates GitHub's proposed merge commit.
 - Keep available build/test logs and browser screenshots for diagnosis, including
   failed runs. Retain artifacts for 14 days; do not commit binaries or upload the
   whole workspace, dependency directories, credentials, or environment dumps.
-- Merged BINs write padded gaps, potentially replacing NVS/settings. Preserve
-  this warning and the unchanged board flash/recovery prerequisites.
 
-Packaging validates bytes and offsets, not USB behavior. No CI job connects to
-a physical board, burns eFuses, signs a production image, or publishes releases.
+Firmware compilation validates images and offsets, not USB behavior. No CI job
+connects to a physical board, burns eFuses, signs a production image, or
+publishes releases.
 
 The firmware artifact is named `firmware-<pr-test|branch-build>-<SHA>-<attempt>`
-and contains `firmware-package.zip`, its checksum, `firmware-merged.bin`, its
-checksum, and the Markdown build summary with checked-out commit and size data.
-The workflow also publishes separate firmware-log and browser-diagnostic
-artifacts, including available screenshots. Firmware summaries and diagnostic
-uploads use `if: ${{ !cancelled() }}`: they run after earlier failures but skip
-canceled runs, so they do not keep superseded jobs alive. Validated firmware is
-uploaded only after successful checks.
-
-The existing packager is reused without changing its format. esptool merges the
-build-generated image list in `flash_args`, and SHA-256 checksums identify the
-downloaded outputs. Nothing is flashed and previously tested local packages are
-not modified by the isolated validation run.
+and contains `esp32s3_starter.bin`, `bootloader.bin`, `partition-table.bin`,
+`flasher_args.json`, `flash_args`, and the Markdown build summary with checked-out
+commit and size data. The workflow also publishes separate firmware-log and
+browser-diagnostic artifacts, including available screenshots. Firmware summaries
+and diagnostic uploads use `if: ${{ !cancelled() }}`: they run after earlier
+failures but skip canceled runs, so they do not keep superseded jobs alive.
+Validated firmware is uploaded only after successful checks. Nothing is flashed,
+merged, or packaged by the workflow.
 
 ## Merge Rules
 
-After both checks have completed successfully on GitHub, add their exact names
-to the existing active ruleset for `main` as required status checks. Keep the
-PR requirement, zero reviewer approvals, no bypass actors, and the blocks on
-force pushes and branch deletion. Do not disable protection to bootstrap CI.
+The active ruleset for `main` requires the exact **Firmware and Native Tests**
+and **Browser Integration** check names. It also keeps the PR requirement, zero
+reviewer approvals, no bypass actors, and the blocks on force pushes and branch
+deletion.
 
-Introduce this change through a feature branch and PR. Workflow implementation
-does not itself change the ruleset, merge the PR, or require new approvals.
-Manual dispatch becomes available in the UI after the workflow reaches the
-default branch; its first hosted validation can run on the introduction PR.
+The workflow was introduced through a feature branch and PR. Manual dispatch is
+available from the default branch; workflow changes do not themselves alter the
+ruleset, merge a PR, or require new approvals.
 
 ## Security And Scope
 
@@ -111,10 +106,10 @@ repository secrets, personal tokens, or self-hosted hardware runners. Fork PRs
 must be safe to test with the default restricted token; first-time contributors
 may need GitHub's normal workflow-run approval, distinct from merge reviewers.
 
-Fail on build errors, test failures, invalid packages, dependency-lock drift,
-or application partition overflow. Report headroom rather than imposing the
-broader 20% product target: the current tested image has about 16% free, so
-making 20% mandatory would immediately reject the working baseline.
+Fail on build errors, test failures, missing firmware outputs, dependency-lock
+drift, or application partition overflow. Report headroom rather than imposing
+the broader 20% product target: the initial CI baseline had about 16% free, so
+making 20% mandatory would have rejected that working baseline.
 
 Defer new lint/style policies, mandatory coverage thresholds, scheduled scans,
 dependency-update automation, tag-based releases, and hardware-in-the-loop CI
@@ -125,7 +120,7 @@ recovery, or endurance.
 ## Rollout And Validation
 
 1. Add and locally lint the workflow on `ci/github-actions`.
-2. Validate the existing native/browser commands and packaging/summary paths;
+2. Validate the existing native/browser commands and artifact/summary paths;
    distinguish locally executed checks from any unavailable container/runner checks.
 3. Commit and push the feature branch when authorized, then open a PR to `main`.
    Confirm both jobs pass from a clean hosted checkout and inspect the artifacts.
@@ -134,7 +129,11 @@ recovery, or endurance.
 
 Record implementation details and actual validation results below before handoff.
 
-## Validation Record
+## Historical Validation Record
+
+This records the original PR #1 workflow validation. Its ZIP, merged-BIN, and
+checksum outputs were later removed and are not part of the current artifact
+contract above.
 
 Local validation passed on 2026-09-14:
 
@@ -189,8 +188,7 @@ and the `0xd7ff0`-byte application with 16% partition space free. Uploaded WebKi
 phone and Chromium desktop screenshots were inspected for rendered keys/icons
 and visible layout issues; neither is a physical-device acceptance result.
 
-Required-check rollout remains pending: these documentation changes do not add
-required status checks or merge the PR. Retain the existing PR rule with zero
-reviewer approvals when enabling the required checks. A hosted CI pass
-is not hardware acceptance; post-merge `main` and manual-dispatch runs also remain
-to be observed after the workflow reaches the default branch.
+The required-check rollout subsequently completed with the PR rule and zero
+reviewer approvals retained. A hosted CI pass is not hardware acceptance;
+manual-dispatch and future `main` runs remain operational checks rather than
+physical-device evidence.

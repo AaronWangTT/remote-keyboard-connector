@@ -166,18 +166,18 @@ The [CI workflow](.github/workflows/ci.yml) defines two parallel checks on PRs t
 `main`, pushes to `main`, and manual runs: **Firmware and Native Tests** and
 **Browser Integration**. It builds in a pinned ESP-IDF v6.1 image, runs the
 existing native/model tests, and exercises Chromium/WebKit on Ubuntu 24.04.
-Successful firmware jobs upload the separate-image ZIP and merged BIN with
-checksums and a build summary. Available logs/screenshots are retained for
-diagnosis, including failures; artifact retention is 14 days.
+Successful firmware jobs upload the application, bootloader, and partition-table
+images with `flasher_args.json`, `flash_args`, and a build summary. Available
+logs/screenshots are retained for diagnosis, including failures; artifact
+retention is 14 days.
 
 The [first hosted PR run](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34860547440)
 passed Browser Integration but failed the firmware job's post-build Git check
 because of container checkout ownership. After an exact-workspace trust fix,
 the [rerun](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34861221888)
 passed both jobs, including native tests, packaging, and artifact uploads.
-Required CI checks have not yet been added to `main`'s ruleset; that rollout
-remains pending and must preserve zero reviewer approvals. See the proposal for
-the validation record, security boundaries, and rollout steps.
+Both checks are required by `main`'s ruleset. See the proposal for the validation
+record and security boundaries.
 
 ## Current Layout
 
@@ -215,10 +215,11 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-The Wi-Fi enhancement image is `0xf27c0` bytes (993,216 bytes), leaving
-`0xd840` bytes (5%) in the existing 1 MiB application partition. Flash layout
-and PSRAM settings are unchanged. This is below the broader 20% headroom goal;
-physical flash capacity and runtime heap/stack/power behavior remain unverified.
+The Wi-Fi enhancement image is `0xf2d60` bytes (994,656 bytes), leaving
+`0xd2a0` bytes (53,920 bytes, 5%) in the existing 1 MiB application partition.
+Flash layout and PSRAM settings are unchanged. This is below the broader 20%
+headroom goal; physical flash capacity and runtime heap/stack/power behavior
+remain unverified.
 
 Do not commit credentials or machine-specific SDK paths. Generated build
 outputs and local configuration are excluded by the Git ignore rules. Project

@@ -6,9 +6,12 @@
 #include "esp_err.h"
 
 #define NETWORK_SCAN_LIMIT 12
+#define NETWORK_SCAN_SSID_DISPLAY_MAX 128
+#define NETWORK_SCAN_SSID_HEX_MAX 64
 
 typedef struct {
-	char ssid[33];
+	char ssid[NETWORK_SCAN_SSID_DISPLAY_MAX + 1];
+	char ssid_hex[NETWORK_SCAN_SSID_HEX_MAX + 1];
 	int rssi;
 	bool supported;
 } network_scan_item_t;
@@ -27,10 +30,12 @@ typedef struct {
 	char job[24];
 	char error[40];
 	char hostname[65];
+	char previous_hostname[65];
 	char requested_hostname[33];
 	char ap_ssid[33];
-	char saved_ssid[33];
-	char station_ssid[33];
+	char saved_ssid[NETWORK_SCAN_SSID_DISPLAY_MAX + 1];
+	char saved_ssid_hex[NETWORK_SCAN_SSID_HEX_MAX + 1];
+	char station_ssid[NETWORK_SCAN_SSID_DISPLAY_MAX + 1];
 	char ap_ip[16];
 	char station_ip[16];
 	size_t scan_count;
