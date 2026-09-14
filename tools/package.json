@@ -1,0 +1,14 @@
+{
+  "name": "remote-keyboard-preview",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "preview": "node preview.mjs",
+    "test": "node --test preview.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "lucide-static": "1.46.0",
+    "ws": "8.21.3"
+  }
+}

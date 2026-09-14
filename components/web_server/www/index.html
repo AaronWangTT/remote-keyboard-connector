@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f4f7f8">
+  <title>Wi-Fi Keyboard</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.mjs" type="module"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="identity">
+        <h1>Wi-Fi Keyboard</h1>
+        <div class="statuses" role="status" aria-live="polite">
+          <span id="connection-status" class="status">Connecting</span>
+          <span id="usb-status" class="status">USB waiting</span>
+        </div>
+      </div>
+      <button id="release" class="tool-button" type="button" aria-label="Release all keys" title="Release all keys">
+        <span class="icon" data-icon="release" aria-hidden="true"></span>
+      </button>
+    </header>
+    <section id="keyboard" class="keyboard-surface" aria-label="Remote keyboard" tabindex="0">
+      <div class="keyboard-meta"><span>English (US)</span><span id="caps-status" role="status">Caps unknown</span></div>
+      <div id="key-rows" data-page="letters"></div>
+    </section>
+    <footer><span>Local AP</span><output id="key-state">Released</output><span>Prototype</span></footer>
+  </main>
+</body>
+</html>

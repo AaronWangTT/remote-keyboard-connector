@@ -1,0 +1,10 @@
+menu "Minimal keyboard prototype"
+
+    config MINIMAL_AP_PASSWORD
+        string "Development AP password"
+        default "a-key-test-only"
+        help
+            Public development default, not an owner credential. Use only with
+            an isolated, non-sensitive test host. Must be 8 to 63 characters.
+
+endmenu
