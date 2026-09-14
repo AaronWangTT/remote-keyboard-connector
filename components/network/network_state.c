@@ -86,12 +86,22 @@ static bool profile_valid(const char *ssid, const char *password)
     return true;
 }
 
+static bool padded_string_valid(const char *value, size_t capacity)
+{
+    const char *terminator = memchr(value, 0, capacity);
+    if (terminator == NULL) return false;
+    for (size_t index = (size_t)(terminator - value) + 1; index < capacity; index++) {
+        if (value[index] != '\0') return false;
+    }
+    return true;
+}
+
 bool network_config_valid(const network_config_t *configuration)
 {
     if (configuration == NULL || configuration->version != 1 || configuration->station > 1 ||
-        memchr(configuration->hostname, 0, sizeof(configuration->hostname)) == NULL ||
-        memchr(configuration->ssid, 0, sizeof(configuration->ssid)) == NULL ||
-        memchr(configuration->password, 0, sizeof(configuration->password)) == NULL ||
+        !padded_string_valid(configuration->hostname, sizeof(configuration->hostname)) ||
+        !padded_string_valid(configuration->ssid, sizeof(configuration->ssid)) ||
+        !padded_string_valid(configuration->password, sizeof(configuration->password)) ||
         !network_hostname_valid(configuration->hostname)) return false;
     if (configuration->ssid[0] == '\0') return !configuration->station && configuration->password[0] == '\0';
     return profile_valid(configuration->ssid, configuration->password);

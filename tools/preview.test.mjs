@@ -61,7 +61,7 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   assert.equal(combined.network.ap_active, true);
   assert.equal((await submit({ action: "cancel" })).status, 409);
   assert.equal((await submit({ action: "rename", hostname: "kb.local" })).status, 400);
-  for (const fields of [{}, { ssid: 42 }, { ssid: "" }, { ssid_hex: 42 }, { ssid_hex: "zz" }, { ssid_hex: "00" },
+  for (const fields of [{}, { ssid: 42 }, { ssid: "" }, { ssid: "valid\0ignored" }, { ssid_hex: 42 }, { ssid_hex: "zz" }, { ssid_hex: "00" },
     { ssid: "Home Wi-Fi", ssid_hex: "zz" }, { ssid: 42, ssid_hex: "486f6d65" }, { ssid: "Home", ssid_hex: "486f6d65" }]) {
     assert.equal((await submit({ action: "connect", ...fields, password: "test-router-password" })).status, 400);
   }
@@ -80,6 +80,7 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   await expect.poll(status).toMatchObject({ job: "awaiting_confirmation", station_online: true, ap_active: true, saved_ssid: "Home Wi-Fi" });
   assert.equal(JSON.stringify(await status()).includes("test-router-password"), false);
   assert.equal((await submit({ action: "confirm" })).status, 202);
+  assert.equal((await submit({ action: "confirm" })).status, 409);
   await expect.poll(status).toMatchObject({ phase: "station", busy: false, ap_active: false });
   const idleStation = await status();
   assert.equal((await submit({ action: "cancel" })).status, 409);

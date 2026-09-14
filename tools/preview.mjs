@@ -61,7 +61,7 @@ async function networkRequest(request, response) {
   const fields = value.action === "connect" ? ["action", "ssid", "ssid_hex", "password"] : value.action === "rename" ? ["action", "hostname"] : ["action"];
   const hasTextSsid = Object.hasOwn(value, "ssid");
   const hasEncodedSsid = Object.hasOwn(value, "ssid_hex");
-  const textSsid = typeof value.ssid === "string" && Buffer.byteLength(value.ssid) >= 1 && Buffer.byteLength(value.ssid) <= 32;
+  const textSsid = typeof value.ssid === "string" && !value.ssid.includes("\0") && Buffer.byteLength(value.ssid) >= 1 && Buffer.byteLength(value.ssid) <= 32;
   const encodedSsid = typeof value.ssid_hex === "string" && /^(?:[0-9a-fA-F]{2}){1,32}$/.test(value.ssid_hex) && !Buffer.from(value.ssid_hex, "hex").includes(0);
   const expectedFields = value.action === "connect" ? 3 : fields.length;
   if (!Object.keys(value).every(key => fields.includes(key)) || Object.keys(value).length !== expectedFields ||

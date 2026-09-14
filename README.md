@@ -126,6 +126,8 @@ workspace it uses the checksum-verified Zig 0.15.2 installation in the ignored
 `.cache/toolchains` folder. Fresh machines must supply a host compiler; the
 ESP cross-compiler cannot execute native unit tests. The Bash entry point
 `tools/test-host.sh` uses the same suite list with a Linux compiler.
+On Linux, the runner selects `/usr/bin/` binutils explicitly so an activated
+ESP-IDF toolchain cannot substitute a cross-assembler or linker.
 
 Four native suites (including eight USB-state cases), twelve keyboard-model
 tests, and 23 provisioning/API/Chromium/WebKit tests pass in the Linux review
@@ -217,8 +219,8 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-The Wi-Fi enhancement image is `0xf33e0` bytes (996,320 bytes), leaving
-`0xcc20` bytes (52,256 bytes, about 5%) in the existing 1 MiB application partition.
+The Wi-Fi enhancement image is `0xf3410` bytes (996,368 bytes), leaving
+`0xcbf0` bytes (52,208 bytes, about 5%) in the existing 1 MiB application partition.
 Flash layout and PSRAM settings are unchanged. This is below the broader 20%
 headroom goal; physical flash capacity and runtime heap/stack/power behavior
 remain unverified.

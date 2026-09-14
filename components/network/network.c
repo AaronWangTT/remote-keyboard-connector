@@ -373,7 +373,7 @@ static bool non_overlapping_ap(const esp_netif_ip_info_t *station_info)
     return false;
 }
 
-static void recovery(const char *error, bool retry_saved)
+static esp_err_t recovery(const char *error, bool retry_saved)
 {
     testing = false;
     scanning = false;
@@ -384,6 +384,7 @@ static void recovery(const char *error, bool retry_saved)
     esp_err_t result = configure_driver(true, station, &saved);
     if (!station) network_state_init(&state, false, esp_timer_get_time());
     job_result("failed", result == ESP_OK ? error : "wifi_unavailable", false);
+    return result;
 }
 
 static bool supported_auth(wifi_auth_mode_t authentication)
@@ -459,8 +460,7 @@ static void run_command(const network_command_t *command)
             mbedtls_platform_zeroize(&keep_ap, sizeof(keep_ap));
             if (result != ESP_OK) { recovery("storage_failed", false); return; }
         }
-        recovery("", false);
-        job_result("cancelled", "", false);
+        if (recovery("", false) == ESP_OK) job_result("cancelled", "", false);
         return;
     }
     if (request->action == NETWORK_ACTION_CONNECT || request->action == NETWORK_ACTION_STATION) {
@@ -499,8 +499,8 @@ static void run_command(const network_command_t *command)
     }
     if (request->action == NETWORK_ACTION_RENAME) {
         result = mdns_hostname_set(saved.hostname);
-        esp_netif_set_hostname(station_interface, saved.hostname);
-        esp_netif_set_hostname(ap_interface, saved.hostname);
+        if (result == ESP_OK) result = esp_netif_set_hostname(station_interface, saved.hostname);
+        if (result == ESP_OK) result = esp_netif_set_hostname(ap_interface, saved.hostname);
     } else {
         network_state_init(&state, false, now);
         result = configure_driver(true, false, &saved);
@@ -616,7 +616,7 @@ esp_err_t network_submit(const uint8_t *payload, size_t length, bool scan, uint3
     portENTER_CRITICAL(&lock);
     bool terminal_action = command.request.action == NETWORK_ACTION_CANCEL || command.request.action == NETWORK_ACTION_CONFIRM;
     bool invalid_confirmation = command.request.action == NETWORK_ACTION_CONFIRM &&
-        strcmp(snapshot.job, "awaiting_confirmation") != 0 && strcmp(snapshot.job, "handing_over") != 0 &&
+        strcmp(snapshot.job, "awaiting_confirmation") != 0 &&
         strcmp(snapshot.job, "awaiting_ap_reconnect") != 0;
     bool invalid_cancellation = command.request.action == NETWORK_ACTION_CANCEL && !snapshot.busy;
     bool busy = !snapshot.available || command_pending || invalid_confirmation || invalid_cancellation ||

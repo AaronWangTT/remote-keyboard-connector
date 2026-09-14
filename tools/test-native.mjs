@@ -11,6 +11,7 @@ const portable = resolve(".cache/toolchains/zig-x86_64-windows-0.15.2/zig.exe");
 const compiler = process.env.HOST_CC ?? (process.platform === "win32" && existsSync(portable) ? portable : "cc");
 const prefix = basename(compiler).startsWith("zig") ? ["cc"] : [];
 const flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-g"];
+if (process.platform === "linux") flags.push("-B/usr/bin/");
 if (process.platform !== "win32") flags.push("-fsanitize=address,undefined");
 const usbIncludes = ["components/usb_keyboard", "components/usb_keyboard/include",
   "components/usb_keyboard/test", "managed_components/espressif__tinyusb/src"];

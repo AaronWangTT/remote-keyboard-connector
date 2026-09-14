@@ -355,7 +355,7 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
 | Provisioning and browser/API | All 23 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, idle-cancel rejection, confirmed AP-address transitions, handover, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf33e0` bytes; `0xcc20` bytes (52,256 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf3410` bytes; `0xcbf0` bytes (52,208 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -374,6 +374,21 @@ Fault injection of the NVS loader verified corrupt-selector defaults remain
 writable; AP/Forget restart tests verified protected-AP retry and accurate error
 reporting if the retry also fails. Existing test files contain the browser/API
 regressions; hardware-dependent cases used isolated host harnesses.
+
+Further checks cover duplicate handover-confirmation rejection, preservation of
+failed cancellation status, interface-hostname error propagation, canonical
+zero-padded persisted strings, and preview NUL rejection. The Linux host entry
+point also passed immediately after ESP-IDF activation without a caller-side
+PATH override, using the runner's explicit native binutils selection.
+
+Network disarm already calls `usb_keyboard_release()`, which advances the USB
+generation and clears queued reports while holding the same mutex as report
+submission. The actual adapters and keyboard state were checked under sanitizers:
+queued input is cleared, old-generation submissions/heartbeats are rejected even
+after neutral completion, and an old release cannot affect a fresh generation.
+WebSocket clients and reservations retain their admitted generation; an open
+socket alone cannot reacquire input after network disarm. No additional lease
+mechanism was introduced.
 
 The native interrupted-save tests inject failure around the same stage/activate
 selection helper used by the NVS adapter. They verify old-or-new complete-record

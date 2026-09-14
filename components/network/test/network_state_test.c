@@ -58,6 +58,15 @@ int main(void)
     strcpy(configuration.ssid, "My network");
     strcpy(configuration.password, "network-test-password");
     assert(network_config_valid(&configuration));
+    network_config_t corrupt = configuration;
+    corrupt.hostname[sizeof(corrupt.hostname) - 1] = 'x';
+    assert(!network_config_valid(&corrupt));
+    corrupt = configuration;
+    corrupt.ssid[sizeof(corrupt.ssid) - 1] = 'x';
+    assert(!network_config_valid(&corrupt));
+    corrupt = configuration;
+    corrupt.password[sizeof(corrupt.password) - 1] = 'x';
+    assert(!network_config_valid(&corrupt));
     for (size_t index = 0; index < sizeof(configuration.hostname); index++) configuration.hostname[index] = 'a';
     assert(!network_config_valid(&configuration));
     assert(network_hostname_valid("kb-2"));
