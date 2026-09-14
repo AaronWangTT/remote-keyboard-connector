@@ -69,8 +69,15 @@ async function api(path, method = "GET", body) {
   return result;
 }
 
+function clearNetworkPassword() {
+  document.querySelector("#wifi-password").value = "";
+}
+
 function renderAccount() {
-  if (!account.authenticated) currentView = "keyboard";
+  if (!account.authenticated) {
+    currentView = "keyboard";
+    clearNetworkPassword();
+  }
   document.querySelector("#account-view").hidden = account.authenticated;
   surface.hidden = !account.authenticated || currentView !== "keyboard";
   document.querySelector("#network-view").hidden = !account.authenticated || currentView !== "network";
@@ -226,7 +233,7 @@ async function submitNetwork(action, fields = {}) {
     if (!error.status) networkUncertain = true;
     notify(errorMessage(error));
   } finally {
-    document.querySelector("#wifi-password").value = "";
+    clearNetworkPassword();
     networkMutating = false;
     renderNetwork();
     pollNetwork();
@@ -495,6 +502,7 @@ document.querySelector("#take-control").addEventListener("click", async () => {
   }
 });
 document.querySelector("#logout").addEventListener("click", async () => {
+  clearNetworkPassword();
   disconnect();
   try {
     account = await api("/api/v1/session", "DELETE");
@@ -549,7 +557,7 @@ document.querySelector("#network-settings").addEventListener("click", async () =
   await pollNetwork();
 });
 document.querySelector("#network-back").addEventListener("click", () => {
-  document.querySelector("#wifi-password").value = "";
+  clearNetworkPassword();
   currentView = "keyboard";
   if (networkTimer !== null) clearTimeout(networkTimer);
   networkTimer = null;

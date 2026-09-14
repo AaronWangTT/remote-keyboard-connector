@@ -59,13 +59,15 @@ async function networkRequest(request, response) {
   const value = scan ? { action: "scan" } : await jsonBody(request);
   if (!value || typeof value !== "object" || Array.isArray(value)) return sendJson(response, 400, { error: "invalid_network_request" });
   const fields = value.action === "connect" ? ["action", "ssid", "ssid_hex", "password"] : value.action === "rename" ? ["action", "hostname"] : ["action"];
-  const textSsid = typeof value.ssid === "string";
+  const hasTextSsid = Object.hasOwn(value, "ssid");
+  const hasEncodedSsid = Object.hasOwn(value, "ssid_hex");
+  const textSsid = typeof value.ssid === "string" && Buffer.byteLength(value.ssid) >= 1 && Buffer.byteLength(value.ssid) <= 32;
   const encodedSsid = typeof value.ssid_hex === "string" && /^(?:[0-9a-fA-F]{2}){1,32}$/.test(value.ssid_hex) && !Buffer.from(value.ssid_hex, "hex").includes(0);
   const expectedFields = value.action === "connect" ? 3 : fields.length;
   if (!Object.keys(value).every(key => fields.includes(key)) || Object.keys(value).length !== expectedFields ||
       !["scan", "connect", "ap", "station", "forget", "rename", "cancel", "confirm"].includes(value.action) ||
       (!scan && value.action === "scan") ||
-      (value.action === "connect" && (textSsid === encodedSsid || (textSsid && (Buffer.byteLength(value.ssid) < 1 || Buffer.byteLength(value.ssid) > 32)) ||
+      (value.action === "connect" && (hasTextSsid === hasEncodedSsid || !(hasTextSsid ? textSsid : encodedSsid) ||
         typeof value.password !== "string" || !/^[\x20-\x7e]{8,63}$/.test(value.password))) ||
       (value.action === "rename" && (typeof value.hostname !== "string" || value.hostname.length > 32 || value.hostname === "localhost" ||
         !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(value.hostname)))) return sendJson(response, 400, { error: "invalid_network_request" });
@@ -295,6 +297,7 @@ const server = createServer(async (request, response) => {
     const value = await credentialsBody(request, claim).catch(() => null);
     if (!value) return sendJson(response, 400, { error: "invalid_credentials" });
     if (claim) {
+      if (claimed) return sendJson(response, 409, { error: "already_claimed" });
       if (value.setup_code !== setupCode) return sendJson(response, 401, { error: "invalid_setup_code" });
       ownerHash = passwordHash(value.password);
       claimed = true;

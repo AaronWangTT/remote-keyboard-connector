@@ -133,13 +133,17 @@ static void job_result(const char *job, const char *error, bool busy)
 static esp_err_t load_configuration(void)
 {
     saved = (network_config_t){.version = 1, .hostname = "kb"};
+    active_slot = 0;
     nvs_handle_t handle;
     esp_err_t result = nvs_open("kb_network", NVS_READONLY, &handle);
     if (result == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
     if (result != ESP_OK) return result;
     result = nvs_get_u8(handle, "active", &active_slot);
     if (result == ESP_ERR_NVS_NOT_FOUND) result = ESP_OK;
-    else if (result == ESP_OK && active_slot > 1) result = ESP_ERR_INVALID_STATE;
+    else if (result == ESP_OK && active_slot > 1) {
+        active_slot = 0;
+        result = ESP_ERR_INVALID_STATE;
+    }
     else if (result == ESP_OK) {
         network_config_t record = {0};
         size_t length = sizeof(record);
@@ -500,6 +504,10 @@ static void run_command(const network_command_t *command)
     } else {
         network_state_init(&state, false, now);
         result = configure_driver(true, false, &saved);
+        if (result != ESP_OK) {
+            recovery("configuration_failed", false);
+            return;
+        }
     }
     job_result(result == ESP_OK ? "succeeded" : "failed", result == ESP_OK ? "" : "configuration_failed", false);
 }

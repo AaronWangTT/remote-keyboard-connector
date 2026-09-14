@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { mkdir } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { chromium, webkit, expect } from "@playwright/test";
@@ -60,6 +61,10 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   assert.equal(combined.network.ap_active, true);
   assert.equal((await submit({ action: "cancel" })).status, 409);
   assert.equal((await submit({ action: "rename", hostname: "kb.local" })).status, 400);
+  for (const fields of [{}, { ssid: 42 }, { ssid: "" }, { ssid_hex: 42 }, { ssid_hex: "zz" }, { ssid_hex: "00" },
+    { ssid: "Home Wi-Fi", ssid_hex: "zz" }, { ssid: 42, ssid_hex: "486f6d65" }, { ssid: "Home", ssid_hex: "486f6d65" }]) {
+    assert.equal((await submit({ action: "connect", ...fields, password: "test-router-password" })).status, 400);
+  }
   assert.equal((await fetch(endpoint, { method: "POST", headers: { ...headers, "X-CSRF-Token": "bad" }, body: '{"action":"ap"}' })).status, 403);
   assert.equal((await fetch(new URL("/api/v1/network/scan", url), { method: "POST", headers })).status, 202);
   await expect.poll(async () => (await status()).scan.length).toBe(5);
@@ -338,10 +343,20 @@ test("browser owner setup keeps credentials local and requires explicit control 
   await page.reload();
   await expect(page.locator("#take-control")).toBeVisible();
   await expect(key).toBeDisabled();
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Sign in", exact: true })).toBeVisible();
-  await page.getByLabel("Owner password", { exact: true }).fill("recipient-chosen-password");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  for (const ending of ["logout", "poll", "session-refresh"]) {
+    await page.getByRole("button", { name: "Network settings", exact: true }).click();
+    await page.getByLabel("Join Wi-Fi", { exact: true }).check();
+    await page.getByLabel("Wi-Fi password", { exact: true }).fill("discard-this-candidate");
+    if (ending === "logout") await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    else {
+      await page.context().clearCookies();
+      if (ending === "session-refresh") await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    }
+    await expect(page.getByRole("heading", { name: "Sign in", exact: true })).toBeVisible();
+    await expect(page.locator("#wifi-password")).toHaveValue("");
+    await page.getByLabel("Owner password", { exact: true }).fill("recipient-chosen-password");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  }
   await takeControl(page);
 });
 
@@ -368,9 +383,23 @@ test("one-time claim changes owner credentials and cannot be reused", { timeout:
     body: JSON.stringify({ setup_code: setupCode, password: "recipient-chosen-password" }),
   });
   assert.equal((await claim("000000000000000000000000")).status, 401);
+  const delayedBody = JSON.stringify({ setup_code: "0123456789abcdef01234567", password: "competing-owner-password" });
+  const delayedClaim = httpRequest(new URL("/api/v1/claim", url), {
+    method: "POST", headers: { Origin: url, "Content-Type": "application/json", Expect: "100-continue", "Content-Length": Buffer.byteLength(delayedBody) },
+  });
+  context.after(() => delayedClaim.destroy());
+  const ready = once(delayedClaim, "continue");
+  const delayedResponse = once(delayedClaim, "response");
+  delayedClaim.flushHeaders();
+  await ready;
   const successful = await claim("0123456789abcdef01234567");
   assert.equal(successful.status, 200);
   assert.equal((await successful.json()).authenticated, true);
+  delayedClaim.end(delayedBody);
+  const [rejected] = await delayedResponse;
+  assert.equal(rejected.statusCode, 409);
+  assert.equal(rejected.headers["set-cookie"], undefined);
+  rejected.resume();
   assert.equal((await claim("0123456789abcdef01234567")).status, 409);
   await loginRequest(url, "recipient-chosen-password");
 });
