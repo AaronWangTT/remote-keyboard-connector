@@ -42,6 +42,8 @@ jobs:
       - name: Build firmware from committed defaults
         run: |
           source "$IDF_PATH/export.sh"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git rev-parse --verify HEAD
           mkdir -p .cache/ci
           idf.py build 2>&1 | tee .cache/ci/firmware-build.log
           git diff --exit-code -- dependencies.lock

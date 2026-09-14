@@ -40,6 +40,13 @@ ESP-IDF image and sources `$IDF_PATH/export.sh` for SDK commands; the browser
 job runs directly on the hosted runner. Each `bash` step fails on failed pipeline
 commands even when their output is also being captured with `tee`.
 
+After activating ESP-IDF, the firmware job adds only `$GITHUB_WORKSPACE` to Git's
+`safe.directory` entries in the disposable container and verifies `HEAD` before
+building. The mounted checkout can have a different owner from the container
+user. This scoped exception preserves Git access for project version detection,
+dependency-lock checks, and the summary; it does not trust every directory or
+change developers' Git identities or local configuration.
+
 | Dependency | Immutable reference used |
 | --- | --- |
 | `actions/checkout` v5 | `fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09` |
@@ -149,8 +156,22 @@ Local validation passed on 2026-09-14:
   application partition. The merged BIN is `0xe7ff0` bytes (950,256 bytes).
 
 Docker/Podman is unavailable in this workspace, so the pinned container,
-GitHub runner setup, browser dependency installation, artifact uploads, and
-event/concurrency behavior require validation through the introduction PR.
-Local results do not establish a hosted pass. Inspect both GitHub job results
-and their artifacts before enabling required status checks or merging; retain
-the existing PR rule with zero reviewer approvals throughout the rollout.
+GitHub runner setup, artifact uploads, and event/concurrency behavior require
+hosted validation. Local results do not establish a hosted pass.
+
+The [first PR run](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34860547440)
+on 2026-09-14 passed Browser Integration, including standard browser dependency
+installation and diagnostic upload. The firmware compiled successfully to
+`0xd7ff0` bytes, but the build step then failed at `git diff --exit-code` with
+exit 129. Earlier Git diagnostics reported dubious ownership of the mounted
+checkout. Native tests and packaging were skipped; firmware compilation alone
+did not pass the entire job.
+
+The fix explicitly trusts the exact workspace path in the container before any
+build Git operations. An isolated local regression test reproduced the ownership
+error, then verified `git rev-parse --verify HEAD` and the lockfile diff pass
+with that exact-path exception. The real user Git configuration was untouched;
+actionlint and whitespace checks also passed. The updated workflow still needs
+a hosted rerun to validate the remaining firmware steps. Inspect both jobs and
+their artifacts before enabling required status checks or merging; retain the
+existing PR rule with zero reviewer approvals throughout the rollout.
