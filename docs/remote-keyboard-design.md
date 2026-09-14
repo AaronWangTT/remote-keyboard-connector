@@ -54,8 +54,9 @@ station modes are both included. Authentication and stuck-key protection are
 part of the initial implementation, not optional additions.
 
 Mouse emulation, BLE HID, USB networking, screen streaming, macros, arbitrary
-text/Unicode injection, clipboard transfer, media/system-control reports,
-Internet remote access, OTA updates, and multi-host switching are out of scope.
+text/Unicode injection, voice input and dictation, clipboard transfer,
+media/system-control reports, Internet remote access, OTA updates, and multi-host
+switching are out of scope.
 
 ## 2. Architecture
 
@@ -443,6 +444,140 @@ credential writes, Wi-Fi scans, or unbounded allocations.
 - Show reconnecting/disarmed/busy states and an always-available release/stop
   command. Reconnection never resumes a previous hold automatically.
 
+### Input-Source And Cancel Layout
+
+Decision recorded 2026-09-14 (not yet implemented): place Globe at the left and
+Cancel at the right, adapting their row to the controller viewport:
+
+| Controller layout | Control placement |
+| --- | --- |
+| Phone portrait | Keep `123`/`ABC`, Space, and Return in their keycap row. Put Globe and Cancel in a separate utility strip below it. |
+| Landscape | Move both controls inline with the Space row: Globe, `123`/`ABC`, Space, Return, Cancel. Do not retain an empty utility strip below it. |
+
+Choose the responsive layout from the controller's available viewport dimensions,
+independently of the USB host shortcut profile. Keep both controls available on
+letters, numbers, and symbols pages. Respect bottom and side safe-area insets and
+provide at least 44-by-44 CSS-pixel hit targets in both orientations. Use locally
+embedded Lucide icons with accessible labels and hover tooltips; do not shrink
+the typing keys below their existing minimum sizes to fit these controls.
+
+The [historical iPhone X landscape reference](https://forums.macrumors.com/threads/iphone-x-landscape-keyboard.2068622/)
+illustrates the inline arrangement. Apple's [keyboard settings guide](https://support.apple.com/guide/iphone/adjust-keyboard-settings-ipha7c3927eb/ios)
+also documents landscape typing in supported apps, but does not specify each
+control's position. These references are not a current-iPhone hardware test;
+compare exact placement with a named iPhone/iOS version at the real-device UI gate.
+
+Voice input and dictation are excluded, not deferred for an experiment. The
+Cancel control replaces the proposed microphone position; no microphone button,
+microphone permission, speech service, or transcript-to-HID pipeline is planned.
+
+The globe switches the USB host's input source; it does not switch the web
+keyboard's visible layout. The controller uses a user-configurable host type,
+defaulting to iOS (iPhone/iPad). This is a product default, not a detected host
+identity. Standard keyboard HID has no reliable host-OS query, and the current
+host output report only carries keyboard LED state. USB device
+descriptors identify this keyboard, not the computer it is plugged into.
+Browser properties such as `navigator.userAgent` or `navigator.platform` describe
+the controller, which may be an iPhone controlling a Windows USB host; they must
+not select the host shortcut. The host's active input source is also unknown.
+
+Agreed 2026-09-14: offer only iOS and Windows host profiles in this increment,
+with iOS selected by default. Linux, macOS, and custom profiles are deferred.
+This limits Globe's host profiles, not the controller browsers or the broader
+USB-host compatibility roadmap.
+
+| Host type | Globe command | Notes |
+| --- | --- | --- |
+| iOS (iPhone/iPad), default | Control+Space | Covers iOS/iPadOS external-keyboard input-source switching; verify on each target device and OS version. |
+| Windows | GUI+Space | Uses the Windows-key modifier and Space; verify that host policy has not changed or disabled the shortcut. |
+
+On first use with no saved preference, preselect iOS without a mandatory host
+selection dialog. A Globe tap sends its preset when the normal control and USB
+readiness gates permit input. Keep the host-type setting editable and retain a
+saved selection across reloads and reconnects rather than resetting it to iOS.
+Loading the page or changing the host setting must never send a chord. An invalid
+or unsupported saved profile must not silently fall back or emit input; require
+a valid selection instead. A remembered host type is a user preference and must
+be updated when the board moves to a different host type. USB-enumeration
+fingerprinting is heuristic and is not part of this design.
+
+The code cannot determine the host's current input language, installed language
+list, or active IME from keyboard HID. Host type selects only the shortcut to
+send, not a language. Keep Globe stateless: do not track an assumed language,
+toggle an English/Chinese label, count taps to predict the host's input source,
+or change the visible key map after a switch request. The host may change its
+input source independently, and its shortcuts may be customized or unavailable.
+Browser locale properties such as `navigator.language` describe the controller,
+not the USB host. Caps Lock LEDs and queued acknowledgements are not language
+feedback. The host alone interprets the HID key positions into text.
+
+Use `Key map: US ANSI` for the layout label rather than presenting `English (US)`
+as the active host language. A host-type setting may show the configured profile,
+but do not display a confirmed active-language indicator or language-switch
+success state. Implementation tests must cover the fresh iOS default, a retained
+Windows override, rejected unsupported profiles, and no inferred language or
+key-map change after Globe, status updates, or reconnection.
+
+Invoking the globe must first cancel pointer and physical holds and establish a
+neutral report. It then sends the configured shortcut as an ordered chord-down
+and all-keys-up pair. A disconnect, timeout, or send failure still prioritizes a
+neutral report. The current implemented modifier allowlist accepts only left and
+right Shift, so this feature requires narrowly adding the selected Control or GUI
+modifier and testing that physical browser shortcuts remain excluded. A queued
+acknowledgement does not prove that the host changed languages, and the UI must
+not claim to know the host's active language. The US-ANSI key map remains unchanged
+regardless of the language selected by the host.
+
+The Cancel control is intended to reject an unwanted autocorrection or dismiss
+a pending suggestion on an iPhone/iPad acting as the USB host. It does not act on
+the controller's native keyboard or change its autocorrection settings. The
+proposed action is an unmodified Escape tap (Keyboard/Keypad page `0x07`, usage
+`0x29`), represented by a Lucide `x` icon with the label `Cancel (Escape)`.
+Escape's effect on autocorrection is a real-host validation question, not a
+confirmed cross-version iOS/iPadOS behavior.
+
+Keep these cases distinct:
+
+- **Pending suggestion:** verify whether Escape dismisses it and preserves the
+  original spelling when Space or Return is subsequently pressed.
+- **Already-applied correction:** Escape is not a guaranteed undo operation.
+  Apple's onscreen-keyboard guides describe tapping the corrected, underlined
+  word and selecting the original spelling. This keyboard-only USB interface
+  cannot perform that touch action or inspect the host's text. Do not silently
+  substitute Command+Z or a Backspace sequence; either could undo or delete
+  unrelated input. A reliable remote revert would need a separately verified
+  host-specific action before it can be promised.
+- **No suggestion:** the host may interpret Escape as dismissing a menu, dialog,
+  or another app action. The browser cannot detect this context or confirm that
+  a correction was cancelled; do not present a success indicator for that claim.
+
+Cancel is distinct from Release All Keys: it sends a host key action, does not
+close the controller page or disconnect, and does not disable autocorrection
+globally. Clear held inputs and one-shot modifiers and establish a neutral
+report before sending exactly one Escape-down/all-keys-up pair per activation.
+Do not carry Shift or the globe's Control/GUI modifiers into Escape, repeat it
+while held, or replay it after reconnection. Existing disconnect, timeout, and
+priority-release behavior still applies.
+
+The implemented typing allowlist currently excludes Escape. Implementation must
+add that usage to the on-screen mapping, firmware validation, and preview mock
+with focused model/parser/report tests; the full-state protocol shape and USB
+descriptor need not change. Adding this on-screen action does not implicitly
+authorize forwarding physical browser shortcuts or add a computer-key panel.
+
+Gate: check single activation, modifier isolation, release ordering, cancellation,
+and reconnect behavior in the existing tests, then validate the controls' separate
+portrait strip and inline landscape row on all supported viewports and build the
+firmware. Check rotation in both directions on every keyboard page, with safe
+areas and held input: clear holds and one-shot modifiers during rearrangement,
+preserve the selected keyboard page and host shortcut profile, and never generate
+a Globe or Escape action merely from rotation. Verify one accessible instance of
+each control, minimum touch targets, and no overlapping or clipped keys.
+On named real iPhone/iPad hosts, separately test a pending suggestion, an applied
+correction, and no suggestion in Notes and a Safari text field. Record OS version,
+input language, and hardware-keyboard autocorrection settings. These checks are
+pending; a browser mock or firmware build cannot establish autocorrection support.
+
 ## 10. Storage and Resource Budgets
 
 Store only Wi-Fi mode/credentials, owner verifier, device identity, TLS material,
@@ -520,7 +655,12 @@ hardware notes updated with measured results; do not mark proposed checks passed
   power circuitry, and recovery button/UART must be confirmed before flashing
   a board-specific HID image, not before reviewing this design.
 - One controller, US ANSI mapping, and explicit arming are the proposed initial
-  behavior. Additional layouts and media keys need a separate scope decision.
+  behavior. The globe is a host input-source command rather than an additional
+  layout; its host profile and shortcuts need real-host validation. Additional
+  visual layouts and media keys need a separate scope decision.
+- The Cancel icon's placement is selected, but whether Escape rejects the desired
+  iPhone/iPad autocorrection state requires real-host validation. Reverting an
+  already-applied correction is not guaranteed by the proposed Escape action.
 - Choose how per-device secrets and the owner CA/certificates are delivered
   privately. Operational network trust must be practical on both desktop and
   Apple mobile browsers; this is not implied by USB compatibility.
@@ -533,6 +673,8 @@ hardware notes updated with measured results; do not mark proposed checks passed
 - [ESP-IDF v6.1 TinyUSB HID Example](https://github.com/espressif/esp-idf/tree/v6.1/examples/peripherals/usb/device/tusb_hid)
 - [ESP-IDF v6.1 HTTP Server and WebSocket APIs](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/api-reference/protocols/esp_http_server.html)
 - [ESP-IDF v6.1 HTTPS Server](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/api-reference/protocols/esp_https_server.html)
+- [Apple iPhone typing and autocorrection guide](https://support.apple.com/guide/iphone/type-with-the-onscreen-keyboard-iph3c50f96e/ios)
+- [Apple iPad typing and autocorrection guide](https://support.apple.com/guide/ipad/type-with-the-onscreen-keyboard-ipad997da459/ipados)
 - [Development Setup](development-setup.md)
 - [Hardware Identification Checklist](../hardware/README.md)
 
