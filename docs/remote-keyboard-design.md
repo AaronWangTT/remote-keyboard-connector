@@ -4,16 +4,21 @@ Version: 0.1 | Date: 2026-09-14 | Status: Draft for review
 
 This document specifies the broader proposed product, not a claim that all of
 it is implemented. The [keyboard enhancement](keyboard-enhancement-plan.md)
-builds with ESP-IDF v6.1: default AP, an unauthenticated iPhone-style US typing
-page, and a six-key USB report service with Shift and Caps Lock feedback. Native
-and Chromium/WebKit checks pass. On 2026-09-14 the user confirmed successful
-board operation with both the separate-image ZIP and merged BIN, recorded as a
+established the iPhone-style US typing page and six-key USB report service with
+Shift and Caps Lock feedback. The [Wi-Fi enhancement](wifi-enhancement-plan.md)
+now adds AP/STA, mDNS, owner claim/login, and explicit control in an HTTP/WS
+development profile. Native and Chromium/WebKit checks and the ESP-IDF v6.1
+build pass; device provisioning and the new hardware checks remain pending.
+On 2026-09-14 the user confirmed operation of the earlier keyboard-only firmware
+with both the separate-image ZIP and merged BIN, recorded as a
 [user-reported hardware smoke-test pass](../hardware/README.md#hardware-test-status).
 Detailed safety, power, and host/controller compatibility tests remain pending;
-the broad acceptance matrix below is not fully signed off. Authentication,
-Wi-Fi provisioning, the computer-key panel, and operational TLS remain outside
-the current increment. See the [development setup guide](development-setup.md)
-for the verified tools.
+the broad acceptance matrix below is not fully signed off. Sender provisioning
+writes and physical recovery still require board verification. The computer-key
+panel is not added; HTTPS/WSS and encrypted storage remain lower-priority follow-up
+work rather than gates for the agreed HTTP/WS increment. The operational profile
+below remains a longer-term security target. See the
+[development setup guide](development-setup.md) for the verified tools.
 
 ## 1. Product Goal
 
@@ -167,6 +172,10 @@ promise to bypass host security restrictions or support every OS shortcut.
 
 ## 4. Wi-Fi Modes and Provisioning
 
+The [Wi-Fi enhancement plan](wifi-enhancement-plan.md) defines the next
+implementation increment, including the preferred `kb.local` name in AP and STA
+modes, temporary AP+STA recovery, and pending validation gates.
+
 Support 2.4 GHz WPA2-Personal networks initially. WPA3-Personal can be enabled
 after compatibility tests; enterprise Wi-Fi, open networks, and upstream captive
 portals are outside version 1. Select the correct regulatory country/channel
@@ -177,7 +186,7 @@ configuration rather than hard-coding unrestricted channels.
 | Initial setup | Start a password-protected setup AP when no station credentials exist. If per-device setup secrets have not been provisioned, remain in local service mode rather than opening an unsecured AP. |
 | AP operation | User explicitly keeps standalone AP mode. Serve setup and keyboard pages at the AP address; no router or Internet needed. |
 | STA connecting | Try the saved network with bounded backoff for up to 30 seconds; input is disarmed until network and USB are ready. |
-| STA operation | Use DHCP, serve the keyboard on the LAN, and advertise a unique hostname such as `wifi-kbd-ab12.local`. |
+| STA operation | Use DHCP, serve the keyboard on the LAN, and prefer `kb.local`; handle name conflicts and display the effective hostname. |
 | STA recovery | On sustained loss, revoke control and retry. After the connection deadline, offer the protected recovery AP without deleting known-good credentials. |
 | Credential change | Require owner authentication, disarm, and temporarily use AP+STA to test the candidate network. Commit only after association and a DHCP lease succeed. |
 

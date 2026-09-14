@@ -4,11 +4,13 @@
   "type": "module",
   "scripts": {
     "preview": "node preview.mjs",
-    "test": "node --test preview.test.mjs"
+    "test": "node --test preview.test.mjs provision-device.test.mjs",
+    "test:native": "node test-native.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
     "lucide-static": "1.46.0",
+    "qrcode": "1.5.4",
     "ws": "8.21.3"
   }
 }

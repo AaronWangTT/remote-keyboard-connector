@@ -1,10 +1,11 @@
-menu "Minimal keyboard prototype"
+menu "Wi-Fi keyboard networking"
 
-    config MINIMAL_AP_PASSWORD
-        string "Development AP password"
-        default "a-key-test-only"
+    config KEYBOARD_HTTP_DEVELOPMENT
+        bool "Allow authenticated HTTP/WS for isolated development"
+        default n
         help
-            Public development default, not an owner credential. Use only with
-            an isolated, non-sensitive test host. Must be 8 to 63 characters.
+            Requires unique sender-provisioned AP and owner setup credentials.
+            HTTP/WS does not protect credentials or input against interception.
+            Use only on protected personal test networks with non-sensitive hosts.
 
 endmenu

@@ -14,19 +14,110 @@
       <div class="identity">
         <h1>Wi-Fi Keyboard</h1>
         <div class="statuses" role="status" aria-live="polite">
-          <span id="connection-status" class="status">Connecting</span>
+          <span id="connection-status" class="status">Loading</span>
           <span id="usb-status" class="status">USB waiting</span>
         </div>
       </div>
-      <button id="release" class="tool-button" type="button" aria-label="Release all keys" title="Release all keys">
-        <span class="icon" data-icon="release" aria-hidden="true"></span>
-      </button>
+      <div class="header-actions">
+        <button id="take-control" class="command-button" type="button" hidden>Take Control</button>
+        <button id="release" class="tool-button" type="button" aria-label="Release all keys" title="Release all keys" hidden>
+          <span class="icon" data-icon="release" aria-hidden="true"></span>
+        </button>
+        <button id="network-settings" class="tool-button neutral" type="button" aria-label="Network settings" title="Network settings" hidden>
+          <span class="icon" data-icon="settings" aria-hidden="true"></span>
+        </button>
+        <button id="logout" class="tool-button neutral" type="button" aria-label="Sign out" title="Sign out" hidden>
+          <span class="icon" data-icon="logout" aria-hidden="true"></span>
+        </button>
+      </div>
     </header>
-    <section id="keyboard" class="keyboard-surface" aria-label="Remote keyboard" tabindex="0">
+    <div class="workspace-content">
+      <p id="ui-message" class="inline-message" role="alert" hidden></p>
+      <section id="account-view" class="account-panel" aria-labelledby="account-title">
+        <h2 id="account-title">Sign in</h2>
+        <form id="account-form">
+          <div id="setup-code-field" class="field" hidden>
+            <label for="setup-code">Owner setup code</label>
+            <input id="setup-code" type="password" minlength="24" maxlength="24" pattern="[a-f0-9]{24}" autocomplete="one-time-code" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="owner-password">Owner password</label>
+            <div class="password-field">
+              <input id="owner-password" type="password" minlength="12" maxlength="128" autocomplete="current-password" required>
+              <button class="tool-button neutral" type="button" data-password-toggle="owner-password" aria-label="Show password" title="Show password"><span class="icon" data-icon="eye" aria-hidden="true"></span></button>
+            </div>
+          </div>
+          <div id="password-confirm-field" class="field" hidden>
+            <label for="owner-password-confirm">Confirm owner password</label>
+            <input id="owner-password-confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password">
+          </div>
+          <button id="account-submit" class="command-button" type="submit" disabled>Sign in</button>
+          <button id="session-retry" class="command-button secondary" type="button" hidden>Retry connection</button>
+        </form>
+      </section>
+      <section id="network-view" class="network-panel" aria-labelledby="network-title" hidden>
+        <div class="view-heading">
+          <h2 id="network-title">Network</h2>
+          <button id="network-back" class="tool-button neutral" type="button" aria-label="Back to keyboard" title="Back to keyboard"><span class="icon" data-icon="back" aria-hidden="true"></span></button>
+        </div>
+        <dl class="network-facts">
+          <dt>Connection</dt><dd id="network-phase">Loading</dd>
+          <dt>Browser address</dt><dd id="network-name">kb.local</dd>
+          <dt>AP address</dt><dd id="network-ap-address">-</dd>
+          <dt>LAN address</dt><dd id="network-station-address">-</dd>
+          <dt>Saved network</dt><dd id="network-saved">None</dd>
+        </dl>
+        <p id="network-job-status" class="job-status" role="status" aria-live="polite">Loading</p>
+        <div class="network-job-actions">
+          <button id="network-confirm" class="command-button" type="button" hidden>Switch to Wi-Fi</button>
+          <button id="network-cancel" class="command-button secondary" type="button" hidden>Cancel</button>
+          <button id="network-retry" class="command-button secondary" type="button" hidden>Refresh status</button>
+        </div>
+        <form id="network-form">
+          <fieldset class="mode-selector">
+            <legend>Connection mode</legend>
+            <div class="mode-options">
+              <label><input type="radio" name="network-mode" value="ap" checked><span>Standalone AP</span></label>
+              <label><input type="radio" name="network-mode" value="station"><span>Join Wi-Fi</span></label>
+            </div>
+          </fieldset>
+          <div id="station-fields" class="field-group" hidden>
+            <div class="field">
+              <label for="wifi-network">Nearby networks</label>
+              <div class="scan-field">
+                <select id="wifi-network"><option value="">Manual entry</option></select>
+                <button id="network-scan" class="tool-button neutral" type="button" aria-label="Scan networks" title="Scan networks"><span class="icon" data-icon="refresh" aria-hidden="true"></span></button>
+              </div>
+            </div>
+            <div class="field"><label for="wifi-ssid">Network name (SSID)</label><input id="wifi-ssid" maxlength="32" autocomplete="off" spellcheck="false"></div>
+            <div class="field">
+              <label for="wifi-password">Wi-Fi password</label>
+              <div class="password-field">
+                <input id="wifi-password" type="password" minlength="8" maxlength="63" autocomplete="off">
+                <button class="tool-button neutral" type="button" data-password-toggle="wifi-password" aria-label="Show Wi-Fi password" title="Show Wi-Fi password"><span class="icon" data-icon="eye" aria-hidden="true"></span></button>
+              </div>
+            </div>
+            <button id="network-use-saved" class="command-button secondary" type="button" hidden>Connect saved network</button>
+          </div>
+          <button id="network-apply" class="command-button" type="submit">Use Standalone AP</button>
+        </form>
+        <form id="hostname-form">
+          <div class="field"><label for="network-hostname">Local hostname</label><div class="hostname-field"><input id="network-hostname" value="kb" maxlength="32" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" autocomplete="off" spellcheck="false" required><span>.local</span></div></div>
+          <button class="command-button secondary" type="submit">Save name</button>
+        </form>
+        <div class="network-footer"><button id="forget-network" class="command-button danger" type="button" hidden>Forget network</button></div>
+      </section>
+    <section id="keyboard" class="keyboard-surface" aria-label="Remote keyboard" tabindex="0" hidden>
       <div class="keyboard-meta"><span>English (US)</span><span id="caps-status" role="status">Caps unknown</span></div>
       <div id="key-rows" data-page="letters"></div>
     </section>
-    <footer><span>Local AP</span><output id="key-state">Released</output><span>Prototype</span></footer>
+    </div>
+    <footer><span id="network-summary">Local AP</span><output id="key-state">Released</output><span>HTTP/WS development</span></footer>
   </main>
+  <dialog id="forget-dialog" aria-labelledby="forget-title">
+    <h2 id="forget-title">Forget saved network?</h2>
+    <p id="forget-ssid"></p>
+    <div class="dialog-actions"><button id="forget-dismiss" class="command-button secondary" type="button">Cancel</button><button id="forget-confirm" class="command-button danger" type="button">Forget network</button></div>
+  </dialog>
 </body>
 </html>
