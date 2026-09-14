@@ -81,8 +81,10 @@ The firmware artifact is named `firmware-<pr-test|branch-build>-<SHA>-<attempt>`
 and contains `firmware-package.zip`, its checksum, `firmware-merged.bin`, its
 checksum, and the Markdown build summary with checked-out commit and size data.
 The workflow also publishes separate firmware-log and browser-diagnostic
-artifacts, including available screenshots. Diagnostic uploads run even after
-earlier failures; validated firmware is uploaded only after successful checks.
+artifacts, including available screenshots. Firmware summaries and diagnostic
+uploads use `if: ${{ !cancelled() }}`: they run after earlier failures but skip
+canceled runs, so they do not keep superseded jobs alive. Validated firmware is
+uploaded only after successful checks.
 
 The existing packager is reused without changing its format. esptool merges the
 build-generated image list in `flash_args`, and SHA-256 checksums identify the
@@ -156,7 +158,7 @@ Local validation passed on 2026-09-14:
 Docker/Podman was unavailable for local validation. The hosted runs below
 subsequently exercised the pinned container, GitHub runner setup, standard
 browser installation, and artifact uploads. Local results alone did not
-establish that hosted pass.
+establish that the hosted jobs would pass.
 
 The [first PR run](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34860547440)
 on 2026-09-14 passed Browser Integration, including standard browser dependency

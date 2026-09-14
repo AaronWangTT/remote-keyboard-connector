@@ -63,7 +63,7 @@ jobs:
           sha256sum firmware-merged.bin > firmware-merged.bin.sha256
 
       - name: Summarize firmware build
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p .cache/ci
           {
@@ -99,7 +99,7 @@ jobs:
           retention-days: 14
 
       - name: Upload firmware diagnostics
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: firmware-logs-${{ github.sha }}-${{ github.run_attempt }}
@@ -144,7 +144,7 @@ jobs:
         run: npm --prefix tools test 2>&1 | tee .cache/ci/browser-tests.log
 
       - name: Upload browser diagnostics
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: browser-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
