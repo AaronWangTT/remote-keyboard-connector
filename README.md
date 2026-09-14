@@ -127,11 +127,14 @@ Successful firmware jobs upload the separate-image ZIP and merged BIN with
 checksums and a build summary. Available logs/screenshots are retained for
 diagnosis, including failures; artifact retention is 14 days.
 
-The workflow is locally validated but still needs its first hosted PR run.
-Required CI checks have not yet been added to `main`'s ruleset. After both jobs
-pass on GitHub, require those check names while retaining the existing PR policy
-with zero reviewer approvals. See the proposal for the rollout, security
-boundaries, exact pins, and what remains unverified.
+The [first hosted PR run](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34860547440)
+passed Browser Integration but failed the firmware job's post-build Git check
+because of container checkout ownership. After an exact-workspace trust fix,
+the [rerun](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34861221888)
+passed both jobs, including native tests, packaging, and artifact uploads.
+Required CI checks have not yet been added to `main`'s ruleset; that rollout
+remains pending and must preserve zero reviewer approvals. See the proposal for
+the validation record, security boundaries, and rollout steps.
 
 ## Current Layout
 

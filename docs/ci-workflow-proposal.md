@@ -1,7 +1,7 @@
 # CI Workflow Setup Proposal
 
 Date: 2026-09-14
-Status: implemented and locally validated on `ci/github-actions`; hosted PR validation required.
+Status: hosted PR validation passed; required-check rollout pending.
 
 ## Objective
 
@@ -9,10 +9,8 @@ Require a pull request and successful automated checks before merging to `main`,
 without requiring a reviewer. Reuse the existing firmware and browser tests;
 do not add firmware features, automatic flashing, deployment, or releases.
 
-The repository is `AaronWangTT/remote-keyboard-connector`. Remote operations must
-use the user-confirmed `AaronWangTT` account; local commits use
-`yv.wang@yahoo.com`. CI itself uses GitHub Actions with read-only repository
-permissions, not a personal access token or another user account.
+CI uses the repository-scoped GitHub Actions token with read-only repository
+permissions. No personal access token or signed-in developer account is required.
 
 ## Workflow
 
@@ -155,9 +153,10 @@ Local validation passed on 2026-09-14:
   `0xd7ff0` bytes (884,720 bytes), with `0x28010` bytes (16%) free in the default
   application partition. The merged BIN is `0xe7ff0` bytes (950,256 bytes).
 
-Docker/Podman is unavailable in this workspace, so the pinned container,
-GitHub runner setup, artifact uploads, and event/concurrency behavior require
-hosted validation. Local results do not establish a hosted pass.
+Docker/Podman was unavailable for local validation. The hosted runs below
+subsequently exercised the pinned container, GitHub runner setup, standard
+browser installation, and artifact uploads. Local results alone did not
+establish that hosted pass.
 
 The [first PR run](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34860547440)
 on 2026-09-14 passed Browser Integration, including standard browser dependency
@@ -171,7 +170,25 @@ The fix explicitly trusts the exact workspace path in the container before any
 build Git operations. An isolated local regression test reproduced the ownership
 error, then verified `git rev-parse --verify HEAD` and the lockfile diff pass
 with that exact-path exception. The real user Git configuration was untouched;
-actionlint and whitespace checks also passed. The updated workflow still needs
-a hosted rerun to validate the remaining firmware steps. Inspect both jobs and
-their artifacts before enabling required status checks or merging; retain the
-existing PR rule with zero reviewer approvals throughout the rollout.
+actionlint and whitespace checks also passed.
+
+The [hosted rerun](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34861221888)
+on 2026-09-14 for fix commit `1347451` passed both **Firmware and Native Tests**
+and **Browser Integration**. Firmware compilation, dependency-lock validation,
+native/model tests, ZIP/BIN packaging, summaries, and artifact uploads completed
+successfully. The browser job passed its tests and uploaded its diagnostics.
+The run published the firmware test bundle, firmware logs, and browser
+logs/screenshots for proposed merge commit `f90af8d7e5a1ed619d14d0a1b0957835193d5039`.
+
+Artifact inspection on 2026-09-14 verified the downloaded ZIP and merged BIN
+against their SHA-256 sidecars, ZIP integrity, and every checksum inside the
+extracted package. The build summary records the same proposed merge commit
+and the `0xd7ff0`-byte application with 16% partition space free. Uploaded WebKit
+phone and Chromium desktop screenshots were inspected for rendered keys/icons
+and visible layout issues; neither is a physical-device acceptance result.
+
+Required-check rollout remains pending: these documentation changes do not add
+required status checks or merge the PR. Retain the existing PR rule with zero
+reviewer approvals when enabling the required checks. A hosted CI pass
+is not hardware acceptance; post-merge `main` and manual-dispatch runs also remain
+to be observed after the workflow reaches the default branch.
