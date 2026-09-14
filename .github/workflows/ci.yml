@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  firmware:
+    name: Firmware and Native Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c
+    env:
+      BUILD_KIND: ${{ github.event_name == 'pull_request' && 'pr-test' || 'branch-build' }}
+    steps:
+      - name: Check out proposed changes
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22.23.2'
+          package-manager-cache: false
+
+      - name: Build firmware from committed defaults
+        run: |
+          source "$IDF_PATH/export.sh"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git rev-parse --verify HEAD
+          mkdir -p .cache/ci
+          idf.py build 2>&1 | tee .cache/ci/firmware-build.log
+          git diff --exit-code -- dependencies.lock
+          idf.py size 2>&1 | tee .cache/ci/firmware-size.log
+
+      - name: Run native safety and keyboard model tests
+        run: |
+          source "$IDF_PATH/export.sh"
+          bash tools/test-host.sh 2>&1 | tee .cache/ci/host-tests.log
+
+      - name: Package firmware and merged BIN
+        run: |
+          source "$IDF_PATH/export.sh"
+          node tools/package-firmware.mjs 2>&1 | tee .cache/ci/package.log
+          cd build
+          python -m esptool --chip esp32s3 merge-bin -o firmware-merged.bin "@flash_args" 2>&1 | tee ../.cache/ci/merge.log
+          sha256sum firmware-merged.bin > firmware-merged.bin.sha256
+
+      - name: Summarize firmware build
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p .cache/ci
+          {
+            printf '## Firmware and Native Tests\n\n'
+            printf 'Build type: **%s** (not a release).\n\n' "$BUILD_KIND"
+            printf 'Checked-out commit: `%s`\n\n' "$(git rev-parse HEAD)"
+            printf 'Target: `esp32s3`; ESP-IDF: `v6.1`.\n\n'
+            printf 'No hardware was flashed or tested. A merged BIN writes padded gaps and can replace NVS/settings.\n\n'
+            printf '### Image and Partition Size\n\n```text\n'
+            if [[ -f .cache/ci/firmware-build.log ]]; then
+              grep -F 'Smallest app partition' .cache/ci/firmware-build.log || true
+            fi
+            printf '\n```\n\n'
+            if [[ -f .cache/ci/firmware-size.log ]]; then
+              printf '### Memory Usage\n\n```text\n'
+              cat .cache/ci/firmware-size.log
+              printf '\n```\n'
+            fi
+          } | tee .cache/ci/firmware-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload validated firmware
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: firmware-${{ env.BUILD_KIND }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            build/firmware-package.zip
+            build/firmware-package.zip.sha256
+            build/firmware-merged.bin
+            build/firmware-merged.bin.sha256
+            .cache/ci/firmware-summary.md
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload firmware diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: firmware-logs-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            .cache/ci/*.log
+            .cache/ci/firmware-summary.md
+            build/log/idf_py_*_output_*
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  browser:
+    name: Browser Integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out proposed changes
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22.23.2'
+          package-manager-cache: false
+          cache: npm
+          cache-dependency-path: tools/package-lock.json
+
+      - name: Install locked test dependencies
+        run: |
+          mkdir -p .cache/ci
+          npm ci --prefix tools --ignore-scripts 2>&1 | tee .cache/ci/npm-install.log
+          git diff --exit-code -- tools/package-lock.json
+
+      - name: Install test browsers and system libraries
+        run: |
+          npm exec --prefix tools -- playwright install --with-deps chromium --only-shell 2>&1 | tee .cache/ci/chromium-install.log
+          npm exec --prefix tools -- playwright install --with-deps webkit 2>&1 | tee .cache/ci/webkit-install.log
+
+      - name: Run Chromium and WebKit integration tests
+        run: npm --prefix tools test 2>&1 | tee .cache/ci/browser-tests.log
+
+      - name: Upload browser diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: browser-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            .cache/ci/*.log
+            .cache/tests/*.png
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
