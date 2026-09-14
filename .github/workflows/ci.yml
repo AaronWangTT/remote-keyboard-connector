@@ -54,14 +54,6 @@ jobs:
           source "$IDF_PATH/export.sh"
           bash tools/test-host.sh 2>&1 | tee .cache/ci/host-tests.log
 
-      - name: Package firmware and merged BIN
-        run: |
-          source "$IDF_PATH/export.sh"
-          node tools/package-firmware.mjs 2>&1 | tee .cache/ci/package.log
-          cd build
-          python -m esptool --chip esp32s3 merge-bin -o firmware-merged.bin "@flash_args" 2>&1 | tee ../.cache/ci/merge.log
-          sha256sum firmware-merged.bin > firmware-merged.bin.sha256
-
       - name: Summarize firmware build
         if: ${{ !cancelled() }}
         run: |
@@ -71,7 +63,7 @@ jobs:
             printf 'Build type: **%s** (not a release).\n\n' "$BUILD_KIND"
             printf 'Checked-out commit: `%s`\n\n' "$(git rev-parse HEAD)"
             printf 'Target: `esp32s3`; ESP-IDF: `v6.1`.\n\n'
-            printf 'No hardware was flashed or tested. A merged BIN writes padded gaps and can replace NVS/settings.\n\n'
+            printf 'No hardware was flashed or tested. Artifacts contain separate images only; they do not provision or replace NVS/settings.\n\n'
             printf '### Image and Partition Size\n\n```text\n'
             if [[ -f .cache/ci/firmware-build.log ]]; then
               grep -F 'Smallest app partition' .cache/ci/firmware-build.log || true
@@ -84,15 +76,16 @@ jobs:
             fi
           } | tee .cache/ci/firmware-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload validated firmware
+      - name: Upload built firmware
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: firmware-${{ env.BUILD_KIND }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
-            build/firmware-package.zip
-            build/firmware-package.zip.sha256
-            build/firmware-merged.bin
-            build/firmware-merged.bin.sha256
+            build/esp32s3_starter.bin
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build/flasher_args.json
+            build/flash_args
             .cache/ci/firmware-summary.md
           include-hidden-files: true
           if-no-files-found: error

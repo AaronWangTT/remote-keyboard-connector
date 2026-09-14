@@ -42,22 +42,6 @@ The target defaults to `esp32s3`. A successful build produces
 to use the generated compilation database; the setup guide explains how to
 apply that setting after a fresh clone.
 
-## Local Flash Package
-
-To package the latest build for flashing on a separate Windows machine:
-
-```bash
-idf.py build
-node tools/package-firmware.mjs
-```
-
-This creates `build/firmware-package.zip` and its `.sha256` sidecar. The ZIP
-contains the three images, generated offsets/settings, manifest/checksums,
-dependency lock, and Windows instructions. The packager uses Node.js and the
-build environment's Python standard-library ZIP command; it does not flash or
-erase a device. See the [local flashing guide](docs/flashing-local.md), especially
-the unverified flash settings and native USB recovery requirements.
-
 ## Keyboard Operation
 
 After hardware validation and flashing, the board is configured to start
