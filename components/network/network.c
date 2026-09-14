@@ -44,6 +44,8 @@ static uint32_t lease_address;
 static bool scan_done;
 static bool scanning;
 static bool testing;
+static bool ap_reconnect_pending;
+static bool ap_reconnect_confirmed;
 static bool guarded;
 static bool guard_ap;
 static uint32_t guard_generation;
@@ -301,12 +303,31 @@ static void refresh_snapshot(void)
     portEXIT_CRITICAL(&lock);
 }
 
+static void clear_ap_reconnect(void)
+{
+    ap_reconnect_pending = false;
+    ap_reconnect_confirmed = false;
+    portENTER_CRITICAL(&lock);
+    snapshot.ap_reconnect_ip[0] = '\0';
+    portEXIT_CRITICAL(&lock);
+}
+
 static bool non_overlapping_ap(const esp_netif_ip_info_t *station_info)
 {
     esp_netif_ip_info_t current;
-    esp_netif_get_ip_info(ap_interface, &current);
+    if (esp_netif_get_ip_info(ap_interface, &current) != ESP_OK) {
+        clear_ap_reconnect();
+        return false;
+    }
     if ((current.ip.addr & station_info->netmask.addr) != (station_info->ip.addr & station_info->netmask.addr) &&
-        (current.ip.addr & current.netmask.addr) != (station_info->ip.addr & current.netmask.addr)) return true;
+        (current.ip.addr & current.netmask.addr) != (station_info->ip.addr & current.netmask.addr)) {
+        if (ap_reconnect_pending && state.online) {
+            bool confirming = state.phase == NETWORK_CONFIRMING;
+            job_result(confirming ? "awaiting_confirmation" : "succeeded", "", confirming);
+        }
+        clear_ap_reconnect();
+        return true;
+    }
     const unsigned addresses[][4] = {{192, 168, 4, 1}, {172, 30, 4, 1}, {10, 77, 4, 1}};
     for (size_t index = 0; index < 3; index++) {
         esp_netif_ip_info_t alternative = {0};
@@ -315,15 +336,36 @@ static bool non_overlapping_ap(const esp_netif_ip_info_t *station_info)
         alternative.gw = alternative.ip;
         if ((alternative.ip.addr & station_info->netmask.addr) == (station_info->ip.addr & station_info->netmask.addr) ||
             (alternative.ip.addr & alternative.netmask.addr) == (station_info->ip.addr & alternative.netmask.addr)) continue;
+        char reconnect_ip[16];
+        snprintf(reconnect_ip, sizeof(reconnect_ip), IPSTR, IP2STR(&alternative.ip));
+        if (!ap_reconnect_confirmed || strcmp(snapshot.ap_reconnect_ip, reconnect_ip) != 0) {
+            ap_reconnect_pending = true;
+            ap_reconnect_confirmed = false;
+            portENTER_CRITICAL(&lock);
+            memcpy(snapshot.ap_reconnect_ip, reconnect_ip, sizeof(snapshot.ap_reconnect_ip));
+            portEXIT_CRITICAL(&lock);
+            job_result("awaiting_ap_reconnect", "", true);
+            return false;
+        }
         disarm(false, false);
         mdns_netif_action(ap_interface, MDNS_EVENT_DISABLE_IP4);
         esp_err_t result = esp_netif_dhcps_stop(ap_interface);
         if (result == ESP_OK) result = esp_netif_set_ip_info(ap_interface, &alternative);
         if (result == ESP_OK) result = esp_netif_dhcps_start(ap_interface);
+        if (result != ESP_OK) {
+            esp_netif_set_ip_info(ap_interface, &current);
+            esp_netif_dhcps_start(ap_interface);
+        }
         esp_wifi_deauth_sta(0);
         mdns_netif_action(ap_interface, MDNS_EVENT_ENABLE_IP4);
+        clear_ap_reconnect();
+        if (result == ESP_OK && state.online) {
+            bool confirming = state.phase == NETWORK_CONFIRMING;
+            job_result(confirming ? "awaiting_confirmation" : "succeeded", "", confirming);
+        }
         return result == ESP_OK;
     }
+    clear_ap_reconnect();
     return false;
 }
 
@@ -331,6 +373,7 @@ static void recovery(const char *error, bool retry_saved)
 {
     testing = false;
     scanning = false;
+    clear_ap_reconnect();
     mbedtls_platform_zeroize(&candidate, sizeof(candidate));
     network_state_recover(&state, esp_timer_get_time());
     bool station = retry_saved && saved.station && saved.ssid[0] != '\0';
@@ -393,6 +436,12 @@ static void run_command(const network_command_t *command)
         return;
     }
     if (request->action == NETWORK_ACTION_CONFIRM) {
+        if (ap_reconnect_pending) {
+            ap_reconnect_confirmed = true;
+            state.deadline = now + NETWORK_CONNECT_US;
+            job_result("changing_ap_address", "", true);
+            return;
+        }
         if (network_state_confirm(&state, now)) job_result("handing_over", "", true);
         else job_result("failed", "not_connected", false);
         return;
@@ -493,6 +542,7 @@ static void network_worker(void *argument)
                       acquired_address != 0 && esp_netif_get_ip_info(station_interface, &information) == ESP_OK &&
                       information.ip.addr == acquired_address;
         if (online && state.online && state.ap && !non_overlapping_ap(&information)) {
+            if (ap_reconnect_pending) { refresh_snapshot(); continue; }
             recovery("subnet_overlap", false);
             online = false;
         }
@@ -501,6 +551,7 @@ static void network_worker(void *argument)
             if (strncmp((const char *)association.ssid, expected->ssid, 32) != 0 || !supported_auth(association.authmode)) {
                 recovery("unsupported_network", false);
             } else if (state.ap && !non_overlapping_ap(&information)) {
+                if (ap_reconnect_pending) { refresh_snapshot(); continue; }
                 recovery("subnet_overlap", false);
             } else if (testing && save_configuration(&candidate) != ESP_OK) {
                 recovery("storage_failed", false);
@@ -557,8 +608,10 @@ esp_err_t network_submit(const uint8_t *payload, size_t length, bool scan, uint3
     portENTER_CRITICAL(&lock);
     bool terminal_action = command.request.action == NETWORK_ACTION_CANCEL || command.request.action == NETWORK_ACTION_CONFIRM;
     bool invalid_confirmation = command.request.action == NETWORK_ACTION_CONFIRM &&
-        strcmp(snapshot.job, "awaiting_confirmation") != 0 && strcmp(snapshot.job, "handing_over") != 0;
-    bool busy = !snapshot.available || command_pending || invalid_confirmation ||
+        strcmp(snapshot.job, "awaiting_confirmation") != 0 && strcmp(snapshot.job, "handing_over") != 0 &&
+        strcmp(snapshot.job, "awaiting_ap_reconnect") != 0;
+    bool invalid_cancellation = command.request.action == NETWORK_ACTION_CANCEL && !snapshot.busy;
+    bool busy = !snapshot.available || command_pending || invalid_confirmation || invalid_cancellation ||
                 (snapshot.busy && (!terminal_action || strcmp(snapshot.job, "queued") == 0));
     if (!busy) {
         command_pending = true;

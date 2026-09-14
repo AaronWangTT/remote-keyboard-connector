@@ -37,6 +37,7 @@ typedef struct {
 	char saved_ssid_hex[NETWORK_SCAN_SSID_HEX_MAX + 1];
 	char station_ssid[NETWORK_SCAN_SSID_DISPLAY_MAX + 1];
 	char ap_ip[16];
+	char ap_reconnect_ip[16];
 	char station_ip[16];
 	size_t scan_count;
 	network_scan_item_t scan[NETWORK_SCAN_LIMIT];

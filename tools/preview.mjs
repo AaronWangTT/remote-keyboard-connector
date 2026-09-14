@@ -20,7 +20,8 @@ let loginAttempts = 0;
 const network = { available: true, ap_active: true, station_online: false, desired_station: false,
   has_profile: false, busy: false, mdns: true, can_control: true, job_id: 0, phase: "ap", job: "idle", error: "",
   hostname: "kb", requested_hostname: "kb", ap_ssid: "WiFiKeyboard-123456", saved_ssid: "", saved_ssid_hex: "", station_ssid: "",
-  ap_ip: "192.168.4.1", station_ip: "", scan: [] };
+  ap_ip: "192.168.4.1", ap_reconnect_ip: "", station_ip: "", scan: [] };
+let pendingProfile = null;
 const networkDelay = Math.max(50, Number(process.env.PREVIEW_NETWORK_DELAY_MS) || 200);
 const scanTtl = Math.max(50, Number(process.env.PREVIEW_SCAN_TTL_MS) || 30000);
 
@@ -46,7 +47,7 @@ function ssidDisplay(hex) {
 function finishNetwork(job, error = "") {
   network.job = job;
   network.error = error;
-  network.busy = ["scanning", "testing", "handing_over", "awaiting_confirmation"].includes(job);
+  network.busy = ["scanning", "testing", "handing_over", "awaiting_confirmation", "awaiting_ap_reconnect", "changing_ap_address"].includes(job);
   network.can_control = !network.busy;
 }
 
@@ -69,18 +70,21 @@ async function networkRequest(request, response) {
       (value.action === "rename" && (typeof value.hostname !== "string" || value.hostname.length > 32 || value.hostname === "localhost" ||
         !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(value.hostname)))) return sendJson(response, 400, { error: "invalid_network_request" });
   if (network.busy && !["cancel", "confirm"].includes(value.action)) return sendJson(response, 409, { error: "network_busy" });
-  if (value.action === "confirm" && network.job !== "awaiting_confirmation") return sendJson(response, 409, { error: "network_busy" });
+  if (value.action === "cancel" && !network.busy) return sendJson(response, 409, { error: "network_busy" });
+  if (value.action === "confirm" && !["awaiting_confirmation", "awaiting_ap_reconnect"].includes(network.job)) return sendJson(response, 409, { error: "network_busy" });
+  const confirmReconnect = value.action === "confirm" && network.job === "awaiting_ap_reconnect";
   const id = ++network.job_id;
   sendJson(response, 202, { job_id: id, management_url: `http://${request.headers.host}/` });
   const action = value.action;
   if (action === "cancel") {
     if (network.station_online) network.desired_station = false;
-    Object.assign(network, { ap_active: true, ap_ip: "192.168.4.1", station_online: false, station_ip: "", station_ssid: "", phase: "ap" });
+    pendingProfile = null;
+    Object.assign(network, { ap_active: true, ap_ip: network.ap_ip || "192.168.4.1", ap_reconnect_ip: "", station_online: false, station_ip: "", station_ssid: "", phase: "ap" });
     finishNetwork("cancelled");
     return;
   }
   if (action === "scan") network.scan = [];
-  finishNetwork(action === "scan" ? "scanning" : action === "confirm" ? "handing_over" : "testing");
+  finishNetwork(action === "scan" ? "scanning" : confirmReconnect ? "changing_ap_address" : action === "confirm" ? "handing_over" : "testing");
   if (action === "connect" || action === "station") {
     Object.assign(network, { phase: "testing", ap_active: true, ap_ip: "192.168.4.1", station_online: false, station_ip: "" });
   }
@@ -104,11 +108,21 @@ async function networkRequest(request, response) {
       if (failure) {
         network.phase = "ap";
         finishNetwork("failed", failure);
+      } else if (ssid === "overlap-network") {
+        pendingProfile = { ssid, ssidHex };
+        network.ap_reconnect_ip = "172.30.4.1";
+        finishNetwork("awaiting_ap_reconnect");
       } else {
         Object.assign(network, { desired_station: true, has_profile: true, saved_ssid: ssid, saved_ssid_hex: ssidHex, station_ssid: ssid,
           station_online: true, station_ip: "192.168.1.88", phase: "awaiting_confirmation" });
         finishNetwork("awaiting_confirmation");
       }
+    } else if (confirmReconnect) {
+      Object.assign(network, { ap_ip: network.ap_reconnect_ip, ap_reconnect_ip: "", desired_station: true, has_profile: true,
+        saved_ssid: pendingProfile.ssid, saved_ssid_hex: pendingProfile.ssidHex, station_ssid: pendingProfile.ssid,
+        station_online: true, station_ip: "192.168.4.88", phase: "awaiting_confirmation" });
+      pendingProfile = null;
+      finishNetwork("awaiting_confirmation");
     } else if (action === "confirm") {
       Object.assign(network, { phase: "station", ap_active: false, ap_ip: "" });
       finishNetwork("succeeded");
@@ -345,16 +359,16 @@ server.on("upgrade", (request, socket, head) => {
     socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     return;
   }
+  if (pendingControl?.session !== session || performance.now() >= pendingControl.until || !usbReady || !network.can_control) {
+    socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    return;
+  }
   if (controller !== null && controller.readyState === WebSocket.OPEN) {
     if (performance.now() - controller.lastSeen < 1000) {
       socket.end("HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n");
       return;
     }
     controller.terminate();
-  }
-  if (pendingControl?.session !== session || performance.now() >= pendingControl.until || !usbReady || !network.can_control) {
-    socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
-    return;
   }
   pendingControl = null;
   websocketServer.handleUpgrade(request, socket, head, (connection) => {

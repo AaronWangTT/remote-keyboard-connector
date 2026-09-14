@@ -117,9 +117,11 @@ function renderNetwork() {
   document.querySelector("#forget-network").hidden = !state?.has_profile;
   document.querySelector("#forget-network").disabled = busy;
   document.querySelector("#network-use-saved").hidden = !state?.has_profile;
-  const confirming = state?.job === "awaiting_confirmation";
+  const reconnectingAp = state?.job === "awaiting_ap_reconnect";
+  const confirming = state?.job === "awaiting_confirmation" || reconnectingAp;
   document.querySelector("#network-confirm").hidden = !confirming;
   document.querySelector("#network-confirm").disabled = networkMutating || networkUncertain;
+  document.querySelector("#network-confirm").textContent = reconnectingAp ? "Change AP address" : "Switch to Wi-Fi";
   document.querySelector("#network-cancel").hidden = !state?.busy || state.job === "queued";
   document.querySelector("#network-cancel").disabled = networkMutating || networkUncertain;
   document.querySelector("#network-cancel").textContent = confirming ? "Keep AP mode" : "Cancel";
@@ -130,6 +132,12 @@ function renderNetwork() {
   document.querySelector("#network-phase").textContent = phase;
   document.querySelector("#network-name").textContent = `${state.hostname}.local${state.mdns ? "" : " (mDNS unavailable)"}`;
   document.querySelector("#network-ap-address").textContent = state.ap_ip || "Off";
+  if (state.ap_reconnect_ip) {
+    const reconnect = document.createElement("a");
+    reconnect.href = `http://${state.ap_reconnect_ip}/`;
+    reconnect.textContent = state.ap_reconnect_ip;
+    document.querySelector("#network-ap-address").append(" -> ", reconnect);
+  }
   document.querySelector("#network-station-address").textContent = state.station_ip || "Not connected";
   document.querySelector("#network-saved").textContent = state.saved_ssid || "None";
   document.querySelector("#network-summary").textContent = state.station_online ? "Wi-Fi connected" : state.phase === "recovery" ? "Recovery AP" : "Local AP";
@@ -143,6 +151,7 @@ function renderNetwork() {
     handover_failed: "Could not switch to Wi-Fi. Recovery AP is available." };
   const jobs = { idle: "Ready", queued: "Request accepted", testing: "Connecting and checking DHCP", scanning: "Scanning networks",
     succeeded: "Settings ready", failed: "Operation failed", cancelled: "Operation cancelled", handing_over: "Switching to Wi-Fi",
+    awaiting_ap_reconnect: "AP address change requires confirmation", changing_ap_address: "Changing AP address",
     awaiting_confirmation: "Wi-Fi connected. Waiting for handover confirmation." };
   document.querySelector("#network-job-status").textContent = networkUncertain ? "Connection changed. Checking the last operation; credentials will not be resubmitted." :
     state.error ? errors[state.error] ?? "Network operation failed." : jobs[state.job] ?? state.job;
@@ -195,6 +204,8 @@ async function pollNetwork() {
 
 async function submitNetwork(action, fields = {}) {
   if (networkMutating || networkUncertain) return;
+  const apReconnectIp = action === "confirm" && networkState?.job === "awaiting_ap_reconnect" ? networkState.ap_reconnect_ip : "";
+  const currentApIp = networkState?.ap_ip;
   disconnect();
   notify();
   networkMutating = true;
@@ -202,6 +213,10 @@ async function submitNetwork(action, fields = {}) {
   try {
     const result = await api(action === "scan" ? "/api/v1/network/scan" : "/api/v1/network", "POST",
       action === "scan" ? undefined : { action, ...fields });
+    if (apReconnectIp && result.management_url && new URL(result.management_url).hostname === currentApIp) {
+      location.replace(`http://${apReconnectIp}/`);
+      return;
+    }
     if (action === "rename" && location.hostname.endsWith(".local") && result.management_url) {
       location.replace(result.management_url);
       return;

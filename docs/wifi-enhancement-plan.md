@@ -113,7 +113,8 @@ after hardware testing, not promises about uninterrupted connectivity.
 
 Retain `192.168.4.1/24` as the default AP subnet and the existing one-associated-
 client AP limit for this increment. If the STA subnet overlaps, select a
-non-overlapping AP subnet and surface the changed address. Address changes must
+non-overlapping AP subnet and surface the proposed address before requiring
+confirmation to change DHCP addressing and reconnect AP clients. Address changes must
 release input, refresh discovery, and provide a reconnect path. Use a correct
 regulatory country/channel configuration.
 
@@ -227,6 +228,15 @@ to retrieve the committed state without relying on the retired mDNS name or
 resubmitting the operation. Host-only cookies require signing in on the new
 origin. The previous effective Host/Origin remains accepted for 60 seconds for
 in-flight requests; this grace period does not retain the old mDNS record.
+
+An overlapping subnet pauses the job at `awaiting_ap_reconnect` and publishes
+`ap_reconnect_ip` without renumbering or deauthenticating the AP client. Confirm
+authorizes that advertised address change; the UI moves AP-origin clients to the
+new numeric endpoint while LAN-origin clients keep their working address.
+Candidate credentials commit after the confirmed transition passes the existing
+association/DHCP checks. Cancel retains the current AP address and clears the
+pending change. Idle cancellation is rejected with `409` without changing the
+runtime mode or saved desired mode.
 
 ## Security And Input Safety
 
@@ -343,16 +353,19 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | --- | --- |
 | Native C | Four suites passed: access/credential validation, network state/persistence selection, eight USB-state cases, and the full-state JSON parser. Initial Windows validation used Zig 0.15.2 without sanitizers; Linux review follow-up passed ASan/UBSan, including malformed UTF-8 and maximum-length raw SSID cases. |
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
-| Provisioning and browser/API | All 22 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, handover, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
+| Provisioning and browser/API | All 23 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, idle-cancel rejection, confirmed AP-address transitions, handover, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf2d60` bytes; `0xd2a0` bytes (53,920 bytes, 5%) free in the existing app partition. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf3350` bytes; `0xccb0` bytes (52,400 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
 with hardware dependencies stubbed. It verified delayed cleanup cannot release
 a newer controller sharing the USB generation, scan expiry at its deadline, and
-preservation/expiry of the full collision-resolved previous hostname. This does
-not establish real radio, DHCP, or USB timing behavior.
+preservation/expiry of the full collision-resolved previous hostname. Further
+fault injection verified cleanup on timer creation/start failure, reservation
+checks before stale-controller termination, and no AP renumbering/deauthentication
+before explicit confirmation. These checks do not establish real radio, DHCP,
+or USB timing behavior.
 
 The native interrupted-save tests inject failure around the same stage/activate
 selection helper used by the NVS adapter. They verify old-or-new complete-record

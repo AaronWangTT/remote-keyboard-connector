@@ -399,6 +399,7 @@ static cJSON *network_json(void)
         cJSON_AddStringToObject(result, "saved_ssid_hex", network.saved_ssid_hex) &&
         cJSON_AddStringToObject(result, "station_ssid", network.station_ssid) &&
         cJSON_AddStringToObject(result, "ap_ip", network.ap_ip) &&
+        cJSON_AddStringToObject(result, "ap_reconnect_ip", network.ap_reconnect_ip) &&
         cJSON_AddStringToObject(result, "station_ip", network.station_ip);
     cJSON *scan = valid ? cJSON_AddArrayToObject(result, "scan") : NULL;
     valid = scan != NULL;
@@ -661,5 +662,13 @@ esp_err_t web_server_start(void)
     const esp_timer_create_args_t timer = {.callback = control_tick, .name = "control_expiry"};
     result = esp_timer_create(&timer, &control_timer);
     if (result == ESP_OK) result = esp_timer_start_periodic(control_timer, 250000);
+    if (result != ESP_OK) {
+        if (control_timer != NULL) {
+            esp_timer_delete(control_timer);
+            control_timer = NULL;
+        }
+        httpd_stop(server);
+        server = NULL;
+    }
     return result;
 }

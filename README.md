@@ -128,8 +128,9 @@ ESP cross-compiler cannot execute native unit tests. The Bash entry point
 `tools/test-host.sh` uses the same suite list with a Linux compiler.
 
 Four native suites (including eight USB-state cases), twelve keyboard-model
-tests, and 21 provisioning/API/Chromium/WebKit tests pass on Windows. Native
-Windows tests ran without sanitizers; the Linux runner enables ASan/UBSan.
+tests, and 23 provisioning/API/Chromium/WebKit tests pass in the Linux review
+validation. Native Windows tests ran without sanitizers; the Linux runner
+enables ASan/UBSan.
 Browser tests verify receipt at a mock backend, not real USB delivery, mDNS,
 radio behavior, or actual iPhone/iPad Safari. See the
 [implementation record](docs/wifi-enhancement-plan.md#implementation-record).
@@ -147,8 +148,9 @@ control or open Network settings. Do not use real credentials in the preview.
 `PREVIEW_CLAIMED=0` starts first-use setup with the public fixture code
 `0123456789abcdef01234567`. These credentials exist only in the loopback mock,
 not in the firmware. Mock router password `wrong-password` triggers failure;
-`offline-network` and `no-dhcp-network` simulate network/DHCP failures. Mock
-handover timing is accelerated and never switches the computer's Wi-Fi.
+`offline-network` and `no-dhcp-network` simulate network/DHCP failures, while
+`overlap-network` exercises the confirmed AP-address transition. Mock handover
+timing is accelerated and never switches the computer's Wi-Fi.
 Check `http://127.0.0.1:8080/__test__/input` for receive counters; a tap adds one
 `down`, one `up`, and two `queued` replies. Shift/Caps actions can add extra
 modifier/lock reports. The endpoint also shows the current report and mock Caps
@@ -215,8 +217,8 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-The Wi-Fi enhancement image is `0xf2d60` bytes (994,656 bytes), leaving
-`0xd2a0` bytes (53,920 bytes, 5%) in the existing 1 MiB application partition.
+The Wi-Fi enhancement image is `0xf3350` bytes (996,176 bytes), leaving
+`0xccb0` bytes (52,400 bytes, about 5%) in the existing 1 MiB application partition.
 Flash layout and PSRAM settings are unchanged. This is below the broader 20%
 headroom goal; physical flash capacity and runtime heap/stack/power behavior
 remain unverified.

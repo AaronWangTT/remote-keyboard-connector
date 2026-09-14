@@ -58,6 +58,7 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   assert.equal(combined.usb_ready, true);
   assert.equal(combined.network.hostname, "kb");
   assert.equal(combined.network.ap_active, true);
+  assert.equal((await submit({ action: "cancel" })).status, 409);
   assert.equal((await submit({ action: "rename", hostname: "kb.local" })).status, 400);
   assert.equal((await fetch(endpoint, { method: "POST", headers: { ...headers, "X-CSRF-Token": "bad" }, body: '{"action":"ap"}' })).status, 403);
   assert.equal((await fetch(new URL("/api/v1/network/scan", url), { method: "POST", headers })).status, 202);
@@ -75,6 +76,9 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   assert.equal(JSON.stringify(await status()).includes("test-router-password"), false);
   assert.equal((await submit({ action: "confirm" })).status, 202);
   await expect.poll(status).toMatchObject({ phase: "station", busy: false, ap_active: false });
+  const idleStation = await status();
+  assert.equal((await submit({ action: "cancel" })).status, 409);
+  assert.deepEqual(await status(), idleStation);
   assert.equal((await submit({ action: "connect", ssid: "Other network", password: "wrong-password" })).status, 202);
   await expect.poll(status).toMatchObject({ job: "failed", error: "authentication_failed", ap_active: true, saved_ssid: "Home Wi-Fi" });
   assert.equal((await submit({ action: "ap" })).status, 202);
@@ -139,6 +143,54 @@ test("browser Network view scans, tests, confirms handover and forgets without U
   await page.getByRole("button", { name: "Back to keyboard" }).click();
   await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
   await takeControl(page);
+});
+
+test("overlapping AP subnet is announced and confirmed before reconnecting at the new address", { timeout: 20000 }, async context => {
+  const url = await startPreview(context);
+  const browser = await chromium.launch();
+  context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 320, height: 568 } });
+  let confirmations = 0;
+  page.on("request", request => {
+    if (request.method() === "POST" && request.postDataJSON()?.action === "confirm") confirmations++;
+  });
+  await page.route(/^http:\/\/(?:192\.168\.4\.1|172\.30\.4\.1)\//, async route => {
+    const request = route.request();
+    const destination = new URL(new URL(request.url()).pathname, url);
+    const headers = { ...request.headers(), host: destination.host };
+    if (headers.origin) headers.origin = destination.origin;
+    const response = await fetch(destination, { method: request.method(), headers, body: request.postDataBuffer() ?? undefined });
+    let body = Buffer.from(await response.arrayBuffer());
+    if (response.status === 202) {
+      const accepted = JSON.parse(body.toString());
+      accepted.management_url = new URL("/", request.url()).href;
+      body = Buffer.from(JSON.stringify(accepted));
+    }
+    await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body });
+  });
+  await page.goto("http://192.168.4.1/");
+  await page.getByLabel("Owner password", { exact: true }).fill("preview-owner-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("button", { name: "Network settings", exact: true }).click();
+  await page.getByLabel("Join Wi-Fi", { exact: true }).check();
+  await page.getByLabel("Network name (SSID)").fill("overlap-network");
+  await page.getByLabel("Wi-Fi password", { exact: true }).fill("test-router-password");
+  await page.getByRole("button", { name: "Test and Connect", exact: true }).click();
+  await expect(page.getByRole("link", { name: "172.30.4.1", exact: true })).toHaveAttribute("href", "http://172.30.4.1/");
+  await expect(page.locator("#network-ap-address")).toContainText("192.168.4.1");
+  await expect(page.locator("#network-saved")).toHaveText("None");
+  assert.equal(confirmations, 0);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.getByRole("button", { name: "Change AP address", exact: true }).click();
+  await expect(page).toHaveURL("http://172.30.4.1/");
+  await page.getByLabel("Owner password", { exact: true }).fill("preview-owner-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("button", { name: "Network settings", exact: true }).click();
+  await expect(page.locator("#network-ap-address")).toHaveText("172.30.4.1");
+  await expect(page.locator("#network-saved")).toHaveText("overlap-network");
+  await expect(page.getByRole("button", { name: "Switch to Wi-Fi", exact: true })).toBeVisible();
+  assert.equal(confirmations, 1);
+  assert.equal((await (await fetch(new URL("/__test__/input", url))).json()).down, 0);
 });
 
 test("hostname rename recovers through the numeric address when the old mDNS endpoint disappears", { timeout: 20000 }, async context => {
