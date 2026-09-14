@@ -3,11 +3,15 @@
 Date: 2026-09-14
 Status: implemented; both hosted checks are required on `main`.
 
+Packaging updated 2026-09-15: current artifacts contain separate firmware images,
+not the original ZIP/merged-BIN outputs. The hosted validation record below
+describes the original workflow, not this installer update.
+
 ## Objective
 
 Require a pull request and successful automated checks before merging to `main`,
 without requiring a reviewer. Reuse the existing firmware and browser tests;
-do not add firmware features, automatic flashing, deployment, or releases.
+CI must not perform hardware flashing, device provisioning, deployment, or releases.
 
 CI uses the repository-scoped GitHub Actions token with read-only repository
 permissions. No personal access token or signed-in developer account is required.
@@ -18,7 +22,7 @@ One workflow, two independent jobs with stable check names:
 
 | Check | Environment and sequence |
 | --- | --- |
-| Firmware and Native Tests | Pinned ESP-IDF v6.1 environment and Node.js 22. Build `esp32s3` from the committed defaults, run `bash tools/test-host.sh`, check dependency-lock drift, report image/partition size, and upload separate images with flash metadata. |
+| Firmware and Native Tests | Pinned ESP-IDF v6.1 environment and Node.js 22. Build `esp32s3` from committed defaults, run native/model and installer safety tests, validate firmware artifacts offline, check dependency-lock drift, report image/partition size, and upload the separate images. |
 | Browser Integration | Ubuntu 24.04 and Node.js 22. Install the locked development dependencies, install Chromium/WebKit with their Linux runtime dependencies, and run `npm --prefix tools test`. |
 
 Run on pull requests targeting `main`, pushes to `main`, and manual dispatch.
@@ -63,29 +67,49 @@ option on the disposable hosted runner, not through local WSL path overrides.
 
 ## Artifacts
 
-- Upload the separate application, bootloader, and partition-table images,
-  `flasher_args.json`, `flash_args`, and a size/build summary after successful
-  firmware validation. Record the checked-out commit and use unique artifact
-  names containing the commit SHA.
+- Upload the application, bootloader, partition table, generated flash metadata,
+  credential-free firmware manifest, and size/build summary after successful
+  firmware and installer validation.
+  Record the checked-out commit and use artifact names containing the commit SHA.
 - Label PR output as a test build, not a release or evidence of hardware testing.
   The PR workflow normally validates GitHub's proposed merge commit.
 - Keep available build/test logs and browser screenshots for diagnosis, including
   failed runs. Retain artifacts for 14 days; do not commit binaries or upload the
   whole workspace, dependency directories, credentials, or environment dumps.
+- Do not include per-device identities, NVS images, setup cards, or flash backups.
+- Do not generate merged BINs: their padded gaps can overwrite NVS/settings.
 
-Firmware compilation validates images and offsets, not USB behavior. No CI job
-connects to a physical board, burns eFuses, signs a production image, or
-publishes releases.
+Offline artifact validation checks image digests, offsets, build-security
+configuration, and the default NVS layout through Espressif's parsers. CI runs
+the installer with `--write-manifest` to record supported security settings and
+image SHA-256 hashes without copying the full SDK configuration. The SDK installer tests use fake serial/flash
+devices and temporary synthetic identities. Neither is a USB test. No CI job connects to
+a physical board, burns eFuses, signs a production image, or publishes releases.
 
 The firmware artifact is named `firmware-<pr-test|branch-build>-<SHA>-<attempt>`
-and contains `esp32s3_starter.bin`, `bootloader.bin`, `partition-table.bin`,
-`flasher_args.json`, `flash_args`, and the Markdown build summary with checked-out
-commit and size data. The workflow also publishes separate firmware-log and
-browser-diagnostic artifacts, including available screenshots. Firmware summaries
-and diagnostic uploads use `if: ${{ !cancelled() }}`: they run after earlier
-failures but skip canceled runs, so they do not keep superseded jobs alive.
-Validated firmware is uploaded only after successful checks. Nothing is flashed,
-merged, or packaged by the workflow.
+and contains `build/esp32s3_starter.bin`, `build/bootloader/bootloader.bin`,
+`build/partition_table/partition-table.bin`, `build/flasher_args.json`,
+`build/flash_args`, `build/firmware-manifest.json`, and
+`.cache/ci/firmware-summary.md`. GitHub Actions creates
+the download archive; there is no nested firmware ZIP, merged image, or separate
+ZIP/BIN checksum sidecar. Extract it with directories intact and pass its `build`
+directory to `node tools/install-device.mjs --firmware <directory>` for an offline check.
+Older artifacts without the manifest are not accepted by the combined installer;
+rebuild from the trusted source rather than inventing security metadata.
+The workflow also publishes separate firmware-log and browser-diagnostic
+artifacts, including available screenshots. Firmware summaries and diagnostic
+uploads use `if: ${{ !cancelled() }}`: they run after earlier failures but skip
+canceled runs, so they do not keep superseded jobs alive. Validated firmware is
+uploaded only after successful checks.
+
+For initial board installation, the separate
+[sender command](sender-installation.md) creates a private per-device directory
+outside Git, snapshots the firmware, generates the NVS identity and setup card,
+and records SHA-256 hashes. Only `--execute` permits a board connection and write;
+it requires an expected factory MAC and a verified full-flash backup, refuses
+different existing partition tables, and requires `--replace-nvs` to discard
+non-empty NVS. CI never invokes that execution mode. Firmware checksums identify
+bytes, not signed provenance or physical compatibility.
 
 ## Merge Rules
 
@@ -111,10 +135,11 @@ repository secrets, personal tokens, or self-hosted hardware runners. Fork PRs
 must be safe to test with the default restricted token; first-time contributors
 may need GitHub's normal workflow-run approval, distinct from merge reviewers.
 
-Fail on build errors, test failures, missing firmware outputs, dependency-lock
-drift, or application partition overflow. Report headroom rather than imposing
-the broader 20% product target: the initial CI baseline had about 16% free, so
-making 20% mandatory would have rejected that working baseline.
+Fail on build errors, test failures, missing firmware outputs, invalid
+firmware/layout metadata, dependency-lock drift, or application partition
+overflow. Report headroom rather than imposing the broader 20% product target:
+the initial CI baseline had about 16% free, so making 20% mandatory would have
+rejected that working baseline.
 
 Defer new lint/style policies, mandatory coverage thresholds, scheduled scans,
 dependency-update automation, tag-based releases, and hardware-in-the-loop CI
@@ -125,7 +150,7 @@ recovery, or endurance.
 ## Rollout And Validation
 
 1. Add and locally lint the workflow on `ci/github-actions`.
-2. Validate the existing native/browser commands and artifact/summary paths;
+2. Validate the native/browser commands, offline installer checks, and artifact/summary paths;
    distinguish locally executed checks from any unavailable container/runner checks.
 3. Commit and push the feature branch when authorized, then open a PR to `main`.
    Confirm both jobs pass from a clean hosted checkout and inspect the artifacts.
@@ -133,6 +158,15 @@ recovery, or endurance.
    Merge through the PR without a reviewer requirement.
 
 Record implementation details and actual validation results below before handoff.
+
+## Installer Update
+
+On 2026-09-15, the Node provisioning/installer tests and ESP-IDF Python installer
+tests passed locally. The current build also passed the real offline installer
+command, which derived NVS offset `0x9000` and size `0x6000` from its partition
+table. No serial port was opened and no actual device identity was generated.
+Hosted validation of the updated workflow and physical installation remain
+separate gates; the earlier runs below do not establish either.
 
 ## Historical Validation Record
 

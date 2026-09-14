@@ -5,7 +5,8 @@
   "scripts": {
     "preview": "node preview.mjs",
     "test": "node --test preview.test.mjs provision-device.test.mjs",
-    "test:native": "node test-native.mjs"
+    "test:native": "node test-native.mjs",
+    "install:device": "node install-device.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
