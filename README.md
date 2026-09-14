@@ -17,6 +17,7 @@ a public development default, not owner authentication.
 
 ## Documentation
 
+- [CI workflow setup proposal](docs/ci-workflow-proposal.md)
 - [Keyboard enhancement plan and validation results](docs/keyboard-enhancement-plan.md)
 - [Minimal implementation plan and validation results](docs/minimal-implementation-plan.md)
 - [Wi-Fi USB remote keyboard design specification](docs/remote-keyboard-design.md)
@@ -116,6 +117,22 @@ The full-state JSON protocol replaces the earlier single-key text commands.
 `queued` means accepted, not USB completion. See the
 [protocol contract](docs/keyboard-enhancement-plan.md#full-state-protocol).
 
+## Continuous Integration
+
+The [CI workflow](.github/workflows/ci.yml) defines two parallel checks on PRs to
+`main`, pushes to `main`, and manual runs: **Firmware and Native Tests** and
+**Browser Integration**. It builds in a pinned ESP-IDF v6.1 image, runs the
+existing native/model tests, and exercises Chromium/WebKit on Ubuntu 24.04.
+Successful firmware jobs upload the separate-image ZIP and merged BIN with
+checksums and a build summary. Available logs/screenshots are retained for
+diagnosis, including failures; artifact retention is 14 days.
+
+The workflow is locally validated but still needs its first hosted PR run.
+Required CI checks have not yet been added to `main`'s ruleset. After both jobs
+pass on GitHub, require those check names while retaining the existing PR policy
+with zero reviewer approvals. See the proposal for the rollout, security
+boundaries, exact pins, and what remains unverified.
+
 ## Current Layout
 
 ```text
@@ -123,7 +140,7 @@ remote-keyboard-connector/
 |-- CMakeLists.txt          ESP-IDF project definition
 |-- dependencies.lock      Pinned managed-component versions
 |-- sdkconfig.defaults     Shared target defaults
-|-- .github/workflows/       Future GitHub Actions workflows
+|-- .github/workflows/       PR/main firmware and browser CI
 |-- .vscode/                Portable extension recommendations
 |-- components/
 |   |-- board/             Reserved until board pins are verified
@@ -156,5 +173,5 @@ partition. Actual flash capacity, power/suspend behavior, and the broader
 product's 20% partition-headroom goal are not yet verified.
 
 Do not commit credentials or machine-specific SDK paths. Generated build
-outputs and local configuration are excluded by the Git ignore rules. GitHub
-publication and project license selection are still pending.
+outputs and local configuration are excluded by the Git ignore rules. Project
+license selection is still pending.
