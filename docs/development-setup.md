@@ -471,7 +471,7 @@ remote-keyboard-connector/
 | `hardware/` | Exact board identification, pin maps, wiring, and hardware references |
 | `tools/` | Project-specific helper scripts when needed |
 | `.vscode/` | Portable extension recommendations and shared editor configuration |
-| `.github/workflows/` | Future GitHub Actions build checks |
+| `.github/workflows/` | Firmware/native and browser CI for PRs, main pushes, and manual runs |
 
 Keep `main` small: initialize the board and start application tasks there. Add
 one cohesive component per device or feature, such as `status_led`,
