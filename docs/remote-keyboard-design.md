@@ -451,7 +451,7 @@ Cancel at the right, adapting their row to the controller viewport:
 
 | Controller layout | Control placement |
 | --- | --- |
-| Phone portrait | Keep `123`/`ABC`, Space, and Return in their keycap row. Put Globe and Cancel in a separate utility strip below it. |
+| Portrait (phones, tablets, and desktop windows) | Keep `123`/`ABC`, Space, and Return in their keycap row. Put Globe and Cancel in a separate utility strip below it. |
 | Landscape | Move both controls inline with the Space row: Globe, `123`/`ABC`, Space, Return, Cancel. Do not retain an empty utility strip below it. |
 
 Choose the responsive layout from the controller's available viewport dimensions,
@@ -488,8 +488,13 @@ USB-host compatibility roadmap.
 
 | Host type | Globe command | Notes |
 | --- | --- | --- |
-| iOS (iPhone/iPad), default | Control+Space | Covers iOS/iPadOS external-keyboard input-source switching; verify on each target device and OS version. |
-| Windows | GUI+Space | Uses the Windows-key modifier and Space; verify that host policy has not changed or disabled the shortcut. |
+| iOS (iPhone/iPad), default | Left Control+Space | Covers iOS/iPadOS external-keyboard input-source switching; verify on each target device and OS version. |
+| Windows | Left GUI+Space | Uses the left Windows-key modifier and Space; verify that host policy has not changed or disabled the shortcut. |
+
+Use TinyUSB's `KEYBOARD_MODIFIER_LEFTCTRL` (`0x01`) for iOS and
+`KEYBOARD_MODIFIER_LEFTGUI` (`0x08`) for Windows, with no other modifier bits.
+Both chords contain only `HID_KEY_SPACE` (`0x2C`); the following all-keys-up
+report has zero modifiers and no keys. Use these exact states in report tests.
 
 On first use with no saved preference, preselect iOS without a mandatory host
 selection dialog. A Globe tap sends its preset when the normal control and USB
@@ -522,8 +527,8 @@ Invoking the globe must first cancel pointer and physical holds and establish a
 neutral report. It then sends the configured shortcut as an ordered chord-down
 and all-keys-up pair. A disconnect, timeout, or send failure still prioritizes a
 neutral report. The current implemented modifier allowlist accepts only left and
-right Shift, so this feature requires narrowly adding the selected Control or GUI
-modifier and testing that physical browser shortcuts remain excluded. A queued
+right Shift, so this feature requires narrowly adding Left Control and Left GUI
+and testing that physical browser shortcuts remain excluded. A queued
 acknowledgement does not prove that the host changed languages, and the UI must
 not claim to know the host's active language. The US-ANSI key map remains unchanged
 regardless of the language selected by the host.
