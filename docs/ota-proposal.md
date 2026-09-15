@@ -48,7 +48,7 @@ identification session, not necessarily the firmware currently on `main`:
 | Current build | Configured for 2 MiB flash and one 1 MiB factory application; the observed application was 993,408 bytes. |
 | Persistence | Default NVS starts at `0x9000`, size `0x6000`; preserve both its location and contents during migration. |
 | Update support | No OTA slots, OTA metadata, or enabled bootloader rollback in the observed build. |
-| Packaging | Current validators accept an unsigned three-image factory bundle and intentionally reject OTA layouts and signed-app profiles. |
+| Packaging | The current packager requires an unencrypted bootloader/partition-table/app bundle and rejects hardware secure-boot/flash-encryption builds; it does not yet validate an OTA partition schema or signed-app profile. |
 | Hardware acceptance | Identification succeeded, but the exact board model, full-capacity operation, power behavior, and complete recovery/OTA tests are still gates. |
 
 Do not infer physical capacity from a build setting, nor flash capacity from
