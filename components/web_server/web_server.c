@@ -51,6 +51,10 @@ extern const char back_start[] asm("_binary_back_svg_start");
 extern const char back_end[] asm("_binary_back_svg_end");
 extern const char refresh_start[] asm("_binary_refresh_svg_start");
 extern const char refresh_end[] asm("_binary_refresh_svg_end");
+extern const char globe_start[] asm("_binary_globe_svg_start");
+extern const char globe_end[] asm("_binary_globe_svg_end");
+extern const char x_start[] asm("_binary_x_svg_start");
+extern const char x_end[] asm("_binary_x_svg_end");
 
 typedef struct {
     const char *uri;
@@ -75,6 +79,8 @@ static const web_asset_t assets[] = {
     {"/icons/eye-off.svg", "image/svg+xml", eye_off_start, eye_off_end},
     {"/icons/back.svg", "image/svg+xml", back_start, back_end},
     {"/icons/refresh.svg", "image/svg+xml", refresh_start, refresh_end},
+    {"/icons/globe.svg", "image/svg+xml", globe_start, globe_end},
+    {"/icons/x.svg", "image/svg+xml", x_start, x_end},
 };
 
 typedef struct {

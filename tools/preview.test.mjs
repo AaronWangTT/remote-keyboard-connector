@@ -685,7 +685,7 @@ test("WebSocket authorization requires a session and explicit control reservatio
   await expect.poll(async () => (await (await fetch(new URL("/__test__/input", url))).json()).connected).toBe(false);
 });
 
-test("mock backend records received states, acknowledgements, and stop", { timeout: 10000 }, async (context) => {
+test("mock backend records valid states and rejects unauthorized command reports", { timeout: 10000 }, async (context) => {
   const url = await startPreview(context);
   const session = await loginRequest(url);
   await takeRequest(url, session);
@@ -722,6 +722,20 @@ test("mock backend records received states, acknowledgements, and stop", { timeo
   assert.equal(receipts.stop, 1);
   assert.equal(receipts.queued, 3);
   assert.equal(receipts.pressed, false);
+
+  for (const invalid of [
+    { modifiers: 1, keys: [4] }, { modifiers: 8, keys: [21] },
+    { modifiers: 3, keys: [44] }, { modifiers: 2, keys: [41] },
+    { modifiers: 0, keys: [4, 41] },
+  ]) {
+    await takeRequest(url, session);
+    const rejected = new WebSocket(endpoint, { headers: { Origin: url, Cookie: session.cookie } });
+    await once(rejected, "open");
+    const rejectedClose = once(rejected, "close");
+    rejected.send(JSON.stringify({ v: 1, type: "state", seq: 1, ...invalid }));
+    assert.equal((await rejectedClose)[0], 1008);
+    assert.equal((await (await fetch(new URL("/__test__/input", url))).json()).connected, false);
+  }
 });
 
 test("real browser keyboard, mouse, and touch reach the backend once per tap", { timeout: 20000 }, async (context) => {
@@ -926,6 +940,142 @@ test("iPhone Shift, Caps feedback, symbols and typing controls send the expected
   await expect.poll(report).toEqual(neutral);
 });
 
+test("Globe and Cancel preserve profiles and send isolated report sequences", { timeout: 20000 }, async context => {
+  const url = await startPreview(context);
+  const browser = await chromium.launch();
+  context.after(() => browser.close());
+  const page = await browser.newPage({ hasTouch: true, viewport: { width: 390, height: 844 } });
+  const states = [];
+  page.on("websocket", socket => socket.on("framesent", frame => {
+    const message = JSON.parse(String(frame.payload));
+    if (message.type === "state") states.push({ modifiers: message.modifiers, keys: message.keys });
+  }));
+  const report = async () => (await (await fetch(new URL("/__test__/input", url))).json()).report;
+  const neutral = { modifiers: 0, keys: [] };
+  const expectCommand = async (button, command, activate = () => button.click()) => {
+    const start = states.length;
+    await activate();
+    await expect.poll(() => states.length).toBe(start + 3);
+    assert.deepEqual(states.slice(start), [neutral, command, neutral]);
+    await expect.poll(report).toEqual(neutral);
+  };
+  const expectKeyboardCommand = async (button, key, command) => {
+    await button.focus();
+    const start = states.length;
+    await page.keyboard.down(key);
+    await expect.poll(() => states.length).toBe(start + 3);
+    await button.dispatchEvent("keydown", { key: key === "Space" ? " " : key, code: key, repeat: true });
+    await page.keyboard.up(key);
+    assert.equal(states.length, start + 3);
+    assert.deepEqual(states.slice(start), [neutral, command, neutral]);
+    await expect.poll(report).toEqual(neutral);
+  };
+
+  await page.goto(url);
+  await expect(page.locator("#host-profile")).toHaveValue("ios");
+  await expect(page.locator(".keyboard-meta")).toContainText("Key map: US ANSI");
+  assert.equal(await page.evaluate(() => localStorage.getItem("keyboard.host-profile.v1")), null);
+  await signIn(page);
+
+  await page.locator("#keyboard").focus();
+  await page.keyboard.down("Shift");
+  await page.keyboard.down("a");
+  await expect.poll(report).toEqual({ modifiers: 2, keys: [4] });
+  await expect.poll(() => states.at(-1)).toEqual({ modifiers: 2, keys: [4] });
+  const globe = page.getByRole("button", { name: "Switch input source" });
+  const cancel = page.getByRole("button", { name: "Cancel (Escape)" });
+  await expectCommand(globe, { modifiers: 1, keys: [44] }, () => globe.tap());
+  await page.keyboard.up("a");
+  await page.keyboard.up("Shift");
+
+  const beforeProfileChange = states.length;
+  await page.locator("#host-profile").selectOption("windows");
+  assert.equal(states.length, beforeProfileChange);
+  assert.equal(await page.evaluate(() => localStorage.getItem("keyboard.host-profile.v1")), "windows");
+  await expectCommand(globe, { modifiers: 8, keys: [44] });
+  await expectKeyboardCommand(cancel, "Space", { modifiers: 0, keys: [41] });
+  await expectKeyboardCommand(globe, "Enter", { modifiers: 8, keys: [44] });
+  await expect(page.locator(".keyboard-meta")).toContainText("Key map: US ANSI");
+
+  await page.reload();
+  await expect(page.locator("#host-profile")).toHaveValue("windows");
+  const beforeReconnect = states.length;
+  await takeControl(page);
+  assert.equal(states.length, beforeReconnect);
+
+  await page.evaluate(() => localStorage.setItem("keyboard.host-profile.v1", "macos"));
+  await page.reload();
+  await expect(page.locator("#host-profile")).toHaveValue("");
+  await expect(globe).toBeDisabled();
+  await takeControl(page);
+  await expect(globe).toBeDisabled();
+  const beforeBlockedGlobe = states.length;
+  await globe.evaluate(button => button.click());
+  assert.equal(states.length, beforeBlockedGlobe);
+
+  await page.locator("#host-profile").selectOption("ios");
+  await page.locator("#keyboard").focus();
+  const beforePhysicalShortcuts = states.length;
+  await page.keyboard.press("Control+a");
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.press("Escape");
+  assert.equal(states.length, beforePhysicalShortcuts);
+});
+
+test("rotation clears input without changing page or host profile", { timeout: 20000 }, async context => {
+  const url = await startPreview(context);
+  const browser = await chromium.launch();
+  context.after(() => browser.close());
+  const page = await browser.newPage({ hasTouch: true, viewport: { width: 390, height: 844 } });
+  const states = [];
+  page.on("websocket", socket => socket.on("framesent", frame => {
+    const message = JSON.parse(String(frame.payload));
+    if (message.type === "state") states.push({ modifiers: message.modifiers, keys: message.keys });
+  }));
+  const report = async () => (await (await fetch(new URL("/__test__/input", url))).json()).report;
+  const neutral = { modifiers: 0, keys: [] };
+  await page.goto(url);
+  await signIn(page);
+  await page.locator("#host-profile").selectOption("windows");
+
+  const selectPage = async mode => {
+    let current = await page.locator("#key-rows").getAttribute("data-page");
+    if (mode === "letters" && current !== mode) {
+      await page.getByRole("button", { name: "ABC", exact: true }).click();
+    } else if (mode === "numbers" && current === "letters") {
+      await page.getByRole("button", { name: "123", exact: true }).click();
+    } else if (mode === "numbers" && current === "symbols") {
+      await page.getByRole("button", { name: "123", exact: true }).click();
+    } else if (mode === "symbols") {
+      if (current === "letters") await page.getByRole("button", { name: "123", exact: true }).click();
+      current = await page.locator("#key-rows").getAttribute("data-page");
+      if (current === "numbers") await page.getByRole("button", { name: "#+=", exact: true }).click();
+    }
+    await expect(page.locator("#key-rows")).toHaveAttribute("data-page", mode);
+  };
+
+  for (const mode of ["letters", "numbers", "symbols"]) {
+    await selectPage(mode);
+    for (const viewport of [{ width: 844, height: 390 }, { width: 390, height: 844 }]) {
+      await page.locator("#keyboard").focus();
+      await page.keyboard.down("Shift");
+      await page.keyboard.down("a");
+      await expect.poll(report).toEqual({ modifiers: 2, keys: [4] });
+      await expect.poll(() => states.at(-1)).toEqual({ modifiers: 2, keys: [4] });
+      const beforeRotation = states.length;
+      await page.setViewportSize(viewport);
+      await expect.poll(report).toEqual(neutral);
+      await expect.poll(() => states.length).toBe(beforeRotation + 1);
+      assert.deepEqual(states[beforeRotation], neutral);
+      await expect(page.locator("#key-rows")).toHaveAttribute("data-page", mode);
+      await expect(page.locator("#host-profile")).toHaveValue("windows");
+      await page.keyboard.up("a");
+      await page.keyboard.up("Shift");
+    }
+  }
+  assert.equal(states.some(state => state.keys.includes(41) || state.modifiers === 1 || state.modifiers === 8), false);
+});
+
 test("six-key overflow releases without sending a partial seventh-key chord", { timeout: 10000 }, async (context) => {
   const url = await startPreview(context);
   const browser = await chromium.launch();
@@ -969,7 +1119,7 @@ test("unknown Caps feedback is not replaced by a guessed lock state", { timeout:
   assert.equal((await (await fetch(new URL("/__test__/input", url))).json()).caps_lock, null);
 });
 
-test("all keyboard pages fit phone, tablet and desktop viewports without overlapping keys", { timeout: 20000 }, async (context) => {
+test("all keyboard pages fit phone, tablet and desktop viewports without overlapping keys", { timeout: 30000 }, async (context) => {
   const url = await startPreview(context);
   const browser = await chromium.launch();
   context.after(() => browser.close());
@@ -1002,7 +1152,8 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
         const bounds = keys.map(button => button.getBoundingClientRect());
         keys.forEach((button, index) => {
           const box = bounds[index];
-          if (box.width < 27 || box.height < 44) problems.push(`target:${button.getAttribute("aria-label")}`);
+          const utility = ["globe", "cancel"].includes(button.dataset.action);
+          if (box.width < (utility ? 44 : 27) || box.height < 44) problems.push(`target:${button.getAttribute("aria-label")}`);
           if (box.left < 0 || box.right > innerWidth || box.top < header.bottom || box.bottom > footer.top) problems.push("bounds");
           if (button.scrollWidth > button.clientWidth + 1 || button.scrollHeight > button.clientHeight + 1) problems.push("label overflow");
           for (let other = index + 1; other < bounds.length; other++) {
@@ -1010,6 +1161,26 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
             if (box.left < next.right && box.right > next.left && box.top < next.bottom && box.bottom > next.top) problems.push("overlap");
           }
         });
+        const controlKeys = keys.filter(button => button.closest(".controls"));
+        const controls = {
+          globe: controlKeys.filter(button => button.dataset.action === "globe"),
+          mode: controlKeys.filter(button => button.dataset.action === "page"),
+          space: controlKeys.filter(button => button.dataset.code === "Space"),
+          return: controlKeys.filter(button => button.dataset.code === "Enter"),
+          cancel: controlKeys.filter(button => button.dataset.action === "cancel"),
+        };
+        if (Object.values(controls).some(matches => matches.length !== 1)) problems.push("control count");
+        else {
+          const controlBounds = Object.fromEntries(Object.entries(controls).map(([name, matches]) => [name, matches[0].getBoundingClientRect()]));
+          if (innerWidth > innerHeight) {
+            const ordered = [controlBounds.globe, controlBounds.mode, controlBounds.space, controlBounds.return, controlBounds.cancel];
+            if (ordered.some((box, index) => index && box.left <= ordered[index - 1].left)) problems.push("landscape control order");
+            if (Math.max(...ordered.map(box => box.top)) - Math.min(...ordered.map(box => box.top)) > 1) problems.push("landscape control row");
+          } else {
+            if (Math.abs(controlBounds.mode.top - controlBounds.space.top) > 1 || Math.abs(controlBounds.space.top - controlBounds.return.top) > 1) problems.push("portrait keycap row");
+            if (Math.abs(controlBounds.globe.top - controlBounds.cancel.top) > 1 || controlBounds.globe.top < controlBounds.mode.bottom) problems.push("portrait utility strip");
+          }
+        }
         return { problems, width: document.documentElement.scrollWidth,
           height: document.documentElement.scrollHeight, viewportHeight: innerHeight };
       });
@@ -1021,7 +1192,7 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
       }
     }
   }
-  for (const icon of ["shift", "caps", "backspace", "return", "release"]) {
+  for (const icon of ["shift", "caps", "backspace", "return", "release", "globe", "x"]) {
     const response = await fetch(new URL(`/icons/${icon}.svg`, url));
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type"), /image\/svg\+xml/);
@@ -1097,14 +1268,28 @@ test("buffered sockets, dropped acknowledgements and send errors release and rec
   assert.deepEqual(pageErrors, []);
 });
 
-test("WebKit loads and types across the iPhone pages with touch and physical keys", { timeout: 20000 }, async (context) => {
+test("WebKit types and sends Globe and Cancel across iPhone layouts", { timeout: 20000 }, async (context) => {
   const url = await startPreview(context);
   const browser = await webkit.launch({ executablePath: process.env.WEBKIT_EXECUTABLE_PATH });
   context.after(() => browser.close());
   const page = await browser.newPage({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
   const errors = [];
+  const states = [];
   page.on("pageerror", error => errors.push(error.message));
+  page.on("websocket", socket => socket.on("framesent", frame => {
+    const message = JSON.parse(String(frame.payload));
+    if (message.type === "state") states.push({ modifiers: message.modifiers, keys: message.keys });
+  }));
   const counters = async () => (await fetch(new URL("/__test__/input", url))).json();
+  const neutral = { modifiers: 0, keys: [] };
+  const tapCommand = async (button, command) => {
+    await expect.poll(() => states.at(-1)).toEqual(neutral);
+    const start = states.length;
+    await button.tap();
+    await expect.poll(() => states.length).toBe(start + 3);
+    assert.deepEqual(states.slice(start), [neutral, command, neutral]);
+    await expect.poll(counters).toMatchObject({ report: neutral, pressed: false });
+  };
   await page.goto(url);
   await page.bringToFront();
   await signIn(page);
@@ -1124,12 +1309,23 @@ test("WebKit loads and types across the iPhone pages with touch and physical key
   await page.getByRole("button", { name: "#+=", exact: true }).tap();
   await page.getByRole("button", { name: "~", exact: true }).tap();
   await expect.poll(counters).toMatchObject({ down: 4, up: 4, pressed: false });
+  await expect(page.locator("#host-profile")).toHaveValue("ios");
+  const globe = page.getByRole("button", { name: "Switch input source" });
+  const cancel = page.getByRole("button", { name: "Cancel (Escape)" });
+  await tapCommand(globe, { modifiers: 1, keys: [44] });
+  await tapCommand(cancel, { modifiers: 0, keys: [41] });
+  await page.locator("#host-profile").selectOption("windows");
+  await tapCommand(globe, { modifiers: 8, keys: [44] });
+  await expect.poll(counters).toMatchObject({ down: 7, up: 7, pressed: false });
   assert.ok(await page.locator('[data-code="Backspace"] .icon').evaluate(element => getComputedStyle(element).maskImage !== "none"));
+  assert.ok(await globe.locator(".icon").evaluate(element => getComputedStyle(element).maskImage !== "none"));
+  assert.ok(await cancel.locator(".icon").evaluate(element => getComputedStyle(element).maskImage !== "none"));
   await page.screenshot({ path: fileURLToPath(new URL("../.cache/tests/keyboard-webkit-phone.png", import.meta.url)) });
   await page.setViewportSize({ width: 844, height: 390 });
   const layout = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight }));
   assert.ok(layout.width <= 844 && layout.height <= 390);
+  await expect(page.locator("#host-profile")).toHaveValue("windows");
   await page.getByRole("button", { name: "Return", exact: true }).tap();
-  await expect.poll(counters).toMatchObject({ down: 5, up: 5, pressed: false });
+  await expect.poll(counters).toMatchObject({ down: 8, up: 8, pressed: false });
   assert.deepEqual(errors, []);
 });

@@ -304,12 +304,19 @@ function usbStatus() {
 }
 
 function validReport(message) {
-  return Number.isInteger(message.seq) && message.seq > 0 && message.seq <= 2147483647 &&
+  const validEnvelope = Number.isInteger(message.seq) && message.seq > 0 && message.seq <= 2147483647 &&
     Number.isInteger(message.modifiers) && message.modifiers >= 0 && message.modifiers <= 255 &&
-    (message.modifiers & ~0x22) === 0 && Array.isArray(message.keys) && message.keys.length <= 6 &&
-    new Set(message.keys).size === message.keys.length && message.keys.every(usage =>
-      Number.isInteger(usage) && ((usage >= 4 && usage <= 40) || usage === 42 ||
-        (usage >= 44 && usage <= 57 && usage !== 50)));
+    Array.isArray(message.keys) && message.keys.length <= 6 &&
+    new Set(message.keys).size === message.keys.length &&
+    message.keys.every(Number.isInteger);
+  if (!validEnvelope) return false;
+  const globe = (message.modifiers === 1 || message.modifiers === 8) &&
+    message.keys.length === 1 && message.keys[0] === 44;
+  const cancel = message.modifiers === 0 && message.keys.length === 1 && message.keys[0] === 41;
+  const typing = (message.modifiers & ~0x22) === 0 && message.keys.every(usage =>
+    (usage >= 4 && usage <= 40) || usage === 42 ||
+    (usage >= 44 && usage <= 57 && usage !== 50));
+  return globe || cancel || typing;
 }
 
 const assets = new Map([
@@ -317,7 +324,7 @@ const assets = new Map([
   ["/app.css", ["app.css", "text/css; charset=utf-8"]],
   ["/app.mjs", ["app.mjs", "text/javascript; charset=utf-8"]],
   ["/keyboard.mjs", ["keyboard.mjs", "text/javascript; charset=utf-8"]],
-  ...["shift", "caps", "backspace", "return", "release", "settings", "logout", "eye", "eye-off", "back", "refresh"].map(icon =>
+  ...["shift", "caps", "backspace", "return", "release", "settings", "logout", "eye", "eye-off", "back", "refresh", "globe", "x"].map(icon =>
     [`/icons/${icon}.svg`, [`icons/${icon}.svg`, "image/svg+xml"]]),
 ]);
 

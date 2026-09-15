@@ -7,6 +7,8 @@ and firmware-distribution statements below describe the implementation at that
 time. They are superseded by the [Wi-Fi enhancement plan](wifi-enhancement-plan.md)
 and [current README](../README.md). The typing layout and input-safety design
 remain relevant; the old unauthenticated AP is not the current firmware default.
+The later Globe input-source and Cancel/Escape increment is specified and
+recorded in the [remote keyboard design](remote-keyboard-design.md#input-source-and-cancel-layout).
 
 This increment expands the [single-key prototype](minimal-implementation-plan.md).
 The user selected English (US) iPhone-style typing keys without a computer-key
@@ -172,8 +174,11 @@ For example, Shift+A followed by release:
 {"v":1,"type":"state","seq":2,"modifiers":0,"keys":[]}
 ```
 
-Only left/right Shift modifier bits (`0x02` and `0x20`) are permitted. Up to six
-unique non-modifier typing usages are normalized into the eight-byte USB report.
+Ordinary typing permits only left/right Shift modifier bits (`0x02` and `0x20`).
+The later Globe/Cancel increment also permits only the exact single-Space states
+Left Control+Space and Left GUI+Space, plus solitary unmodified Escape; arbitrary
+Control/GUI/Escape combinations remain invalid. Up to six unique non-modifier
+typing usages are normalized into the eight-byte USB report.
 An invalid owner message, sequence gap/reuse, or overflow releases input and
 closes the connection. The browser sends a heartbeat every 250 ms, bounds
 outstanding states to 16, and disconnects on stalled acknowledgements or buffers.

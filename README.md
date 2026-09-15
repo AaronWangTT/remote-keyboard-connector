@@ -4,8 +4,9 @@ ESP32-S3 Wi-Fi USB keyboard prototype using ESP-IDF v6.1. The firmware provides
 standalone AP and saved Wi-Fi station modes, temporary AP+STA setup/recovery,
 and the preferred name `kb.local`. Sender-provisioned private AP credentials,
 one-time owner claim, browser login, and explicit keyboard control are included.
-The iPhone-first English (US) keyboard retains letters, numbers, symbols,
-Shift/Caps Lock, Backspace, Space, and Return with bounded six-key USB reports.
+The iPhone-first US-ANSI keyboard provides letters, numbers, symbols,
+Shift/Caps Lock, Backspace, Space, Return, host input-source switching, and
+Cancel/Escape with bounded six-key USB reports.
 
 The Wi-Fi enhancement passes automated native/browser checks and an ESP32-S3
 build. It has not been provisioned or tested on the physical board. The earlier
@@ -132,15 +133,26 @@ and `ABC` select the familiar iPhone-style pages; this is a custom web keyboard,
 not the native iOS keyboard. Phone letter keys use the approved narrower widths
 to fit ten columns; key heights remain at least 44 CSS pixels.
 
+Globe and Cancel sit below the keycap row in portrait and join the Space row in
+landscape. Globe sends Control+Space for the default iOS host profile or
+Windows+Space for the Windows profile. The browser remembers an explicitly
+selected valid profile, but does not detect the USB host, active language, or
+whether the shortcut succeeded; the visible key map remains US ANSI. Cancel
+sends one unmodified Escape tap. Escape may dismiss a pending host suggestion,
+but it is not a guaranteed autocorrection undo and the page does not claim one.
+Both controls clear held input and one-shot Shift before their host action.
+
 Tap Shift for the next chord, hold for simultaneous typing, or double-tap for
 Caps Lock. Caps state comes from USB host LED feedback, not a local guess. The
 release button, focus loss, cancellation, disconnect, and safety deadlines clear
 input. Reconnection never replays a hold, and page changes release hidden keys.
 Host layout, Caps Lock, and auto-repeat determine the actual text produced.
 
-Only typing keys and Shift are forwarded. Ctrl/Alt/Command shortcuts and input
-in other form fields stay local. No function/navigation panel, emoji, dictation,
-autocorrect, swipe typing, accented-key menus, or Unicode injection is included.
+Only typing keys and Shift are forwarded from the controller's physical
+keyboard. Ctrl/Alt/Command shortcuts and input in other form fields stay local;
+Left Control and Left GUI are generated only by the configured Globe action.
+No function/navigation panel, emoji, dictation, autocorrect engine, swipe
+typing, accented-key menus, or Unicode injection is included.
 
 ## Host Validation
 
@@ -175,6 +187,13 @@ The [sender guide](docs/sender-installation.md#verification) lists the additiona
 installer checks, including SDK-backed fake-device tests that never use hardware.
 The firmware has no npm runtime dependencies; the Lucide icons are embedded.
 
+The Globe/Cancel software increment passes all ten sanitized native suites,
+15 keyboard-model tests, and 34 API/Chromium/WebKit tests. Its ESP-IDF v6.1
+build is `0xF6310` bytes, leaving `0x9CF0` bytes (about 4%) in the unchanged
+1 MiB application partition. Real iPhone/iPad input-source switching and
+Escape behavior with pending, applied, and absent autocorrection suggestions
+remain hardware acceptance checks, not conclusions from the browser mock.
+
 For an interactive UI-only preview:
 
 ```bash
@@ -193,8 +212,10 @@ timing is accelerated and never switches the computer's Wi-Fi.
 Check `http://127.0.0.1:8080/__test__/input` for receive counters; a tap adds one
 `down`, one `up`, and two `queued` replies. Shift/Caps actions can add extra
 modifier/lock reports. The endpoint also shows the current report and mock Caps
-state, without retaining report history. Ctrl+C prints a summary. `PORT` selects
-another port; `PREVIEW_USB_READY=0` exercises the waiting state, and
+state, without retaining report history. Globe and Cancel each send a forced
+neutral, one command report, and a final neutral, producing three `queued`
+replies. Ctrl+C prints a summary. `PORT` selects another port;
+`PREVIEW_USB_READY=0` exercises the waiting state, and
 `PREVIEW_CAPS_LOCK=1` or `unknown` exercises Caps feedback states.
 
 The full-state JSON protocol replaces the earlier single-key text commands.

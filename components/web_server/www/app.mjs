@@ -1,4 +1,5 @@
-import { KeyboardInput, layouts, bottomRow, physicalKeys } from "./keyboard.mjs";
+import { KeyboardInput, layouts, bottomRow, physicalKeys, utilityKeys,
+  DEFAULT_HOST_PROFILE, validHostProfile } from "./keyboard.mjs";
 
 const surface = document.querySelector("#keyboard");
 const rows = document.querySelector("#key-rows");
@@ -6,10 +7,19 @@ const connectionStatus = document.querySelector("#connection-status");
 const usbStatus = document.querySelector("#usb-status");
 const capsStatus = document.querySelector("#caps-status");
 const keyState = document.querySelector("#key-state");
+const hostProfileSelect = document.querySelector("#host-profile");
 const keyboard = new KeyboardInput();
 const definitions = new Map();
 const pending = new Map();
+const hostProfileStorageKey = "keyboard.host-profile.v1";
+let hostProfile = DEFAULT_HOST_PROFILE;
+try {
+  const savedProfile = localStorage.getItem(hostProfileStorageKey);
+  if (savedProfile !== null) hostProfile = savedProfile;
+} catch {}
+hostProfileSelect.value = validHostProfile(hostProfile) ? hostProfile : "";
 let page = "letters";
+let landscape = innerWidth > innerHeight;
 let socket = null;
 let ready = false;
 let sequence = 0;
@@ -262,13 +272,13 @@ function drawLayout() {
   definitions.clear();
   rows.replaceChildren();
   rows.dataset.page = page;
-  const layout = [...layouts[page], bottomRow(page)];
+  const layout = [...layouts[page], [utilityKeys[0], ...bottomRow(page), utilityKeys[1]]];
   layout.forEach((keys, rowIndex) => {
     const row = document.createElement("div");
     row.className = "key-row";
     if (rowIndex === 1 && page === "letters") row.classList.add("home");
     if (rowIndex === 2) row.classList.add(page === "letters" ? "lower" : "punctuation");
-    if (rowIndex === 3) row.classList.add("bottom");
+    if (rowIndex === 3) row.classList.add("bottom", "controls");
     keys.forEach((key, keyIndex) => {
       const button = document.createElement("button");
       const id = `${rowIndex}:${keyIndex}`;
@@ -308,7 +318,8 @@ function render() {
   const report = keyboard.report;
   for (const button of rows.querySelectorAll("button")) {
     const key = definitions.get(button.dataset.key);
-    button.disabled = key.action !== "page" && !ready;
+    button.disabled = key.action !== "page" &&
+      (!ready || (key.action === "globe" && !validHostProfile(hostProfile)));
     if (key.action === "shift") {
       button.dataset.shift = keyboard.capsPending ? "pending" : keyboard.capsLock === true ? "caps" :
         keyboard.shiftLatched ? "latched" : "off";
@@ -325,6 +336,7 @@ function render() {
   capsStatus.textContent = keyboard.capsPending ? "Caps pending" : keyboard.capsLock === null ? "Caps unknown" :
     keyboard.capsLock ? "Caps on" : "Caps off";
   capsStatus.dataset.state = keyboard.capsPending ? "pending" : keyboard.capsLock ? "on" : "off";
+  hostProfileSelect.setAttribute("aria-invalid", String(!validHostProfile(hostProfile)));
   keyState.textContent = report.keys.length || report.modifiers ? "Pressed" : "Released";
 }
 
@@ -367,14 +379,21 @@ function transmit(message) {
   }
 }
 
-function publish(reports) {
-  for (const report of reports) {
+function publish(reports, forceFirst = false) {
+  const outgoing = [];
+  let previous = lastReport;
+  reports.forEach((report, index) => {
     const serialized = JSON.stringify(report);
-    if (serialized === lastReport) continue;
-    if (!ready || pending.size >= 16 || sequence >= 2147483647) {
-      disconnect();
-      return;
-    }
+    if (!(forceFirst && index === 0) && serialized === previous) return;
+    outgoing.push({ report, serialized });
+    previous = serialized;
+  });
+  if (outgoing.length && (!ready || pending.size + outgoing.length > 16 ||
+      sequence > 2147483647 - outgoing.length)) {
+    disconnect();
+    return;
+  }
+  for (const { report, serialized } of outgoing) {
     const next = ++sequence;
     if (!transmit({ v: 1, type: "state", seq: next, ...report })) return;
     pending.set(next, performance.now());
@@ -386,6 +405,16 @@ function publish(reports) {
 function changeInput(operation) {
   try {
     publish(operation());
+  } catch {
+    disconnect();
+  }
+}
+
+function activateCommand(action) {
+  try {
+    const reports = keyboard.activateCommand(action, hostProfile);
+    if (reports.length) publish(reports, true);
+    else render();
   } catch {
     disconnect();
   }
@@ -448,6 +477,7 @@ surface.addEventListener("pointerdown", event => {
   surface.focus({ preventScroll: true });
   const key = definitions.get(button.dataset.key);
   if (key.action === "page") { switchPage(key.page); return; }
+  if (key.action === "globe" || key.action === "cancel") { activateCommand(key.action); return; }
   try { surface.setPointerCapture(event.pointerId); } catch { disconnect(); return; }
   changeInput(() => keyboard.press(`pointer:${event.pointerId}`, key, performance.now()));
 });
@@ -472,12 +502,23 @@ surface.addEventListener("click", event => {
   const key = definitions.get(button.dataset.key);
   surface.focus({ preventScroll: true });
   if (key.action === "page") { switchPage(key.page); return; }
+  if (key.action === "globe" || key.action === "cancel") { activateCommand(key.action); return; }
   changeInput(() => keyboard.press("accessible", key, performance.now()));
   changeInput(() => keyboard.release("accessible", performance.now()));
 });
 
 surface.addEventListener("keydown", event => {
-  if (!ready || event.isComposing || event.target.closest("input, textarea, select, [contenteditable]")) return;
+  if (event.isComposing || event.target.closest("input, textarea, select, [contenteditable]")) return;
+  const button = event.target.closest("button[data-key]");
+  if (button && (event.code === "Enter" || event.code === "Space")) {
+    const key = definitions.get(button.dataset.key);
+    if (key.action === "globe" || key.action === "cancel") {
+      event.preventDefault();
+      if (!event.repeat && !button.disabled) activateCommand(key.action);
+    }
+    return;
+  }
+  if (!ready) return;
   if (event.ctrlKey || event.altKey || event.metaKey) {
     if (keyboard.sources.size) disconnect();
     return;
@@ -498,6 +539,14 @@ surface.addEventListener("focusout", event => { if (!surface.contains(event.rela
 document.querySelector("#release").addEventListener("click", () => {
   disconnect();
   api("/api/v1/control/stop", "POST").catch(error => notify(errorMessage(error)));
+});
+hostProfileSelect.addEventListener("change", event => {
+  hostProfile = event.target.value;
+  if (validHostProfile(hostProfile)) {
+    try { localStorage.setItem(hostProfileStorageKey, hostProfile); }
+    catch { notify("Host preference could not be saved."); }
+  }
+  render();
 });
 document.querySelector("#take-control").addEventListener("click", async () => {
   if (!account.authenticated || takingControl) return;
@@ -634,6 +683,14 @@ function suspendPage() {
 }
 for (const event of ["blur", "pagehide"]) window.addEventListener(event, suspendPage);
 document.addEventListener("visibilitychange", () => { if (document.hidden) suspendPage(); else loadSession(); });
+window.addEventListener("resize", () => {
+  const nextLandscape = innerWidth > innerHeight;
+  if (nextLandscape === landscape) return;
+  landscape = nextLandscape;
+  keyboard.clear();
+  if (ready) publish([keyboard.report]);
+  else render();
+});
 
 setInterval(() => {
   if (!socket) return;

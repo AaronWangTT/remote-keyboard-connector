@@ -109,15 +109,30 @@ dialog p { overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; }
   outline: none;
 }
 
-.keyboard-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); margin: 0 6px 16px; }
+.keyboard-meta { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin: 0 6px 16px; }
+.host-profile-field { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.host-profile-field select { min-width: 76px; height: 32px; padding: 0 22px 0 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: #fff; font: inherit; }
+.host-profile-field select[aria-invalid="true"] { border-color: #b85a61; }
 #caps-status[data-state="on"] { color: var(--accent); }
 #caps-status[data-state="pending"] { color: var(--waiting); }
-#key-rows { display: grid; gap: 10px; }
-.key-row { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 3px; height: 48px; }
+#key-rows { --key-height: 48px; --row-gap: 10px; display: grid; gap: var(--row-gap); }
+.key-row { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 3px; height: var(--key-height); }
 .key-row.home { width: 90%; margin: 0 auto; grid-template-columns: repeat(9, minmax(0, 1fr)); }
 .key-row.lower { grid-template-columns: 1.5fr repeat(7, minmax(0, 1fr)) 1.5fr; }
 .key-row.punctuation { grid-template-columns: 1.5fr repeat(5, minmax(0, 1.4fr)) 1.5fr; }
 .key-row.bottom { grid-template-columns: 1.7fr 5.8fr 2.5fr; }
+.key-row.controls {
+  height: calc(var(--key-height) + var(--key-height) + var(--row-gap));
+  grid-template-areas: "mode space return" "globe utility-gap cancel";
+  grid-template-columns: 1.7fr 5.8fr 2.5fr;
+  grid-template-rows: repeat(2, var(--key-height));
+  row-gap: var(--row-gap);
+}
+.key-row.controls [data-action="globe"] { grid-area: globe; }
+.key-row.controls [data-action="page"] { grid-area: mode; }
+.key-row.controls [data-code="Space"] { grid-area: space; }
+.key-row.controls [data-code="Enter"] { grid-area: return; }
+.key-row.controls [data-action="cancel"] { grid-area: cancel; }
 
 .icon {
   display: inline-block;
@@ -138,6 +153,8 @@ dialog p { overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; }
 .icon[data-icon="eye-off"] { --icon: url("/icons/eye-off.svg"); }
 .icon[data-icon="back"] { --icon: url("/icons/back.svg"); }
 .icon[data-icon="refresh"] { --icon: url("/icons/refresh.svg"); }
+.icon[data-icon="globe"] { --icon: url("/icons/globe.svg"); }
+.icon[data-icon="x"] { --icon: url("/icons/x.svg"); }
 .tool-button { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 6px; color: #ad3c44; background: #fff; cursor: pointer; }
 .tool-button:hover { background: #fff0f0; }
 .tool-button.neutral { color: var(--muted); }
@@ -185,27 +202,37 @@ footer { border-top: 1px solid var(--line); padding: 14px 6px 0; color: var(--mu
 
 @media (min-width: 360px) {
   main { padding-right: max(10px, var(--safe-right)); padding-left: max(10px, var(--safe-left)); }
-  .key-row { gap: 4px; height: 52px; }
+  #key-rows { --key-height: 52px; }
+  .key-row { gap: 4px; }
 }
 
 @media (min-width: 768px) {
   main { padding: max(28px, var(--safe-top)) max(28px, var(--safe-right)) max(28px, var(--safe-bottom)) max(28px, var(--safe-left)); }
   .keyboard-surface { align-self: center; padding: 40px 0; margin-block: auto; }
-  .key-row { gap: 8px; height: 64px; }
-  #key-rows { gap: 12px; }
+  .key-row { gap: 8px; }
+  #key-rows { --key-height: 64px; --row-gap: 12px; }
   .key { font-size: 26px; }
 }
 
 @media (max-height: 480px) {
   main { padding-top: max(8px, var(--safe-top)); padding-bottom: max(6px, var(--safe-bottom)); }
-  header { padding-bottom: 8px; }
+  header { padding-bottom: 4px; }
   .identity { display: block; }
   h1 { font-size: 18px; }
   .statuses { margin: 0; }
-  .keyboard-surface { padding: 6px 0; }
+  .keyboard-surface { padding: 0; }
   .keyboard-meta { margin-bottom: 8px; }
-  .key-row { height: 44px; }
-  #key-rows { gap: 6px; }
+  #key-rows { --key-height: 44px; --row-gap: 6px; }
   .key { font-size: 22px; }
   footer { padding-top: 8px; }
+}
+
+@media (orientation: landscape) {
+  .key-row.controls {
+    height: var(--key-height);
+    grid-template-areas: "globe mode space return cancel";
+    grid-template-columns: minmax(44px, 1fr) minmax(0, 1.7fr) minmax(0, 5.2fr) minmax(0, 2.2fr) minmax(44px, 1fr);
+    grid-template-rows: var(--key-height);
+    column-gap: 6px;
+  }
 }
