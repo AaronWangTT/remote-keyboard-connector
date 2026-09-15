@@ -1,4 +1,5 @@
 #include "access_control.h"
+#include "network_text.h"
 
 #include <string.h>
 #include "cJSON.h"
@@ -192,6 +193,7 @@ bool access_credentials_parse(const uint8_t *payload, size_t length, bool claim,
     if (credentials == NULL) return false;
     *credentials = (access_credentials_t){0};
     if (payload == NULL || length == 0 || length > ACCESS_CREDENTIAL_BODY_MAX || memchr(payload, 0, length)) return false;
+    if (!network_utf8_valid(payload, length)) return false;
     char buffer[ACCESS_CREDENTIAL_BODY_MAX + 1];
     memcpy(buffer, payload, length);
     buffer[length] = '\0';

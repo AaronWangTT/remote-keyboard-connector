@@ -368,7 +368,7 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
 | Provisioning and browser/API | All 24 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, idle-cancel rejection, confirmed/abandoned AP-address transitions, abandoned handover expiry, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf3920` bytes; `0xc6e0` bytes (50,912 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf3c20` bytes; `0xc3e0` bytes (50,144 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -465,6 +465,17 @@ Isolated loader/claim tests verify write ordering, interrupted owner writes,
 missing owner records, and migration. Incomplete AP address/DHCP restoration is
 retried by the worker at 30-second intervals before normal STA processing;
 deadline tests cover repeated failures and eventual unattended recovery.
+
+Both firmware JSON parsers validate complete request text as UTF-8 before cJSON
+parsing. Malformed raw UTF-8 and unpaired JSON surrogate escapes are rejected in
+firmware and preview; `ssid_hex` remains the explicit path for non-UTF-8 SSID
+bytes. SSID displays escape Unicode controls, format characters, line/paragraph
+separators, and default-ignorable code points as raw-byte escapes while retaining
+ordinary Unicode and the exact hex token. The compact firmware ranges match the
+Unicode 17.0 properties used by the tested Node runtime. A sanitizer-enabled
+comparison verified 4,424 control/boundary cases against both formatters, and
+the browser scan regression verifies a bidi-control name cannot reorder its
+signal-strength/security suffix.
 
 The native interrupted-save tests inject failure around the same stage/activate
 selection helper used by the NVS adapter. They verify old-or-new complete-record

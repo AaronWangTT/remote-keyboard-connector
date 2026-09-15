@@ -68,6 +68,9 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   for (const body of [
     '{"action":"connect","ssid":"A","password":"first-password","password":"last-password"}',
     '{"action":"connect","ssid":"A","password":"first-password","pass\\u0077ord":"last-password"}',
+    '{"action":"connect","ssid":"\\ud800","password":"test-password"}',
+    '{"action":"connect","ssid":"\\udc00","password":"test-password"}',
+    Buffer.concat([Buffer.from('{"action":"connect","ssid":"'), Buffer.from([0xff]), Buffer.from('","password":"test-password"}')]),
     '{"action":"ap",}', '{/*comment*/"action":"ap"}',
   ]) assert.equal((await fetch(endpoint, { method: "POST", headers, body })).status, 400);
   assert.equal((await fetch(endpoint, { method: "POST", headers: { ...headers, "X-CSRF-Token": "bad" }, body: '{"action":"ap"}' })).status, 403);
@@ -131,6 +134,9 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   assert.deepEqual(await status(), beforeScan);
   assert.equal((await fetch(new URL("/api/v1/network/scan", url), { method: "POST", headers })).status, 202);
   await expect.poll(async () => (await status()).scan.length).toBe(5);
+  const controlledName = (await status()).scan.find(item => item.ssid_hex === Buffer.from("Open\u202e network").toString("hex"));
+  assert.equal(controlledName.ssid, "Open\\xE2\\x80\\xAE network");
+  assert.equal(controlledName.supported, false);
   await expect.poll(async () => (await status()).scan.length).toBe(0);
   assert.equal((await submit({ action: "connect", ssid_hex: "43616665ff", password: "test-router-password" })).status, 202);
   await expect.poll(status).toMatchObject({ job: "awaiting_confirmation", has_profile: true, saved_ssid: "Cafe\\xFF", saved_ssid_hex: "43616665ff" });
@@ -204,6 +210,9 @@ test("browser Network view scans, tests, confirms handover and forgets without U
   await page.getByRole("button", { name: "Scan networks", exact: true }).click();
   await expect(page.locator("#wifi-network")).toBeEnabled();
   await expect(page.locator("#wifi-network option")).toHaveCount(6);
+  const hostileOption = page.locator("#wifi-network option", { hasText: "Open\\xE2\\x80\\xAE network" });
+  await expect(hostileOption).toHaveText("Open\\xE2\\x80\\xAE network (-72 dBm) - unsupported");
+  await expect(hostileOption).toBeDisabled();
   await page.locator("#wifi-network").selectOption("43616665ff");
   await expect(page.getByLabel("Network name (SSID)")).toHaveValue("Cafe\\xFF");
   await page.getByLabel("Wi-Fi password", { exact: true }).fill("wrong-password");

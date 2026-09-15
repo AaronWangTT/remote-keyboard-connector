@@ -97,6 +97,9 @@ int main(void)
         "{\"action\":\"connect\",\"ssid\":\"network\",\"ssid_hex\":\"6e6574776f726b\",\"password\":\"test-password\"}",
         "{\"action\":\"connect\",\"ssid\":\"network\\u0000ignored\",\"password\":\"test-password\"}",
         "{\"action\":\"connect\",\"ssid\":\"network\\\\\\u0000ignored\",\"password\":\"test-password\"}",
+        "{\"action\":\"connect\",\"ssid\":\"network\xff\",\"password\":\"test-password\"}",
+        "{\"action\":\"connect\",\"ssid\":\"\\ud800\",\"password\":\"test-password\"}",
+        "{\"action\":\"connect\",\"ssid\":\"\\udc00\",\"password\":\"test-password\"}",
         "{\"action\":\"ap\"} {}"
     };
     for (size_t index = 0; index < sizeof(invalid) / sizeof(invalid[0]); index++) {
@@ -117,8 +120,21 @@ int main(void)
     for (size_t index = 0; index < sizeof(malformed) / sizeof(malformed[0]); index++) {
         network_ssid_display((const uint8_t *)malformed[index], strlen(malformed[index]), display);
         assert(strcmp(display, escaped[index]) == 0);
+        char malformed_request[160];
+        snprintf(malformed_request, sizeof(malformed_request), "{\"action\":\"connect\",\"ssid\":\"%s\",\"password\":\"test-password\"}", malformed[index]);
+        assert(!network_request_parse((const uint8_t *)malformed_request, strlen(malformed_request), &request));
+        assert(request.action == NETWORK_ACTION_INVALID);
     }
-    const char boundary_scalars[] = "\xc2\x80\xdf\xbf\xe0\xa0\x80\xed\x9f\xbf\xee\x80\x80\xef\xbf\xbf\xf0\x90\x80\x80\xf4\x8f\xbf\xbf";
+    const char *utf8_request = "{\"action\":\"connect\",\"ssid\":\"Caf\xc3\xa9\",\"password\":\"test-password\"}";
+    assert(network_request_parse((const uint8_t *)utf8_request, strlen(utf8_request), &request));
+    assert(strcmp(request.ssid, "Caf\xc3\xa9") == 0);
+    const char *controls[] = {"\xc2\x85", "\xc2\xad", "\xe2\x80\xae", "\xe2\x81\xa6", "\xe2\x80\x8d", "\xe2\x80\xa8", "\xf3\xa0\x84\x80"};
+    const char *control_escapes[] = {"\\xC2\\x85", "\\xC2\\xAD", "\\xE2\\x80\\xAE", "\\xE2\\x81\\xA6", "\\xE2\\x80\\x8D", "\\xE2\\x80\\xA8", "\\xF3\\xA0\\x84\\x80"};
+    for (size_t index = 0; index < sizeof(controls) / sizeof(controls[0]); index++) {
+        network_ssid_display((const uint8_t *)controls[index], strlen(controls[index]), display);
+        assert(strcmp(display, control_escapes[index]) == 0);
+    }
+    const char boundary_scalars[] = "\xc2\xa0\xdf\xbf\xe0\xa0\x80\xed\x9f\xbf\xee\x80\x80\xef\xbf\xbf\xf0\x90\x80\x80\xf4\x8f\xbf\xbf";
     network_ssid_display((const uint8_t *)boundary_scalars, strlen(boundary_scalars), display);
     assert(strcmp(display, boundary_scalars) == 0);
     uint8_t maximum_ssid[NETWORK_SSID_MAX];

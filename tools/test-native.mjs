@@ -16,9 +16,9 @@ if (process.platform !== "win32") flags.push("-fsanitize=address,undefined");
 const usbIncludes = ["components/usb_keyboard", "components/usb_keyboard/include",
   "components/usb_keyboard/test", "managed_components/espressif__tinyusb/src"];
 const suites = {
-  network_state: { includes: ["components/network", "managed_components/espressif__cjson/cJSON"],
+  network_state: { includes: ["components/network", "components/network/include", "managed_components/espressif__cjson/cJSON"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/network/network_state.c", "components/network/test/network_state_test.c"], flags: ["-DCJSON_NESTING_LIMIT=4", "-lm"] },
-  access_control: { includes: ["components/web_server", "managed_components/espressif__cjson/cJSON"],
+  access_control: { includes: ["components/web_server", "components/network/include", "managed_components/espressif__cjson/cJSON"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/web_server/access_control.c", "components/web_server/test/access_control_test.c"], flags: ["-DCJSON_NESTING_LIMIT=4", "-lm"] },
   keyboard_state: { includes: usbIncludes, sources: ["components/usb_keyboard/keyboard_state.c", "components/usb_keyboard/test/keyboard_state_test.c"] },
   input_protocol: { includes: [...usbIncludes, "components/web_server", "managed_components/espressif__cjson/cJSON"],

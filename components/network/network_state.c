@@ -1,21 +1,27 @@
 #include "network_state.h"
+#include "network_text.h"
 
 #include <string.h>
 #include "cJSON.h"
 
-static size_t utf8_sequence_length(const uint8_t *value, size_t length)
+static bool ssid_display_control(const uint8_t *value, size_t length)
 {
-    if (length >= 2 && value[0] >= 0xc2 && value[0] <= 0xdf && (value[1] & 0xc0) == 0x80) return 2;
-    if (length >= 3 && ((value[0] == 0xe0 && value[1] >= 0xa0 && value[1] <= 0xbf) ||
-        ((value[0] >= 0xe1 && value[0] <= 0xec) && (value[1] & 0xc0) == 0x80) ||
-        (value[0] == 0xed && value[1] >= 0x80 && value[1] <= 0x9f) ||
-        ((value[0] >= 0xee && value[0] <= 0xef) && (value[1] & 0xc0) == 0x80)) &&
-        (value[2] & 0xc0) == 0x80) return 3;
-    if (length >= 4 && ((value[0] == 0xf0 && value[1] >= 0x90 && value[1] <= 0xbf) ||
-        ((value[0] >= 0xf1 && value[0] <= 0xf3) && (value[1] & 0xc0) == 0x80) ||
-        (value[0] == 0xf4 && value[1] >= 0x80 && value[1] <= 0x8f)) &&
-        (value[2] & 0xc0) == 0x80 && (value[3] & 0xc0) == 0x80) return 4;
-    return 0;
+    static const uint32_t ranges[][2] = {
+        {0x80, 0x9f}, {0xad, 0xad}, {0x34f, 0x34f}, {0x600, 0x605},
+        {0x61c, 0x61c}, {0x6dd, 0x6dd}, {0x70f, 0x70f}, {0x890, 0x891},
+        {0x8e2, 0x8e2}, {0x115f, 0x1160}, {0x17b4, 0x17b5}, {0x180b, 0x180f},
+        {0x200b, 0x200f}, {0x2028, 0x202e}, {0x2060, 0x206f}, {0x3164, 0x3164},
+        {0xfe00, 0xfe0f}, {0xfeff, 0xfeff}, {0xffa0, 0xffa0}, {0xfff0, 0xfffb},
+        {0x110bd, 0x110bd}, {0x110cd, 0x110cd}, {0x13430, 0x1343f},
+        {0x1bca0, 0x1bca3}, {0x1d173, 0x1d17a}, {0xe0000, 0xe0fff},
+    };
+    uint32_t point = value[0] & (0x7f >> length);
+    for (size_t index = 1; index < length; index++) point = (point << 6) | (value[index] & 0x3f);
+    for (size_t index = 0; index < sizeof(ranges) / sizeof(ranges[0]); index++) {
+        if (point < ranges[index][0]) return false;
+        if (point <= ranges[index][1]) return true;
+    }
+    return false;
 }
 
 void network_ssid_display(const uint8_t *ssid, size_t length, char output[NETWORK_SSID_DISPLAY_MAX + 1])
@@ -28,8 +34,8 @@ void network_ssid_display(const uint8_t *ssid, size_t length, char output[NETWOR
             output[written++] = (char)ssid[index++];
             continue;
         }
-        size_t sequence = utf8_sequence_length(ssid + index, length - index);
-        if (sequence != 0) {
+        size_t sequence = network_utf8_sequence_length(ssid + index, length - index);
+        if (sequence > 1 && !ssid_display_control(ssid + index, sequence)) {
             memcpy(output + written, ssid + index, sequence);
             written += sequence;
             index += sequence;
@@ -112,6 +118,7 @@ bool network_request_parse(const uint8_t *payload, size_t length, network_reques
     if (request == NULL) return false;
     *request = (network_request_t){0};
     if (payload == NULL || length == 0 || length > NETWORK_REQUEST_MAX || memchr(payload, 0, length)) return false;
+    if (!network_utf8_valid(payload, length)) return false;
     char buffer[NETWORK_REQUEST_MAX + 1];
     memcpy(buffer, payload, length);
     buffer[length] = '\0';

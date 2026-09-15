@@ -45,6 +45,7 @@ function ssidDisplay(hex) {
         catch {}
       }
     }
+    if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u.test(decoded)) decoded = "";
     display += decoded || `\\x${bytes[offset].toString(16).padStart(2, "0").toUpperCase()}`;
     offset += decoded ? width : 1;
   }
@@ -109,12 +110,15 @@ async function networkRequest(request, response) {
   setTimeout(() => {
     if (network.job_id !== id) return;
     if (action === "scan") {
-      const item = (ssid, rssi, supported) => ({ ssid, ssid_hex: Buffer.from(ssid).toString("hex"), rssi, supported });
+      const item = (ssid, rssi, supported) => {
+        const ssidHex = Buffer.from(ssid).toString("hex");
+        return { ssid: ssidDisplay(ssidHex), ssid_hex: ssidHex, rssi, supported };
+      };
       network.scan = [item("Home Wi-Fi", -42, true),
         { ssid: "Cafe\\xFF", ssid_hex: "43616665ff", rssi: -70, supported: true },
         item("<Office & Guests>", -61, true),
         item("A-very-long-network-name-1234567", -65, true),
-        item("Open network", -72, false)];
+        item("Open\u202e network", -72, false)];
       const results = network.scan;
       setTimeout(() => { if (network.scan === results) network.scan = []; }, scanTtl).unref();
       finishNetwork("succeeded");
@@ -262,7 +266,8 @@ async function jsonBody(request) {
   const value = Object.create(null);
   for (const property of tree.children ?? []) {
     const [key, field] = property.children;
-    if (field.type !== "string" || key.value.includes("\0") || field.value.includes("\0") || Object.hasOwn(value, key.value)) return null;
+    if (field.type !== "string" || !key.value.isWellFormed() || !field.value.isWellFormed() ||
+        key.value.includes("\0") || field.value.includes("\0") || Object.hasOwn(value, key.value)) return null;
     value[key.value] = field.value;
   }
   return value;
