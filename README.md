@@ -189,7 +189,7 @@ The firmware has no npm runtime dependencies; the Lucide icons are embedded.
 
 The Globe/Cancel software increment passes all ten sanitized native suites,
 15 keyboard-model tests, and 34 API/Chromium/WebKit tests. Its ESP-IDF v6.1
-build is `0xF6310` bytes, leaving `0x9CF0` bytes (about 4%) in the unchanged
+build is `0xF6330` bytes, leaving `0x9CD0` bytes (about 4%) in the unchanged
 1 MiB application partition. Real iPhone/iPad input-source switching and
 Escape behavior with pending, applied, and absent autocorrection suggestions
 remain hardware acceptance checks, not conclusions from the browser mock.

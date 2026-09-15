@@ -600,7 +600,7 @@ persistence/reconnect silence, every-page rotation cleanup, responsive placement
 and safe areas, with exact commands exercised through touch, mouse, and keyboard.
 WebKit delivers the exact iOS/Windows Globe and isolated Escape reports through
 touch. Both engines load the local icons, and physical shortcuts remain excluded.
-The ESP-IDF v6.1 build passes at `0xF6310` bytes with `0x9CF0` bytes (about 4%)
+The ESP-IDF v6.1 build passes at `0xF6330` bytes with `0x9CD0` bytes (about 4%)
 free in the unchanged 1 MiB application partition. The real-host checks above
 remain pending, and the low application headroom is not an operational-release
 signoff.
