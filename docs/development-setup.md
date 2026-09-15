@@ -408,26 +408,36 @@ identifying the board and forwarding its USB connection to WSL.
 ### 4. Verify C/C++ IntelliSense
 
 ESP-IDF generates `build/compile_commands.json` during the build. It records the
-compiler, include paths, and definitions for each source file. Configure
-Microsoft C/C++ to use it in the workspace's VS Code settings, preserving other
-settings already present:
+compiler, include paths, and definitions for each firmware source file. The
+native test runner similarly generates `.cache/tests/compile_commands.json` for
+host-compiled test sources. Run it once to create that database:
+
+```bash
+node tools/test-native.mjs
+```
+
+Configure Microsoft C/C++ to use both databases in the workspace's VS Code
+settings, preserving other settings already present:
 
 ```json
 {
-  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json"
+  "C_Cpp.default.compileCommands": [
+    "${workspaceFolder}/build/compile_commands.json",
+    "${workspaceFolder}/.cache/tests/compile_commands.json"
+  ]
 }
 ```
 
-This setting is already applied in the current workspace. After a successful
-build, open `main/app_main.c` and check that the SDK and FreeRTOS includes have
-no missing-header diagnostics. The red underlines cleared after this setting
-was applied; no source-code changes were required.
+The repository ignores machine-specific `.vscode/settings.json`, so apply this
+setting locally. After a successful firmware build and native test run, open
+`main/app_main.c` and a file under `components/*/test/`; check that their SDK,
+FreeRTOS, and host-test includes have no missing-header diagnostics.
 
-After a fresh clone or deleting the build directory, run `idf.py build` to
-regenerate the database. If diagnostics remain, check that the database contains
-the source file and that any selected C/C++ configuration provider is not
-overriding it. Do not silence diagnostics or manually copy SDK headers into the
-project.
+After a fresh clone or deleting generated directories, run `idf.py build` and
+`node tools/test-native.mjs` to regenerate both databases. If diagnostics
+remain, check that the appropriate database contains the source file and that
+any selected C/C++ configuration provider is not overriding it. Do not silence
+diagnostics or manually copy SDK headers into the project.
 
 ## Proposed Repository Structure
 

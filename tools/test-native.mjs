@@ -41,8 +41,21 @@ const suites = {
   input_protocol: { includes: [...usbIncludes, "components/web_server", "managed_components/espressif__cjson/cJSON"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/usb_keyboard/keyboard_state.c", "components/web_server/input_protocol.c", "components/web_server/test/input_protocol_test.c"], flags: ["-DCJSON_NESTING_LIMIT=4", "-lm"] },
 };
+const compilerArguments = suite => [...prefix, ...flags, ...suite.includes.map(path => `-I${path}`),
+  ...(suite.flags ?? [])];
 const selected = process.argv.length > 2 ? process.argv.slice(2) : Object.keys(suites);
 await mkdir(".cache/tests", { recursive: true });
+const compilationDatabase = Object.entries(suites).flatMap(([name, suite]) =>
+  suite.sources.map(source => {
+    const output = resolve(`.cache/tests/${name}-${basename(source)}.o`);
+    return {
+      directory: root,
+      file: resolve(source),
+      output,
+      arguments: [compiler, ...compilerArguments(suite), "-c", source, "-o", output],
+    };
+  }));
+await writeFile(".cache/tests/compile_commands.json", `${JSON.stringify(compilationDatabase, null, 2)}\n`);
 if (selected.some(name => suites[name]?.boardStubs)) {
   for (const header of ["sdkconfig.h", "esp_err.h", "esp_log.h", "esp_timer.h", "driver/gpio.h", "freertos/FreeRTOS.h", "freertos/task.h"]) {
     const path = resolve(".cache/tests/board-stubs", header);
@@ -72,8 +85,7 @@ for (const name of selected) {
   assert.ok(Object.hasOwn(suites, name), `Unknown native suite: ${name}`);
   const suite = suites[name];
   const output = resolve(`.cache/tests/${name}_test${process.platform === "win32" ? ".exe" : ""}`);
-  execFileSync(compiler, [...prefix, ...flags, ...suite.includes.map(path => `-I${path}`), ...suite.sources,
-    ...(suite.flags ?? []), "-o", output], { stdio: "inherit" });
+  execFileSync(compiler, [...compilerArguments(suite), ...suite.sources, "-o", output], { stdio: "inherit" });
   execFileSync(output, [], { stdio: "inherit" });
 }
 console.log(`PASS: ${selected.length} native suite(s) executed${process.platform === "win32" ? " (Windows, without sanitizers)" : " with ASan/UBSan"}.`);
