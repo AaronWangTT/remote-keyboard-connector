@@ -150,25 +150,48 @@ first increment, using `CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT` and
 accepted OTA image; do not provide an unsigned-upload bypass in the release
 profile. Bootstrap installation must contain a signed initial application too.
 
+Pin `CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y` (RSA-3072) for this ESP32-S3
+profile instead of relying on ESP-IDF's default signing choice. A change to
+ECDSA or another scheme requires a new, separately reviewed security profile.
+With the repository's minimal build, the component that owns OTA and trial-boot
+operations must declare `PRIV_REQUIRES app_update`; this keeps ESP-IDF's OTA and
+image-signature verification code and Kconfig in the dependency graph. Clean CI
+must assert the generated signing settings and reject a missing verifier
+dependency before packaging.
+
 In this ESP32-S3 mode, the trusted public key comes from the first signature
 block of the installed application. Verification of the new candidate must use
-that established trust, not simply a key supplied by the candidate. Keep the
-private signing key outside Git, public artifacts, the device, and ordinary PR
-jobs. Plan its backup and custody before distributing the first signed baseline.
-Multi-key rotation is not assumed to work by appending signature blocks in this
-mode; loss, compromise, or rotation needs a separately reviewed recovery plan.
+that established trust, not simply a key supplied by the candidate. A bootstrap
+being signed is therefore insufficient to authenticate its initial key. Before
+writing any new or migrated board, the wired installer must obtain the expected
+production public-key fingerprint from a trusted source independent of the
+candidate bundle, extract the key from the `ota_0` signature block, compare its
+fingerprint, and verify the image with that pinned key. Re-read the written image
+and repeat both checks before first boot; never accept a fingerprint declared
+only by the bundle being verified. Record the expected and observed fingerprints
+in the private installation report so migration preserves the key that later
+OTA verification derives from the running application.
+
+Keep the private signing key outside Git, public artifacts, the device, and
+ordinary PR jobs. Plan its backup and custody before distributing the first
+signed baseline. Multi-key rotation is not assumed to work by appending
+signature blocks in this mode; loss, compromise, or rotation needs a separately
+reviewed recovery plan.
 
 Leave hardware Secure Boot, flash/NVS encryption, and eFuse anti-rollback out of
 this increment. They have provisioning and recovery consequences and require
 separate approval. Automatic fallback to a previous healthy application is
 different from irreversible security-version anti-rollback.
 
-Keep owner sessions, exact Host/Origin checks, CSRF protection for mutations,
-bounded requests, and rate limits. The current HTTP development profile remains
-restricted to protected, trusted test networks. Signatures authenticate firmware
-bytes; they do not protect HTTP passwords/sessions, prevent denial of service,
-or resist an attacker with arbitrary physical flash-write access. HTTPS/WSS
-remains an operational-security follow-up, not solved by this package format.
+After the Wi-Fi/authentication prerequisite is integrated, retain its owner
+sessions, exact Host/Origin checks, CSRF protection for mutations, bounded
+requests, and rate limits. The `main` baseline currently serves unauthenticated
+HTTP and does not meet this prerequisite; it must not expose OTA. Any later
+HTTP-only development profile remains restricted to protected, trusted test
+networks. Signatures authenticate firmware bytes; they do not protect HTTP
+passwords/sessions, prevent denial of service, or resist an attacker with
+arbitrary physical flash-write access. HTTPS/WSS remains an
+operational-security follow-up, not solved by this package format.
 
 For standard releases, propose numeric `major.minor.patch` ordering and reject
 same-version or older uploads. Keep development images under a separate test
@@ -278,18 +301,21 @@ For migration of an already provisioned board:
    layout, flash settings, stable power, and a usable ROM recovery path.
 2. Save and independently verify a complete private flash backup before any
    write. Treat backups as credential-bearing artifacts outside the repository.
-3. Verify trusted destination binaries, signatures, layout, bootstrap version,
-   and preservation ranges for NVS and the unused `phy_init` partition. Refuse
-   unknown source layouts or overlapping writes; do not make `--replace-nvs`
-   a migration shortcut.
+3. Verify destination binaries, signatures, layout, bootstrap version, and the
+   `ota_0` public-key fingerprint against trusted input obtained independently
+   of the candidate bundle. Verify preservation ranges for NVS and the unused
+   `phy_init` partition. Refuse unknown source layouts, untrusted keys, or
+   overlapping writes; do not make `--replace-nvs` a migration shortcut.
 4. Write only the reviewed bootstrap/partition/application/OTA-data ranges,
    using sparse writes with sector-erase boundaries accounted for. Do not write
    a merged image, regenerate ownership, erase the whole chip, or burn eFuses.
 5. Verify all changed ranges and the preserved NVS and unused `phy_init` bytes
-   before normal boot. This includes existing NVS calibration records; normal
-   radio startup may subsequently update calibration, so do not require NVS
-   byte equality after boot. Confirm owner login, private AP identity, saved
-   network behavior, USB typing, and rollback readiness afterward.
+   before normal boot. Re-read `ota_0`, verify its signature with the independently
+   pinned key, and confirm its public-key fingerprint still matches. This includes
+   existing NVS calibration records; normal radio startup may subsequently update
+   calibration, so do not require NVS byte equality after boot. Confirm owner
+   login, private AP identity, saved network behavior, USB typing, and rollback
+   readiness afterward.
 
 The wired migration is not an atomic or power-failure-safe transaction. Record
 the write plan and recovery procedure; interrupted writes require reviewed
@@ -336,7 +362,7 @@ substitutes for the device checks.
 | Artifact isolation | OTA output contains only the signed app and public metadata; no install images, NVS, secrets, or address-selection instructions. |
 | PHY initialization | Verify embedded-data build settings and reject mismatched profiles; fresh installation starts radio with erased unused `phy_init`, and migration preserves NVS calibration records plus unused PHY bytes before boot. |
 | Compatibility and bounds | Reject malformed, oversized, truncated, wrong-chip/product/layout/bootstrap/schema images and disallowed versions. Check final signed size against both slots. |
-| Authenticity | Reject unsigned, corrupted, wrong-key, and altered signed-descriptor images even if the unsigned manifest is changed to match. |
+| Authenticity | For bootstrap and migration, pin the expected production public-key fingerprint from a trusted source outside the candidate bundle, then reject unsigned, corrupted, wrong-key, and altered signed-descriptor images even if the unsigned manifest is changed to match. Re-read the installed `ota_0` and repeat its signature and fingerprint checks before first boot. |
 | Admission and concurrency | Reject active/pending keyboard control, concurrent uploads and network jobs; AP hold, expiry, cancellation, and status remain bounded and race-free. |
 | Interrupted update | Power or network loss during erase/write/verification leaves the running image bootable and input disarmed; no partial image is selected. |
 | Trial boot | Exercise power loss around boot selection and trial boot, deliberate startup failure/hang, first-update rollback, later A/B cycles, and successful confirmation. |
