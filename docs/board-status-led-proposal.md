@@ -110,9 +110,9 @@ controllers and expires their leases. The
 [application entry point](../main/app_main.c) observes startup failures.
 No onboard status-LED driver is currently initialized.
 
-Use the existing board component as the home for GPIO ownership and a small
-pattern renderer. Keep application-state selection separate from electrical
-polarity and time-based rendering so both can be tested without hardware.
+Add a board component as the home for GPIO ownership and a small pattern
+renderer. Keep application-state selection separate from electrical polarity
+and time-based rendering so both can be tested without hardware.
 Do not make the board driver depend directly on web-server session internals.
 
 - Select the documented board/pin/polarity explicitly. An unsupported or
