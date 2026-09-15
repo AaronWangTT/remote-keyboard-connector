@@ -111,7 +111,7 @@ Publish two clearly distinguished firmware deliverables:
 
 | Artifact | Contents and permitted use |
 | --- | --- |
-| Wired bootstrap/install bundle | OTA-capable bootloader, partition table, signed application for `ota_0` with embedded PHY initialization data, explicit OTA-data initialization, flash metadata, and a versioned install manifest. No separate PHY image. A separate local provisioning operation supplies private NVS only for initial ownership setup. |
+| Wired bootstrap/install bundle | OTA-capable bootloader, partition table, signed application for `ota_0` with embedded PHY initialization data, explicit OTA-data initialization, flash metadata, and an independently authenticated versioned install manifest covering every public image and write offset. No separate PHY image. A separate local provisioning operation supplies private NVS only for initial ownership setup. |
 | Routine OTA release | One signed ESP-IDF application `.bin`, plus a public release manifest for distribution and offline inspection. The browser uploads only the binary; the device selects the inactive slot. |
 
 The OTA artifact must not contain bootloader, partition-table, OTA-data, NVS,
@@ -159,6 +159,15 @@ image-signature verification code and Kconfig in the dependency graph. Clean CI
 must assert the generated signing settings and reject a missing verifier
 dependency before packaging.
 
+Authenticate the wired bootstrap as a whole before relying on its application
+key. The installer must start with a release-verification public key or exact
+approved digests obtained through a trusted channel outside the candidate
+bundle. Use that independent trust root to verify a signed install manifest
+covering the exact bootloader, partition table, `ota_0`, OTA-data initializer,
+security profile, and write offsets before writing, then re-read every written
+range and compare it with the authenticated manifest. A signature or digest
+declared only inside the candidate bundle is not evidence of provenance.
+
 In this ESP32-S3 mode, the trusted public key comes from the first signature
 block of the installed application. Verification of the new candidate must use
 that established trust, not simply a key supplied by the candidate. A bootstrap
@@ -181,7 +190,11 @@ reviewed recovery plan.
 Leave hardware Secure Boot, flash/NVS encryption, and eFuse anti-rollback out of
 this increment. They have provisioning and recovery consequences and require
 separate approval. Automatic fallback to a previous healthy application is
-different from irreversible security-version anti-rollback.
+different from irreversible security-version anti-rollback. The authenticated
+wired installation establishes the initial network-update baseline, but without
+hardware Secure Boot an attacker with physical flash-write access can replace
+the bootloader or application trust anchor afterward; this profile does not
+claim to resist that attack.
 
 After the Wi-Fi/authentication prerequisite is integrated, retain its owner
 sessions, exact Host/Origin checks, CSRF protection for mutations, bounded
@@ -231,9 +244,13 @@ and OTA validation state. Route names are proposed, not new supported APIs.
    flash operations do not monopolize the HTTP server. Keep status and
    cancellation responsive; serialize state changes and use finite receive,
    inactivity, total-job, and staged-image deadlines.
-6. On complete receipt, call `esp_ota_end()` and enforce signature plus signed
-   compatibility checks. Only a fully verified image becomes staged. Truncation,
-   cancellation, timeout, invalid metadata, or failure must never select it.
+6. On complete receipt, call `esp_ota_end()` under the signed-on-update profile
+   and require ESP-IDF's verifier to match the candidate signature-block key
+   against the trusted key digest from the running application. A candidate
+   that is validly self-signed under any other key must fail. Then enforce the
+   signed compatibility checks. Only a fully verified image becomes staged.
+   Truncation, cancellation, timeout, invalid metadata, or failure must never
+   select it.
 7. Wait for explicit activation. Recheck session/CSRF, job identity, and staged
    validity; only then call `esp_ota_set_boot_partition()`. A stale tab must not
    activate a different candidate. Keep input disabled through restart.
@@ -265,12 +282,21 @@ accept the image. A powered-off router should permit protected-AP recovery, not
 automatically condemn the update. Choose the diagnostic deadline to include
 bounded station retry/recovery, and confirm promptly after checks pass.
 
-On failure, use `esp_ota_mark_app_invalid_rollback_and_reboot()`. A watchdog or
-explicit timeout must force recovery from a hung trial; the bootloader cannot
-roll back an application that never resets. Reset or power loss during an
-unconfirmed trial triggers fallback on the next boot. These checks do not prove
-every keyboard behavior correct; post-update USB/browser acceptance remains
-necessary.
+Commit `CONFIG_BOOTLOADER_WDT_ENABLE=y` and
+`CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE=y` for the OTA profile so the RTC
+watchdog remains armed from the bootloader into earliest application startup.
+Choose a reviewed `CONFIG_BOOTLOADER_WDT_TIME_MS` budget, feed the watchdog only
+while bounded trial diagnostics make expected progress, and do not disable it
+before the image is confirmed. An application timer may coordinate a responsive
+failure path, but it cannot replace this watchdog because stopped startup or a
+hung scheduler cannot service a timer.
+
+On an explicit failure, use `esp_ota_mark_app_invalid_rollback_and_reboot()`.
+On a hang, the armed watchdog must reset the device so the bootloader can reject
+the still-unconfirmed image and fall back on the next boot. Reset or power loss
+during an unconfirmed trial likewise triggers fallback. These checks do not
+prove every keyboard behavior correct; post-update USB/browser acceptance
+remains necessary.
 
 Do not erase the previous healthy image after confirmation. It is reused only
 as the inactive target of a later update. Ensure the initial wired `ota_0` is a
@@ -301,11 +327,12 @@ For migration of an already provisioned board:
    layout, flash settings, stable power, and a usable ROM recovery path.
 2. Save and independently verify a complete private flash backup before any
    write. Treat backups as credential-bearing artifacts outside the repository.
-3. Verify destination binaries, signatures, layout, bootstrap version, and the
-   `ota_0` public-key fingerprint against trusted input obtained independently
-   of the candidate bundle. Verify preservation ranges for NVS and the unused
-   `phy_init` partition. Refuse unknown source layouts, untrusted keys, or
-   overlapping writes; do not make `--replace-nvs` a migration shortcut.
+3. Verify the independently authenticated install manifest covers the exact
+   bootloader, partition table, `ota_0`, OTA-data initializer, security profile,
+   and offsets. Verify the `ota_0` signature and public-key fingerprint against
+   that trusted input, plus preservation ranges for NVS and the unused `phy_init`
+   partition. Refuse unknown source layouts, untrusted keys, or overlapping
+   writes; do not make `--replace-nvs` a migration shortcut.
 4. Write only the reviewed bootstrap/partition/application/OTA-data ranges,
    using sparse writes with sector-erase boundaries accounted for. Do not write
    a merged image, regenerate ownership, erase the whole chip, or burn eFuses.
@@ -362,10 +389,12 @@ substitutes for the device checks.
 | Artifact isolation | OTA output contains only the signed app and public metadata; no install images, NVS, secrets, or address-selection instructions. |
 | PHY initialization | Verify embedded-data build settings and reject mismatched profiles; fresh installation starts radio with erased unused `phy_init`, and migration preserves NVS calibration records plus unused PHY bytes before boot. |
 | Compatibility and bounds | Reject malformed, oversized, truncated, wrong-chip/product/layout/bootstrap/schema images and disallowed versions. Check final signed size against both slots. |
-| Authenticity | For bootstrap and migration, pin the expected production public-key fingerprint from a trusted source outside the candidate bundle, then reject unsigned, corrupted, wrong-key, and altered signed-descriptor images even if the unsigned manifest is changed to match. Re-read the installed `ota_0` and repeat its signature and fingerprint checks before first boot. |
+| Bootstrap provenance | Start from an installer trust root obtained outside the candidate bundle. Reject a modified or self-declared install manifest and any altered bootloader, partition table, `ota_0`, OTA-data initializer, security profile, or write offset; re-read every written range against the authenticated manifest before first boot. |
+| OTA authenticity and key continuity | For bootstrap and migration, pin the expected production public-key fingerprint outside the candidate bundle and verify the installed `ota_0` with it. For every routine OTA, require ESP-IDF's verifier to compare the candidate signature-block key with the trusted key from the running application. Reject unsigned, corrupted, altered-descriptor, and validly self-signed wrong-key images even if public metadata is changed to match. |
+| Management authorization | On both AP and station interfaces, upload, status, cancellation, and activation reject anonymous, expired, revoked, and cross-interface sessions without leaking job data. Reject invalid Host/Origin values on every applicable request and missing or invalid CSRF tokens on every mutation. |
 | Admission and concurrency | Reject active/pending keyboard control, concurrent uploads and network jobs; AP hold, expiry, cancellation, and status remain bounded and race-free. |
 | Interrupted update | Power or network loss during erase/write/verification leaves the running image bootable and input disarmed; no partial image is selected. |
-| Trial boot | Exercise power loss around boot selection and trial boot, deliberate startup failure/hang, first-update rollback, later A/B cycles, and successful confirmation. |
+| Trial boot | Exercise power loss around boot selection and trial boot, explicit failure, first-update rollback, later A/B cycles, and successful confirmation. For deliberate hangs both before and after scheduler startup, verify the armed RTC watchdog resets the device and triggers rollback without relying on an application timer. |
 | Persistent settings | Identity, ownership, and saved Wi-Fi survive migration, update, and fallback; neither credentials nor incompatible schemas are silently replaced. |
 | Real keyboard behavior | AP/STA browser flows, host absent/suspended, all-keys-up before update, reconnect/login, and explicit reacquisition work on actual USB hardware. |
 | Resource budget | Measure free internal heap, stack high-water marks, HTTP responsiveness, watchdog behavior, power stability, and signed-image headroom under update load. |
