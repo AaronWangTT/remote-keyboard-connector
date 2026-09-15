@@ -48,17 +48,45 @@ The target defaults to `esp32s3`. A successful build produces
 to use the generated compilation database; the setup guide explains how to
 apply that setting after a fresh clone.
 
+Tracked defaults select compiler size optimization for deployable firmware.
+An existing generated `sdkconfig` retains its previous optimization choice;
+before evaluating capacity, verify that generated `build/config/sdkconfig.json`
+reports `COMPILER_OPTIMIZATION_SIZE=true`. A deliberate debug build can select
+the debug optimization profile through menuconfig, but its larger image may
+have substantially less partition headroom.
+
 ### Optional Board Status LED
 
-Generic builds leave GPIO48 untouched. The opt-in XinluCity ESP32S3 NANO /
-ESP32-S3-N16R8 profile uses the schematic's active-low, single-color G48:
-one short pulse every two seconds for ready/idle, steady ON for a valid live
-controller, and two short pulses for not ready. PWR remains independent.
-No brightness setting or web UI change is included.
+Generic builds leave GPIO48 untouched. On a fresh configuration, plain
+`idf.py build` selects `BOARD_STATUS_LED_DISABLED`; an existing generated
+`sdkconfig` retains whichever profile was selected previously.
+
+For an interactive local build, run **ESP-IDF: SDK Configuration Editor
+(menuconfig)**, then select **Board status LED > Board profile > XinluCity
+ESP32S3 NANO / ESP32-S3-N16R8 (G48 active-low)** and rebuild. This updates the
+ignored local `sdkconfig`; do not commit that generated file.
+
+For a reproducible profile build, use the tracked overlay with a fresh build
+and configuration directory because `SDKCONFIG_DEFAULTS` does not override an
+existing generated configuration:
+
+```bash
+idf.py -B .cache/board-led-enabled -D SDKCONFIG=.cache/board-led-enabled/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.board-xinlucity" build
+```
+
+Before flashing, verify the generated configuration reports
+`BOARD_XINLUCITY_ESP32S3_NANO=true` and `BOARD_STATUS_LED_DISABLED=false`.
+The profile uses the schematic's active-low, single-color G48: one short pulse
+every two seconds for ready/idle, steady ON for a valid live controller, and
+two short pulses for not ready. PWR remains independent. No brightness setting
+or web UI change is included.
 
 See the [profile build commands and validation record](docs/board-status-led-proposal.md#software-implementation-record).
-Software tests pass, but physical polarity, visible timing, and USB/load
-acceptance remain pending; this is not approval to flash a board.
+Focused software checks and a 2026-09-15 physical check of the previously
+flashed debug-optimized LED image passed for visible G48 ready/idle, active
+control, and release back to idle. The optimized image described below was not
+flashed. Startup/not-ready timing, suspend, failure handling, USB/load effects,
+and endurance remain pending.
 
 ## Sender Provisioning
 
@@ -265,13 +293,17 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-The current default image is `0xf4ba0` bytes (1,002,400 bytes), leaving
-`0xb460` bytes (46,176 bytes) in the existing 1 MiB application partition. The
-opt-in status-LED image leaves `0x9c00` bytes (39,936 bytes); both have about 4%
-headroom. See the LED implementation record for the checked configurations.
-Flash layout and PSRAM settings are unchanged. This is below the broader 20%
-headroom goal; physical flash capacity and runtime heap/stack/power behavior
-remain unverified.
+With compiler size optimization and the XinluCity status-LED profile, the
+verified image is `0xe17c0` bytes (923,584 bytes), leaving `0x1e840` bytes
+(124,992 bytes, about 12%) in the existing 1 MiB application partition. This
+removes ESP-IDF's nearly-full warning and saves 86,368 bytes compared with the
+later `0xf6920`-byte (1,009,952-byte) debug-optimized LED image that was
+physically flashed during hardware validation. The earlier isolated profile
+build recorded `0xf6400`; it was not the comparison baseline. Flash layout,
+NVS offsets, and PSRAM settings are unchanged. The result remains below the
+broader 20% product headroom goal. Enlarging or replacing the live partition
+table is a separate migration, not a routine firmware update; runtime
+heap/stack/power behavior also remains to be fully characterized.
 
 Do not commit credentials or machine-specific SDK paths. Generated build
 outputs and local configuration are excluded by the Git ignore rules. Project

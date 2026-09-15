@@ -1,1 +1,3 @@
+# Opt-in overlay for the documented XinluCity ESP32S3 NANO G48 circuit.
+# Use with sdkconfig.defaults as described in README.md; never apply generically.
 CONFIG_BOARD_XINLUCITY_ESP32S3_NANO=y
