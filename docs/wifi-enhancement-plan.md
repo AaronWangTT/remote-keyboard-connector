@@ -585,14 +585,31 @@ tracks the effective name and active IPv4 addresses. No NAT or mDNS reflection
 is enabled. Actual client discovery, collision handling, channel changes, and
 subnet-overlap recovery have not yet been observed on hardware.
 
+### Sender Installer Update (2026-09-15)
+
+The [sender installation command](sender-installation.md) now automates the
+initial firmware and per-device NVS write behind explicit `--execute`, expected
+factory MAC, and serial-port arguments. It uses Espressif's image/partition
+parsers, NVS generator, and esptool; snapshots firmware and private setup files
+outside Git; saves and verifies a full-flash backup; and verifies the four
+written images before reset. Existing partition layouts must match. Non-empty
+NVS requires explicit `--replace-nvs`, which discards its settings and ownership
+rather than merging keys. Ordinary firmware updates must retain NVS.
+
+Node provisioning/installer tests, SDK-backed fake-device tests, and an offline
+check of the existing build passed locally. No real board was connected or
+written, and no actual user's identity was generated. The original file-only
+utility remains unchanged; the hardware gates below still apply.
+
 ### Remaining Device Gates
 
 - Identify the exact board, flash capacity, recovery-button wiring, and the
   intended regulatory country. The implementation leaves ESP-IDF's conservative
   default country/channel configuration unchanged rather than inventing one.
-- Verify a private provisioning layout and the sender's initial NVS write or
-  migration path. The utility intentionally does not generate/write an NVS image.
-  Existing NVS must not be blindly replaced. Missing identity fails closed.
+- Validate the guarded sender installer on the identified board, including its
+  backup, NVS initialization, and power-loss recovery procedure. Partition-table
+  changes need a separate migration plan; existing NVS must not be blindly
+  replaced. Missing identity fails closed.
 - Implement and validate physical stop/network recovery and owner-account
   recovery once the button wiring and reset policy are agreed. There is no GPIO
   polling or factory-reset endpoint in this increment, and no claim of complete

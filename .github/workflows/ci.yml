@@ -54,6 +54,12 @@ jobs:
           source "$IDF_PATH/export.sh"
           bash tools/test-host.sh 2>&1 | tee .cache/ci/host-tests.log
 
+      - name: Validate installer and firmware artifacts without hardware
+        run: |
+          source "$IDF_PATH/export.sh"
+          python tools/install_device_test.py 2>&1 | tee .cache/ci/installer-tests.log
+          node tools/install-device.mjs --firmware build --write-manifest 2>&1 | tee .cache/ci/firmware-validation.log
+
       - name: Summarize firmware build
         if: ${{ !cancelled() }}
         run: |
@@ -63,7 +69,7 @@ jobs:
             printf 'Build type: **%s** (not a release).\n\n' "$BUILD_KIND"
             printf 'Checked-out commit: `%s`\n\n' "$(git rev-parse HEAD)"
             printf 'Target: `esp32s3`; ESP-IDF: `v6.1`.\n\n'
-            printf 'No hardware was flashed or tested. Artifacts contain separate images only; they do not provision or replace NVS/settings.\n\n'
+            printf 'No hardware was flashed or tested. Generic artifacts exclude NVS images and credentials; sender installation is a separate explicit operation.\n\n'
             printf '### Image and Partition Size\n\n```text\n'
             if [[ -f .cache/ci/firmware-build.log ]]; then
               grep -F 'Smallest app partition' .cache/ci/firmware-build.log || true
@@ -86,6 +92,7 @@ jobs:
             build/partition_table/partition-table.bin
             build/flasher_args.json
             build/flash_args
+            build/firmware-manifest.json
             .cache/ci/firmware-summary.md
           include-hidden-files: true
           if-no-files-found: error

@@ -20,6 +20,7 @@ encrypted credential storage remain lower-priority follow-up work.
 ## Documentation
 
 - [CI workflow setup proposal](docs/ci-workflow-proposal.md)
+- [Sender installation and firmware artifact guide](docs/sender-installation.md)
 - [Wi-Fi enhancement plan, implementation record, and remaining gates](docs/wifi-enhancement-plan.md)
 - [Keyboard enhancement plan and validation results](docs/keyboard-enhancement-plan.md)
 - [Minimal implementation plan and validation results](docs/minimal-implementation-plan.md)
@@ -49,25 +50,46 @@ apply that setting after a fresh clone.
 ## Sender Provisioning
 
 The sender prepares each board before shipping; recipients do not need ESP-IDF,
-Python, a serial driver, or a flashing utility. Install the tools dependencies,
-then prepare private setup files using the verified factory base MAC:
+Python, a serial driver, or a flashing utility. From an ESP-IDF v6.1 terminal,
+install the Node.js tools dependencies and validate the firmware offline:
 
-```text
-node tools/provision-device.mjs --device-id <12-hex-digit-base-MAC> --output <new-private-directory-outside-repo>
+```bash
+npm ci --prefix tools --ignore-scripts
+node tools/install-device.mjs --firmware build
 ```
 
-The utility generates a persistent unique AP password, a separate one-time owner
-setup code, an NVS CSV, a PNG Wi-Fi QR code, and a printable setup card. The output
-directory must be new and outside this repository. Windows ACLs or POSIX private
-permissions restrict access. It does not print secrets, create a firmware package,
-open a serial port, generate/write an NVS image, or erase a device.
+Without `--execute`, the installer checks the three separate firmware images,
+their digests, the partition table, and the build's security configuration.
+It does not generate credentials or open a serial port. For downloaded CI
+artifacts, extract the complete artifact (including its build manifest) and
+pass its `build` directory to `--firmware`.
 
-**Do not flash this firmware onto the existing board until its identity and NVS
-provisioning layout have been verified.** A complete sender workflow must use
-Espressif's NVS tooling to install the private record explicitly; an NVS image
-replaces a partition rather than merging settings. That device-writing step is
-not automated here. Missing or inconsistent provisioning leaves Wi-Fi/control
-disabled, without erasing NVS or falling back to the old public password.
+After verifying the board's factory base MAC, flash settings, power, and ROM
+recovery procedure, one explicit command performs initial installation:
+
+```text
+node tools/install-device.mjs --firmware build --device-id <12-hex-digit-base-MAC> --output <new-private-directory-outside-repo> --port <COMx> --execute
+```
+
+The command creates a private firmware snapshot, per-device AP/setup credentials,
+NVS image, Wi-Fi QR, and setup card. It checks the connected chip, expected MAC,
+security state, and flash capacity; saves and verifies a full-flash backup;
+then writes bootloader, partition table, application, and NVS in one sparse
+esptool operation. All four images are verified before resetting the board.
+
+**Existing partition tables must match, and non-empty NVS is refused by default.**
+Only add `--replace-nvs` when deliberately discarding all existing NVS settings
+and ownership after backup. It replaces the shared partition, not just the
+`kb_identity` namespace. There is no automatic partition migration, whole-chip
+erase, or eFuse change. Normal firmware updates must preserve NVS instead of
+running this initial-install command again.
+
+See the [sender guide](docs/sender-installation.md) for prerequisites, private
+artifacts, and failure handling. The original
+[file-preparation utility](tools/provision-device.mjs) remains available for
+CSV/QR/card generation only. Missing or inconsistent provisioning still leaves
+Wi-Fi/control disabled. The combined installer has software-test coverage;
+physical installation, owner claim, and recovery acceptance remain pending.
 
 ## Keyboard Operation
 
@@ -129,13 +151,15 @@ ESP cross-compiler cannot execute native unit tests. The Bash entry point
 On Linux, the runner selects `/usr/bin/` binutils explicitly so an activated
 ESP-IDF toolchain cannot substitute a cross-assembler or linker.
 
-Five native suites (including owner-record persistence and eight USB-state cases), twelve keyboard-model
-tests, and 25 provisioning/API/Chromium/WebKit tests pass in the Linux review
-validation. Native Windows tests ran without sanitizers; the Linux runner
-enables ASan/UBSan.
+The Wi-Fi enhancement validation recorded five native suites (including owner-record
+persistence and eight USB-state cases), twelve keyboard-model tests, and 25
+provisioning/API/Chromium/WebKit tests passing in the Linux review. Native
+Windows tests ran without sanitizers; the Linux runner enables ASan/UBSan.
 Browser tests verify receipt at a mock backend, not real USB delivery, mDNS,
 radio behavior, or actual iPhone/iPad Safari. See the
 [implementation record](docs/wifi-enhancement-plan.md#implementation-record).
+The [sender guide](docs/sender-installation.md#verification) lists the additional
+installer checks, including SDK-backed fake-device tests that never use hardware.
 The firmware has no npm runtime dependencies; the Lucide icons are embedded.
 
 For an interactive UI-only preview:
@@ -170,18 +194,23 @@ The [CI workflow](.github/workflows/ci.yml) defines two parallel checks on PRs t
 `main`, pushes to `main`, and manual runs: **Firmware and Native Tests** and
 **Browser Integration**. It builds in a pinned ESP-IDF v6.1 image, runs the
 existing native/model tests, and exercises Chromium/WebKit on Ubuntu 24.04.
-Successful firmware jobs upload the application, bootloader, and partition-table
-images with `flasher_args.json`, `flash_args`, and a build summary. Available
-logs/screenshots are retained for diagnosis, including failures; artifact
-retention is 14 days.
+The firmware job also runs installer safety tests and offline artifact validation.
+Successful jobs upload the separate application, bootloader, partition table,
+generated flash metadata, a credential-free manifest with image hashes/security
+settings, and a build summary. GitHub Actions provides the
+download archive; there is no nested firmware ZIP, merged BIN, or per-device NVS
+image in CI. Private identities and backups are generated only by explicit local
+sender installation. Available logs/screenshots are retained for diagnosis,
+including failures; artifact retention is 14 days.
 
 Historically, PR #1's [first hosted run](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34860547440)
 passed Browser Integration but failed the firmware job's post-build Git check
 because of container checkout ownership. After an exact-workspace trust fix,
 the [rerun](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34861221888)
-passed both jobs, including native tests, packaging, and artifact uploads.
-Those packaging steps belonged to PR #1 and were subsequently removed; current
-CI uploads only the separate images and metadata listed above.
+passed both jobs, including native tests, the original ZIP/BIN packaging, and
+artifact uploads. Those packaging steps belonged to PR #1 and were subsequently
+removed; current CI uploads only the separate images and metadata listed above.
+Those runs do not establish the combined installer's hardware acceptance.
 Both checks are required by `main`'s ruleset. See the proposal for the validation
 record and security boundaries.
 
@@ -203,7 +232,7 @@ remote-keyboard-connector/
 |-- docs/                   Setup notes and design documentation
 |-- hardware/               Board identification and wiring documentation
 |-- main/                   USB, AP, and web-service startup
-`-- tools/                  Host tests, private setup-card preparation, and preview
+`-- tools/                  Host tests, guarded sender installation, and preview
 ```
 
 Reserved empty directories use `.gitkeep` placeholders so they can be tracked.
