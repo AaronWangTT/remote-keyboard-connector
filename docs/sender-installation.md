@@ -162,6 +162,9 @@ directory, use the verified ROM recovery procedure, and review the saved plan
 and backup before a separately authorized recovery write. Do not delete a
 successful backup or start a fresh credential set to recover a partial install.
 A failed preflight can leave private preparation files but never writes flash.
+After all flash images verify, a failure saving the result record is still
+reported as an error, but the installer attempts to reset the verified board
+into its application. Failed flash verification never triggers that reset.
 
 A verified backup is not an unconditional host power-loss recovery guarantee.
 On POSIX, private file contents and their directory entries are synchronized with

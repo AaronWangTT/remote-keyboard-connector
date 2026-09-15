@@ -545,6 +545,20 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse((self.output / "install-result.json").exists())
         self.assertTrue((self.output / "flash-backup.bin").is_file())
 
+    def test_result_persistence_failure_still_resets_a_verified_device(self):
+        def fail_result_write(directory, name, data):
+            if name == "install-result.json":
+                raise OSError("Result persistence failed")
+            private_write(directory, name, data)
+
+        with patch("install_device.private_write", side_effect=fail_result_write):
+            with self.assertRaisesRegex(OSError, "Result persistence failed"):
+                install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, ["connect", "backup", "write", "verify", "reset"])
+        self.assertTrue(self.device.closed)
+        self.assertFalse((self.output / "install-result.json").exists())
+        self.assertTrue((self.output / "flash-backup.bin").is_file())
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(add_help=False)

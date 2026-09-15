@@ -238,8 +238,10 @@ def install(request, sdk):
         sdk.esptool.verify_flash(device, payloads, **plan["settings"])
         result = {"deviceId": device_id, "verified": True, "flashBytes": detected_bytes,
               "backupSha256": backup_hash, "backupDurability": backup_durability, "images": manifest["images"]}
-        private_write(directory, "install-result.json", (json.dumps(result, indent=2) + "\n").encode())
-        sdk.esptool.reset_chip(device, "hard-reset")
+        try:
+            private_write(directory, "install-result.json", (json.dumps(result, indent=2) + "\n").encode())
+        finally:
+            sdk.esptool.reset_chip(device, "hard-reset")
     return result
 
 
