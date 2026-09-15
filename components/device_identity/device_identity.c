@@ -142,6 +142,7 @@ esp_err_t device_identity_init(void)
     initialized = result == ESP_OK;
     if (!initialized) {
         mbedtls_platform_zeroize(ap_password, sizeof(ap_password));
+        mbedtls_platform_zeroize(claim_salt, sizeof(claim_salt));
         mbedtls_platform_zeroize(claim_digest, sizeof(claim_digest));
         mbedtls_platform_zeroize(&owner, sizeof(owner));
     } else if (owner.version == 1) {

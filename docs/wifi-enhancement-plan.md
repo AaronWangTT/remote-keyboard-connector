@@ -368,7 +368,7 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
 | Provisioning and browser/API | All 25 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, storage-fault admission, mode-preserving scan cancellation, confirmed/abandoned AP-address transitions, abandoned handover expiry, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf4480` bytes; `0xbb80` bytes (48,000 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf4490` bytes; `0xbb70` bytes (47,984 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -497,6 +497,11 @@ removes only its newly created output directory after a caught ACL, QR, or file
 write failure, and reports cleanup failure explicitly. Existing directories are
 never removed or overwritten. Tests cover generation failure, partial output,
 same-path retry, and invalid owner records returning before marker lookup.
+
+Failed identity initialization clears the AP password, claim salt/digest, and
+owner record. Actual initialization and owner-store adapter fault injection covers
+partial salt/hash reads, cost/owner errors, and crypto initialization failure,
+with successful unclaimed retry and owned startup checked afterward.
 
 Provisioning resolves the nearest existing parent before creating missing
 directories, rejecting an outside symlink into the repository without creating
