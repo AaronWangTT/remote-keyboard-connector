@@ -545,6 +545,10 @@ static void run_command(const network_command_t *command)
         return;
     }
     if (request->action == NETWORK_ACTION_CANCEL) {
+        portENTER_CRITICAL(&lock);
+        bool busy = snapshot.busy;
+        portEXIT_CRITICAL(&lock);
+        if (!busy) return;
         if (scanning) {
             esp_err_t result = esp_wifi_scan_stop();
             if (result == ESP_OK) {

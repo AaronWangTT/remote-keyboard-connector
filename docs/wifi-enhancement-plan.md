@@ -368,7 +368,7 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
 | Provisioning and browser/API | All 25 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, storage-fault admission, mode-preserving scan cancellation, confirmed/abandoned AP-address transitions, abandoned handover expiry, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf4490` bytes; `0xbb70` bytes (47,984 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf44d0` bytes; `0xbb30` bytes (47,920 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -502,6 +502,9 @@ Failed identity initialization clears the AP password, claim salt/digest, and
 owner record. Actual initialization and owner-store adapter fault injection covers
 partial salt/hash reads, cost/owner errors, and crypto initialization failure,
 with successful unclaimed retry and owned startup checked afterward.
+Fail-closed claim persistence errors wipe the same buffers, including failures at
+open, marker write/commit, and owner write/commit. Invalid setup codes and
+pre-storage derivation failures retain retry eligibility.
 
 Provisioning resolves the nearest existing parent before creating missing
 directories, rejecting an outside symlink into the repository without creating
@@ -515,6 +518,10 @@ Cancelling a scan only stops the scan and undoes temporary AP scan mode, leaving
 the saved profile and current STA/AP state intact. Firmware fault injection and
 API regressions verify no job-ID mutation on rejected writes and mode preservation
 on cancellation. Configuration-application failures have a specific UI message.
+Queued cancellation rechecks whether work remains busy before recovery, preserving
+the result and STA mode if a scan completed after cancellation was admitted.
+Firmware and preview predicate checks confirm an offline pending-overlap cancel
+is already non-writing under a storage fault; an online Keep AP save is blocked.
 
 Scan completion, timeout, cancellation, and failed startup check restoration of AP radio
 mode and enter recovery if it fails. Fault injection verifies a failed restoration
