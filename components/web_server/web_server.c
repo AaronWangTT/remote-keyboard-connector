@@ -395,7 +395,7 @@ static esp_err_t input_handler(httpd_req_t *request)
     }
     now = esp_timer_get_time();
     status = usb_keyboard_status();
-    if (now - client->last_seen >= INT64_C(1000000) || client->generation != status.generation) {
+    if (now - client->last_seen >= ACCESS_CONTROL_LEASE_US || client->generation != status.generation) {
         return input_fault(client);
     }
     client->last_seen = now;
