@@ -477,6 +477,13 @@ static bool supported_auth(wifi_auth_mode_t authentication)
     return authentication == WIFI_AUTH_WPA2_PSK || authentication == WIFI_AUTH_WPA_WPA2_PSK;
 }
 
+static bool restore_scan_mode(void)
+{
+    if (state.phase != NETWORK_AP || esp_wifi_set_mode(WIFI_MODE_AP) == ESP_OK) return true;
+    recovery("scan_failed", false);
+    return false;
+}
+
 static void finish_scan(void)
 {
     wifi_ap_record_t records[NETWORK_SCAN_LIMIT];
@@ -498,7 +505,7 @@ static void finish_scan(void)
     scan_expires = expires;
     portEXIT_CRITICAL(&lock);
     scanning = false;
-    if (state.phase == NETWORK_AP) esp_wifi_set_mode(WIFI_MODE_AP);
+    if (!restore_scan_mode()) return;
     job_result(result == ESP_OK ? "succeeded" : "failed", result == ESP_OK ? "" : "scan_failed", false);
 }
 
@@ -520,7 +527,7 @@ static void run_command(const network_command_t *command)
         if (result == ESP_OK) result = esp_wifi_scan_start(&scan, false);
         if (result != ESP_OK) {
             scanning = false;
-            if (state.phase == NETWORK_AP) esp_wifi_set_mode(WIFI_MODE_AP);
+            if (!restore_scan_mode()) return;
             job_result("failed", "scan_unavailable", false);
         } else job_result("scanning", "", true);
         return;
@@ -541,7 +548,7 @@ static void run_command(const network_command_t *command)
             esp_err_t result = esp_wifi_scan_stop();
             if (result == ESP_OK) {
                 scanning = false;
-                if (state.phase == NETWORK_AP) result = esp_wifi_set_mode(WIFI_MODE_AP);
+                if (!restore_scan_mode()) return;
             }
             job_result(result == ESP_OK ? "cancelled" : "failed", result == ESP_OK ? "" : "scan_failed", scanning);
             return;

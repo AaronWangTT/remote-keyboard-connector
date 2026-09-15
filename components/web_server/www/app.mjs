@@ -72,14 +72,24 @@ async function api(path, method = "GET", body) {
   return result;
 }
 
+function setPasswordVisibility(button, revealed) {
+  const input = document.getElementById(button.dataset.passwordToggle);
+  input.type = revealed ? "text" : "password";
+  button.querySelector(".icon").dataset.icon = revealed ? "eye-off" : "eye";
+  button.title = `${revealed ? "Hide" : "Show"} ${input.id === "wifi-password" ? "Wi-Fi password" : "password"}`;
+  button.setAttribute("aria-label", button.title);
+}
+
 function clearNetworkPassword() {
   document.querySelector("#wifi-password").value = "";
+  setPasswordVisibility(document.querySelector('[data-password-toggle="wifi-password"]'), false);
 }
 
 function renderAccount() {
   if (!account.authenticated) {
     currentView = "keyboard";
     clearNetworkPassword();
+    setPasswordVisibility(document.querySelector('[data-password-toggle="owner-password"]'), false);
   }
   document.querySelector("#account-view").hidden = account.authenticated;
   surface.hidden = !account.authenticated || currentView !== "keyboard";
@@ -517,6 +527,9 @@ document.querySelector("#logout").addEventListener("click", async () => {
     disconnect();
   } catch (error) { notify(errorMessage(error)); }
 });
+document.querySelector("#account-form").addEventListener("reset", event => {
+  for (const button of event.currentTarget.querySelectorAll("[data-password-toggle]")) setPasswordVisibility(button, false);
+});
 document.querySelector("#account-form").addEventListener("submit", async event => {
   event.preventDefault();
   disconnect();
@@ -548,11 +561,7 @@ document.querySelector("#account-form").addEventListener("submit", async event =
 });
 for (const button of document.querySelectorAll("[data-password-toggle]")) button.addEventListener("click", () => {
   const input = document.getElementById(button.dataset.passwordToggle);
-  const revealed = input.type === "password";
-  input.type = revealed ? "text" : "password";
-  button.querySelector(".icon").dataset.icon = revealed ? "eye-off" : "eye";
-  button.title = revealed ? "Hide password" : "Show password";
-  button.setAttribute("aria-label", button.title);
+  setPasswordVisibility(button, input.type === "password");
 });
 document.querySelector("#session-retry").addEventListener("click", loadSession);
 document.querySelector("#network-settings").addEventListener("click", async () => {

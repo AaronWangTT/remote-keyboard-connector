@@ -476,6 +476,20 @@ test("browser owner setup keeps credentials local and requires explicit control 
   context.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const ownerPassword = "\u{1f600}".repeat(4);
+  const revealPassword = async id => {
+    const toggle = page.locator(`[data-password-toggle="${id}"]`);
+    await toggle.click();
+    await expect(page.locator(`#${id}`)).toHaveAttribute("type", "text");
+    await expect(toggle.locator(".icon")).toHaveAttribute("data-icon", "eye-off");
+    await expect(toggle).toHaveAttribute("aria-label", /^Hide /);
+  };
+  const expectPasswordHidden = async id => {
+    const toggle = page.locator(`[data-password-toggle="${id}"]`);
+    await expect(page.locator(`#${id}`)).toHaveAttribute("type", "password");
+    await expect(toggle.locator(".icon")).toHaveAttribute("data-icon", "eye");
+    await expect(toggle).toHaveAttribute("aria-label", id === "wifi-password" ? "Show Wi-Fi password" : "Show password");
+    await expect(toggle).toHaveAttribute("title", await toggle.getAttribute("aria-label"));
+  };
   let claims = 0;
   page.on("request", request => { if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/claim") claims++; });
   await page.goto(url);
@@ -490,10 +504,12 @@ test("browser owner setup keeps credentials local and requires explicit control 
   }
   await page.getByLabel("Owner password", { exact: true }).fill(ownerPassword);
   await page.getByLabel("Confirm owner password").fill(ownerPassword);
+  await revealPassword("owner-password");
   await page.getByRole("button", { name: "Claim keyboard", exact: true }).click();
   const counters = async () => (await fetch(new URL("/__test__/input", url))).json();
   const key = page.getByRole("button", { name: "A", exact: true });
   await expect(page.locator("#take-control")).toBeVisible();
+  await expectPasswordHidden("owner-password");
   assert.equal(claims, 1);
   await expect(key).toBeDisabled();
   assert.equal((await counters()).down, 0);
@@ -512,9 +528,11 @@ test("browser owner setup keeps credentials local and requires explicit control 
     await page.getByRole("button", { name: "Network settings", exact: true }).click();
     await page.getByLabel("Join Wi-Fi", { exact: true }).check();
     await page.getByLabel("Wi-Fi password", { exact: true }).fill("discard-this-candidate");
+    await revealPassword("wifi-password");
     if (ending === "logout") await page.getByRole("button", { name: "Sign out", exact: true }).click();
     else if (ending === "expired-logout") {
       await page.getByRole("button", { name: "Back to keyboard", exact: true }).click();
+      await expectPasswordHidden("wifi-password");
       await page.context().clearCookies();
       const signedOut = page.waitForResponse(response => response.request().method() === "DELETE" && new URL(response.url()).pathname === "/api/v1/session");
       await page.getByRole("button", { name: "Sign out", exact: true }).click();
@@ -526,8 +544,27 @@ test("browser owner setup keeps credentials local and requires explicit control 
     }
     await expect(page.getByRole("heading", { name: "Sign in", exact: true })).toBeVisible();
     await expect(page.locator("#wifi-password")).toHaveValue("");
+    await expectPasswordHidden("wifi-password");
+    await expectPasswordHidden("owner-password");
+    if (ending === "logout") {
+      const rejectLogin = async route => {
+        if (route.request().method() === "POST") await route.fulfill({ status: 401, json: { error: "invalid_credentials" } });
+        else await route.continue();
+      };
+      await page.route("**/api/v1/session", rejectLogin);
+      await page.getByLabel("Owner password", { exact: true }).fill("incorrect-owner-password");
+      await revealPassword("owner-password");
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await expect(page.locator("#ui-message")).toContainText("Owner password not accepted");
+      await expect(page.locator("#owner-password")).toHaveValue("");
+      await expectPasswordHidden("owner-password");
+      await page.unroute("**/api/v1/session", rejectLogin);
+    }
     await page.getByLabel("Owner password", { exact: true }).fill(ownerPassword);
+    await revealPassword("owner-password");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(page.locator("#take-control")).toBeVisible();
+    await expectPasswordHidden("owner-password");
   }
   await takeControl(page);
 });
