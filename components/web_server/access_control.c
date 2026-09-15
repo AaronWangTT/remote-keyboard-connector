@@ -108,13 +108,19 @@ void access_session_revoke(access_session_t *session)
     }
 }
 
+bool access_session_current(const access_session_t *session, uint32_t generation, int64_t now)
+{
+    return session != NULL && session->generation != 0 && session->generation == generation &&
+           now >= session->last_seen && now >= session->created_at &&
+           now - session->last_seen < ACCESS_IDLE_US && now - session->created_at < ACCESS_ABSOLUTE_US;
+}
+
 bool access_session_valid(access_session_t *session, uint32_t generation, int64_t now, bool touch)
 {
     if (session == NULL || session->generation == 0 || session->generation != generation) {
         return false;
     }
-    if (now < session->last_seen || now < session->created_at ||
-        now - session->last_seen >= ACCESS_IDLE_US || now - session->created_at >= ACCESS_ABSOLUTE_US) {
+    if (!access_session_current(session, generation, now)) {
         access_session_revoke(session);
         return false;
     }
@@ -122,6 +128,19 @@ bool access_session_valid(access_session_t *session, uint32_t generation, int64_
         session->last_seen = now;
     }
     return true;
+}
+
+access_status_t access_control_observe(const access_status_facts_t *facts, int64_t now)
+{
+    access_status_t status = {0};
+    if (facts == NULL) return status;
+    status.ready = facts->web_started && facts->identity_ready && facts->owner_claimed &&
+                   facts->network_ready && facts->usb_ready;
+    status.controller_active = status.ready && facts->controller_connected && facts->controller_network_ready &&
+        facts->controller_generation != 0 && facts->controller_generation == facts->usb_generation &&
+        now >= facts->controller_last_seen && now - facts->controller_last_seen < ACCESS_CONTROL_LEASE_US &&
+        access_session_current(facts->owner, facts->owner_generation, now);
+    return status;
 }
 
 access_session_t *access_session_create(access_control_t *control, const char *token,

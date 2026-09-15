@@ -20,6 +20,7 @@ encrypted credential storage remain lower-priority follow-up work.
 ## Documentation
 
 - [CI workflow setup proposal](docs/ci-workflow-proposal.md)
+- [Board status LED design, software validation, and remaining hardware gates](docs/board-status-led-proposal.md)
 - [Sender installation and firmware artifact guide](docs/sender-installation.md)
 - [Wi-Fi enhancement plan, implementation record, and remaining gates](docs/wifi-enhancement-plan.md)
 - [Keyboard enhancement plan and validation results](docs/keyboard-enhancement-plan.md)
@@ -46,6 +47,18 @@ The target defaults to `esp32s3`. A successful build produces
 `build/esp32s3_starter.bin`. Microsoft C/C++ IntelliSense is configured locally
 to use the generated compilation database; the setup guide explains how to
 apply that setting after a fresh clone.
+
+### Optional Board Status LED
+
+Generic builds leave GPIO48 untouched. The opt-in XinluCity ESP32S3 NANO /
+ESP32-S3-N16R8 profile uses the schematic's active-low, single-color G48:
+one short pulse every two seconds for ready/idle, steady ON for a valid live
+controller, and two short pulses for not ready. PWR remains independent.
+No brightness setting or web UI change is included.
+
+See the [profile build commands and validation record](docs/board-status-led-proposal.md#software-implementation-record).
+Software tests pass, but physical polarity, visible timing, and USB/load
+acceptance remain pending; this is not approval to flash a board.
 
 ## Sender Provisioning
 
@@ -194,7 +207,9 @@ The [CI workflow](.github/workflows/ci.yml) defines two parallel checks on PRs t
 `main`, pushes to `main`, and manual runs: **Firmware and Native Tests** and
 **Browser Integration**. It builds in a pinned ESP-IDF v6.1 image, runs the
 existing native/model tests, and exercises Chromium/WebKit on Ubuntu 24.04.
-The firmware job also runs installer safety tests and offline artifact validation.
+The firmware job also compiles the opt-in status-LED profile, asserts that the
+generic build stays LED-disabled, and runs installer safety tests and offline
+artifact validation. Uploaded firmware remains the generic LED-disabled build.
 Successful jobs upload the separate application, bootloader, partition table,
 generated flash metadata, a credential-free manifest with image hashes/security
 settings, and a build summary. GitHub Actions provides the
@@ -224,7 +239,7 @@ remote-keyboard-connector/
 |-- .github/workflows/       PR/main firmware and browser CI
 |-- .vscode/                Portable extension recommendations
 |-- components/
-|   |-- board/             Reserved until board pins are verified
+|   |-- board/             Opt-in G48 driver, status patterns, and native tests
 |   |-- device_identity/   Private identity and one-time owner claim
 |   |-- network/           AP/STA, NVS settings, mDNS, and recovery jobs
 |   |-- usb_keyboard/      HID descriptors, ordered reports, safety tests
@@ -250,8 +265,10 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-The Wi-Fi enhancement image is `0xf4580` bytes (1,000,832 bytes), leaving
-`0xba80` bytes (47,744 bytes, about 5%) in the existing 1 MiB application partition.
+The current default image is `0xf4ba0` bytes (1,002,400 bytes), leaving
+`0xb460` bytes (46,176 bytes) in the existing 1 MiB application partition. The
+opt-in status-LED image leaves `0x9c00` bytes (39,936 bytes); both have about 4%
+headroom. See the LED implementation record for the checked configurations.
 Flash layout and PSRAM settings are unchanged. This is below the broader 20%
 headroom goal; physical flash capacity and runtime heap/stack/power behavior
 remain unverified.

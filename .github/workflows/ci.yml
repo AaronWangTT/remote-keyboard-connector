@@ -49,6 +49,17 @@ jobs:
           git diff --exit-code -- dependencies.lock
           idf.py size 2>&1 | tee .cache/ci/firmware-size.log
 
+      - name: Build opt-in board status LED profile
+        run: |
+          source "$IDF_PATH/export.sh"
+          idf.py -B .cache/ci/board-led-enabled \
+            -D SDKCONFIG=.cache/ci/board-led-enabled/sdkconfig \
+            -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.board-xinlucity' \
+            build 2>&1 | tee .cache/ci/board-led-build.log
+          grep -q '^CONFIG_BOARD_XINLUCITY_ESP32S3_NANO=y$' .cache/ci/board-led-enabled/sdkconfig
+          grep -q '^CONFIG_BOARD_STATUS_LED_DISABLED=y$' sdkconfig
+          git diff --exit-code -- dependencies.lock
+
       - name: Run native safety and keyboard model tests
         run: |
           source "$IDF_PATH/export.sh"

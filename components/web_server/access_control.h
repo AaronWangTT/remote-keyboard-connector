@@ -11,6 +11,7 @@
 #define ACCESS_LOGIN_WINDOW_US INT64_C(60000000)
 #define ACCESS_LOGIN_ATTEMPTS 5
 #define ACCESS_CREDENTIAL_BODY_MAX 1024
+#define ACCESS_CONTROL_LEASE_US INT64_C(1000000)
 
 typedef struct {
     char password[129];
@@ -32,6 +33,26 @@ typedef struct {
     unsigned login_attempts;
 } access_control_t;
 
+typedef struct {
+    bool web_started;
+    bool identity_ready;
+    bool owner_claimed;
+    bool network_ready;
+    bool usb_ready;
+    bool controller_connected;
+    bool controller_network_ready;
+    uint32_t usb_generation;
+    uint32_t controller_generation;
+    const access_session_t *owner;
+    uint32_t owner_generation;
+    int64_t controller_last_seen;
+} access_status_facts_t;
+
+typedef struct {
+    bool ready;
+    bool controller_active;
+} access_status_t;
+
 bool access_host_allowed(const char *host, const char *const *allowed, size_t count, bool secure);
 bool access_origin_allowed(const char *host, const char *origin,
                            const char *const *allowed, size_t count, bool secure);
@@ -40,7 +61,9 @@ bool access_login_attempt(access_control_t *control, int64_t now);
 access_session_t *access_session_create(access_control_t *control, const char *token,
                                         const char *csrf, int64_t now);
 access_session_t *access_session_find(access_control_t *control, const char *cookie, int64_t now);
+bool access_session_current(const access_session_t *session, uint32_t generation, int64_t now);
 bool access_session_valid(access_session_t *session, uint32_t generation, int64_t now, bool touch);
+access_status_t access_control_observe(const access_status_facts_t *facts, int64_t now);
 void access_session_revoke(access_session_t *session);
 bool access_credentials_parse(const uint8_t *payload, size_t length, bool claim,
                               access_credentials_t *credentials);

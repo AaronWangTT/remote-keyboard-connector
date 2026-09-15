@@ -7,8 +7,75 @@
 static const char *const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 static const char *const csrf = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
+static void expect_status(const access_status_facts_t *facts, int64_t now, bool ready, bool active)
+{
+    access_status_t status = access_control_observe(facts, now);
+    assert(status.ready == ready);
+    assert(status.controller_active == active);
+}
+
+static void test_status_observation(void)
+{
+    access_control_t control = {0};
+    access_session_t *session = access_session_create(&control, token, csrf, 1000);
+    assert(session != NULL);
+    access_session_t original = *session;
+    access_status_facts_t facts = {0};
+    expect_status(NULL, 1000, false, false);
+    expect_status(&facts, 1000, false, false);
+    facts = (access_status_facts_t){
+        .web_started = true, .identity_ready = true, .owner_claimed = true,
+        .network_ready = true, .usb_ready = true, .controller_network_ready = true,
+        .usb_generation = 9, .controller_generation = 9, .owner = session,
+        .owner_generation = session->generation, .controller_last_seen = 1000,
+    };
+    expect_status(&facts, 1000, true, false);
+    facts.controller_connected = true;
+    expect_status(&facts, 1000, true, true);
+    bool *requirements[] = {&facts.web_started, &facts.identity_ready, &facts.owner_claimed,
+                            &facts.network_ready, &facts.usb_ready};
+    for (size_t index = 0; index < sizeof(requirements) / sizeof(requirements[0]); index++) {
+        *requirements[index] = false;
+        expect_status(&facts, 1000, false, false);
+        *requirements[index] = true;
+    }
+    expect_status(&facts, 999, true, false);
+    expect_status(&facts, 1000 + ACCESS_CONTROL_LEASE_US - 1, true, true);
+    expect_status(&facts, 1000 + ACCESS_CONTROL_LEASE_US, true, false);
+    facts.controller_network_ready = false;
+    expect_status(&facts, 1000, true, false);
+    facts.controller_network_ready = true;
+    facts.usb_generation++;
+    expect_status(&facts, 1000, true, false);
+    facts.usb_generation--;
+    facts.owner_generation++;
+    expect_status(&facts, 1000, true, false);
+    facts.owner_generation--;
+    facts.owner = NULL;
+    expect_status(&facts, 1000, true, false);
+    facts.owner = session;
+    facts.controller_connected = false;
+    expect_status(&facts, 1000, true, false);
+    facts.controller_connected = true;
+    facts.controller_last_seen = 1000 + ACCESS_IDLE_US;
+    expect_status(&facts, 1000 + ACCESS_IDLE_US - 1, true, false);
+    expect_status(&facts, 1000 + ACCESS_IDLE_US, true, false);
+    assert(memcmp(session, &original, sizeof(original)) == 0);
+    session->last_seen = 1000 + ACCESS_ABSOLUTE_US - 1;
+    facts.controller_last_seen = session->last_seen;
+    original = *session;
+    expect_status(&facts, 1000 + ACCESS_ABSOLUTE_US - 1, true, true);
+    expect_status(&facts, 1000 + ACCESS_ABSOLUTE_US, true, false);
+    assert(memcmp(session, &original, sizeof(original)) == 0);
+    access_session_revoke(session);
+    original = *session;
+    expect_status(&facts, 1000, true, false);
+    assert(memcmp(session, &original, sizeof(original)) == 0);
+}
+
 int main(void)
 {
+    test_status_observation();
     const char *allowed[] = {"kb.local", "192.168.4.1"};
     assert(access_host_allowed("KB.LOCAL:80", allowed, 2, false));
     assert(access_origin_allowed("kb.local", "http://kb.local:80", allowed, 2, false));
