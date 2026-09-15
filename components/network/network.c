@@ -397,7 +397,7 @@ static esp_err_t recovery(const char *error, bool retry_saved)
 
 static bool supported_auth(wifi_auth_mode_t authentication)
 {
-    return authentication == WIFI_AUTH_WPA2_PSK || authentication == WIFI_AUTH_WPA_WPA2_PSK || authentication == WIFI_AUTH_WPA2_WPA3_PSK;
+    return authentication == WIFI_AUTH_WPA2_PSK || authentication == WIFI_AUTH_WPA_WPA2_PSK;
 }
 
 static void finish_scan(void)

@@ -80,7 +80,8 @@ AP SSID/password, Wi-Fi QR code, `kb.local` address, and separate owner setup co
 No multiple saved networks, static IP UI, enterprise Wi-Fi, open upstream
 networks, upstream captive-portal login, 5 GHz, cloud service, WAN exposure,
 NAT/bridging, permanent dual-mode option, or OTA update workflow in this increment.
-WPA3-Personal and a setup captive portal are deferred. The full browser must
+WPA3-Personal, including WPA2/WPA3 transition mode, and a setup captive portal
+are deferred. The full browser must
 work without a captive-portal popup. The firmware does not require Internet
 reachability, public DNS, or NTP to declare a local network usable.
 
@@ -423,6 +424,11 @@ ownership-aware `can_control` status, and a 401 logout returning the keyboard
 view to signed out. Preview scans require an empty body, rejecting nonempty,
 oversized, and chunked bodies with 413 before changing the job. Ownership is
 rechecked after asynchronous request-body parsing.
+
+Invalid JSON content types and oversized bodies are drained before the next
+keep-alive request; the regression sends a rejected partial body and verifies
+the same socket can then retrieve unchanged job status. The shared scan and
+association predicate rejects WPA2/WPA3 transition mode as outside this increment.
 
 The native interrupted-save tests inject failure around the same stage/activate
 selection helper used by the NVS adapter. They verify old-or-new complete-record

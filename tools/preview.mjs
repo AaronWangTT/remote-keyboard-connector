@@ -228,12 +228,18 @@ function releaseController() {
 }
 
 async function jsonBody(request) {
-  if (!/^application\/json(?:; charset=utf-8)?$/.test(request.headers["content-type"] ?? "")) return null;
+  if (!/^application\/json(?:; charset=utf-8)?$/.test(request.headers["content-type"] ?? "")) {
+    request.resume();
+    return null;
+  }
   const chunks = [];
   let length = 0;
-  for await (const chunk of request) {
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     length += chunk.length;
-    if (length > 1024) return null;
+    if (length > 1024) {
+      request.resume();
+      return null;
+    }
     chunks.push(chunk);
   }
   let tree;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { once } from "node:events";
 import { mkdir } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
+import { Agent, request as httpRequest } from "node:http";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { chromium, webkit, expect } from "@playwright/test";
@@ -83,6 +83,29 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   const [rejectedScan] = await scanResponse;
   assert.equal(rejectedScan.statusCode, 413);
   rejectedScan.resume();
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  context.after(() => agent.destroy());
+  for (const [contentType, firstChunk] of [["text/plain", "not-json"], ["application/json", "x".repeat(2048)]]) {
+    const rejectedRequest = httpRequest(endpoint, {
+      method: "POST", agent, headers: { ...headers, "Content-Type": contentType, "Transfer-Encoding": "chunked" },
+    });
+    const rejectedResponse = once(rejectedRequest, "response");
+    rejectedRequest.write(firstChunk);
+    const [rejection] = await rejectedResponse;
+    assert.equal(rejection.statusCode, 400);
+    const originalSocket = rejectedRequest.socket;
+    rejectedRequest.end("remaining-body");
+    for await (const chunk of rejection) assert.ok(chunk.length > 0);
+    const nextRequest = httpRequest(new URL("/api/v1/network/job", url), { agent, headers: { Cookie: session.cookie } });
+    const nextResponse = once(nextRequest, "response");
+    nextRequest.end();
+    const [next] = await nextResponse;
+    assert.equal(next.statusCode, 200);
+    assert.equal(nextRequest.socket, originalSocket);
+    const chunks = [];
+    for await (const chunk of next) chunks.push(chunk);
+    assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), beforeScan);
+  }
   assert.deepEqual(await status(), beforeScan);
   assert.equal((await fetch(new URL("/api/v1/network/scan", url), { method: "POST", headers })).status, 202);
   await expect.poll(async () => (await status()).scan.length).toBe(5);
