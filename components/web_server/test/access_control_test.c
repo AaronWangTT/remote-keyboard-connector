@@ -45,6 +45,8 @@ int main(void)
     char cookie[256];
     snprintf(cookie, sizeof(cookie), "other=value; kb_session=%s; last=value", token);
     assert(access_session_find(&control, cookie, 1) == session);
+    assert(session->last_seen == 1);
+    int64_t idle_deadline = session->last_seen + ACCESS_IDLE_US;
     assert(access_token_equal(session->csrf, csrf));
     snprintf(cookie, sizeof(cookie), "kb_session=%s; kb_session=%s", token, token);
     assert(access_session_find(&control, cookie, 2) == NULL);
@@ -52,8 +54,9 @@ int main(void)
     assert(access_session_find(&control, "other=value", 2) == NULL);
     assert(access_session_find(&control, NULL, 2) == NULL);
     assert(!access_session_valid(session, generation + 1, 2, true));
-    assert(access_session_valid(session, generation, ACCESS_IDLE_US, false));
-    assert(!access_session_valid(session, generation, ACCESS_IDLE_US + 1, false));
+    assert(session->last_seen == 1);
+    assert(access_session_valid(session, generation, idle_deadline - 1, false));
+    assert(!access_session_valid(session, generation, idle_deadline, false));
     assert(session->generation == 0 && session->token[0] == '\0');
 
     session = access_session_create(&control, token, csrf, 0);

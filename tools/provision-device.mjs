@@ -50,6 +50,7 @@ function outsideRepository(directory) {
 export async function writeIdentity(deviceId, output) {
   const directory = resolve(output);
   assert.ok(outsideRepository(directory), "Private provisioning output must be outside the repository");
+  const identity = createIdentity(deviceId);
   await mkdir(dirname(directory), { recursive: true, mode: 0o700 });
   const parent = await realpath(dirname(directory));
   assert.ok(outsideRepository(parent), "Private output must not resolve into the repository");
@@ -59,7 +60,6 @@ export async function writeIdentity(deviceId, output) {
     execFileSync("icacls.exe", [directory, "/inheritance:r", "/grant:r",
       `${process.env.USERDOMAIN}\\${process.env.USERNAME}:(OI)(CI)F`], { stdio: "pipe" });
   }
-  const identity = createIdentity(deviceId);
   const png = await QRCode.toBuffer(wifiPayload(identity), { type: "png", errorCorrectionLevel: "M", margin: 4, width: 360 });
   const card = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { pbkdf2Sync } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -29,7 +29,10 @@ test("private setup files are outside Git, contain a PNG/card, and never overwri
   await assert.rejects(writeIdentity("001122334455", ".cache/not-private"));
   const temporary = await mkdtemp(join(tmpdir(), "keyboard-provision-test-"));
   try {
-    const directory = join(temporary, "device");
+    const parent = join(temporary, "new-parent");
+    const directory = join(parent, "device");
+    await assert.rejects(writeIdentity("mistyped-MAC", directory));
+    await assert.rejects(access(parent), { code: "ENOENT" });
     await writeIdentity("001122334455", directory);
     const before = await readFile(join(directory, "identity.csv"), "utf8");
     const card = await readFile(join(directory, "setup-card.html"), "utf8");

@@ -761,9 +761,10 @@ esp_err_t network_start(void)
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "Wi-Fi storage setup failed");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL), TAG, "Wi-Fi event registration failed");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL), TAG, "IP event registration failed");
-    network_state_init(&state, saved.station && device_identity_claimed(), esp_timer_get_time());
-    ESP_RETURN_ON_ERROR(configure_driver(state.ap, !state.ap, &saved), TAG, "Wi-Fi startup failed");
     snapshot = (network_status_t){0};
+    network_state_init(&state, saved.station && device_identity_claimed(), esp_timer_get_time());
+    esp_err_t started = configure_driver(state.ap, !state.ap, &saved);
+    if (started != ESP_OK) recovery("connection_failed", false);
     const char *identity = device_identity_id();
     snprintf(snapshot.ap_ssid, sizeof(snapshot.ap_ssid), "WiFiKeyboard-%s", identity + 6);
     for (size_t index = 13; snapshot.ap_ssid[index]; index++) {
@@ -778,7 +779,7 @@ esp_err_t network_start(void)
         if (result == ESP_OK) result = mdns_service_add(NULL, "_http", "_tcp", 80, text, 1);
         snapshot.mdns = result == ESP_OK;
     }
-    job_result(loaded == ESP_OK ? "idle" : "failed", loaded == ESP_OK ? "" : "saved_configuration_invalid", false);
+    if (started == ESP_OK) job_result(loaded == ESP_OK ? "idle" : "failed", loaded == ESP_OK ? "" : "saved_configuration_invalid", false);
     refresh_snapshot();
     commands = xQueueCreate(1, sizeof(network_command_t));
     ESP_RETURN_ON_FALSE(commands != NULL, ESP_ERR_NO_MEM, TAG, "Network queue allocation failed");
