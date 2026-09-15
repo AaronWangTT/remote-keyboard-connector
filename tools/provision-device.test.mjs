@@ -85,7 +85,8 @@ function firmwareFixture() {
   };
 }
 
-const configurationFixture = { IDF_TARGET: "esp32s3", SECURE_BOOT: false, SECURE_FLASH_ENC_ENABLED: false };
+const configurationFixture = { IDF_TARGET: "esp32s3", SECURE_BOOT: false, SECURE_FLASH_ENC_ENABLED: false,
+  KEYBOARD_HTTP_DEVELOPMENT: true };
 
 test("installer rejects bootloaders configured to provision security or burn rollback eFuses", () => {
   assert.equal(firmwareSecurity(configurationFixture).secureBoot, false);
@@ -99,6 +100,14 @@ test("installer rejects bootloaders configured to provision security or burn rol
   assert.throws(() => firmwareSecurity({ ...unsignedConfiguration, SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT: true }),
     /Unsupported security build configuration: SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT/);
   assert.throws(() => firmwareSecurity({ IDF_TARGET: "esp32s3" }));
+});
+
+test("installer requires the HTTP owner-claim UI in validated builds", () => {
+  assert.equal(firmwareSecurity(configurationFixture).httpDevelopment, true);
+  for (const setting of [undefined, false, "true", 1]) {
+    assert.throws(() => firmwareSecurity({ ...configurationFixture, KEYBOARD_HTTP_DEVELOPMENT: setting }),
+      /HTTP.*owner-claim/);
+  }
 });
 
 test("installer accepts sparse firmware metadata and rejects unsafe inputs", () => {
@@ -137,9 +146,21 @@ test("installer verifies every firmware file before a device operation", async (
     assert.equal(firmware.images.length, 3);
     assert.ok(firmware.images.every(image => image.bytes === 256 && /^[0-9a-f]{64}$/.test(image.sha256)));
     const manifest = firmwareManifest(firmware);
+    assert.equal(manifest.formatVersion, 2);
     await writeFile(join(temporary, "firmware-manifest.json"), JSON.stringify(manifest));
     await rm(join(temporary, "config"), { recursive: true });
     assert.equal((await loadFirmware(temporary)).security.flashEncryption, false);
+    manifest.formatVersion = 1;
+    await writeFile(join(temporary, "firmware-manifest.json"), JSON.stringify(manifest));
+    await assert.rejects(loadFirmware(temporary), /manifest/);
+    manifest.formatVersion = 2;
+    delete manifest.security.httpDevelopment;
+    await writeFile(join(temporary, "firmware-manifest.json"), JSON.stringify(manifest));
+    await assert.rejects(loadFirmware(temporary), /manifest/);
+    manifest.security.httpDevelopment = false;
+    await writeFile(join(temporary, "firmware-manifest.json"), JSON.stringify(manifest));
+    await assert.rejects(loadFirmware(temporary), /manifest/);
+    manifest.security.httpDevelopment = true;
     manifest.security.secureBoot = true;
     await writeFile(join(temporary, "firmware-manifest.json"), JSON.stringify(manifest));
     await assert.rejects(loadFirmware(temporary), /manifest/);

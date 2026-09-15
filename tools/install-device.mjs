@@ -9,12 +9,14 @@ import { parseArgs } from "node:util";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const sdkHelper = fileURLToPath(new URL("install_device.py", import.meta.url));
-const supportedSecurity = { secureBoot: false, flashEncryption: false, signedApps: false, antiRollback: false };
+const supportedSecurity = { secureBoot: false, flashEncryption: false, signedApps: false, antiRollback: false,
+  httpDevelopment: true };
 
 export function firmwareSecurity(configuration) {
   assert.equal(configuration.IDF_TARGET, "esp32s3", "Build configuration targets another chip");
   assert.equal(configuration.SECURE_BOOT, false, "Secure-boot provisioning requires a separate installer");
   assert.equal(configuration.SECURE_FLASH_ENC_ENABLED, false, "Flash-encryption provisioning requires a separate installer");
+  assert.equal(configuration.KEYBOARD_HTTP_DEVELOPMENT, true, "Firmware must enable the HTTP owner-claim UI");
   for (const setting of ["SECURE_BOOT_V2_ENABLED", "SECURE_BOOT_BUILD_SIGNED_BINARIES",
     "SECURE_SIGNED_APPS_NO_SECURE_BOOT", "SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT", "BOOTLOADER_APP_ANTI_ROLLBACK"]) {
     assert.ok(configuration[setting] === undefined || configuration[setting] === false,
@@ -24,7 +26,7 @@ export function firmwareSecurity(configuration) {
 }
 
 export function firmwareManifest(firmware) {
-  return { formatVersion: 1, target: "esp32s3", security: { ...supportedSecurity },
+  return { formatVersion: 2, target: "esp32s3", security: { ...supportedSecurity },
     settings: firmware.settings, flashBytes: firmware.flashBytes,
     images: firmware.images.map(({ role, path, offset, bytes, sha256 }) => ({ role, path, offset, bytes, sha256 })) };
 }

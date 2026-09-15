@@ -43,8 +43,9 @@ def image_bytes(image):
 
 def inspect_firmware(firmware, sdk):
     require(firmware.get("security") == {"secureBoot": False, "flashEncryption": False,
-                                        "signedApps": False, "antiRollback": False},
-            "A validated firmware build without security provisioning is required")
+                                        "signedApps": False, "antiRollback": False, "httpDevelopment": True} and
+            firmware["security"]["httpDevelopment"] is True,
+            "A validated firmware build without security provisioning and with the HTTP owner-claim UI is required")
     images = {image["role"]: image for image in firmware["images"]}
     require(len(firmware["images"]) == 3 and set(images) == {"bootloader", "partition-table", "app"},
             "Expected exactly three firmware images")
@@ -65,7 +66,8 @@ def inspect_firmware(firmware, sdk):
             not any(partition.type == 1 and partition.subtype == 0 for partition in table),
             "Only a single factory application without OTA metadata is supported")
     application = applications[0]
-    require(images["app"]["offset"] == application.offset and images["app"]["bytes"] <= application.size,
+    application_write_size = ((images["app"]["bytes"] + 4095) // 4096) * 4096
+    require(images["app"]["offset"] == application.offset and application_write_size <= application.size,
             "Application does not fit its declared partition")
     require(images["bootloader"]["offset"] == 0, "ESP32-S3 bootloader must start at zero")
     for role in ("bootloader", "app"):

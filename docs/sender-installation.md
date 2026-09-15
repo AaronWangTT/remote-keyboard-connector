@@ -7,15 +7,16 @@ device operation, never part of a firmware build or CI upload.
 ## Public Firmware And Private Installation Files
 
 CI uploads three separate images, generated `flasher_args.json` and `flash_args`,
-`firmware-manifest.json` with hashes and build-security settings, and a build
+version-2 `firmware-manifest.json` with hashes and build-security settings, and a build
 summary. GitHub Actions wraps these files in its download archive.
 There is no nested custom firmware ZIP, merged BIN, or per-device NVS image.
 Extract the complete artifact and use its `build` directory as `--firmware`.
 Use a trusted artifact and a trusted checkout of the matching installer revision.
 The artifact alone is not a standalone installer; the sender needs the repository
 tools and SDK environment below.
-Older artifacts without the manifest are refused: rebuild them from trusted
-source. Do not fabricate a manifest to bypass security checks.
+Older artifacts without the version-2 manifest and its required HTTP owner-claim
+capability are refused: rebuild them from trusted source. Do not fabricate a
+manifest to bypass security checks.
 
 The sender command creates a different, private per-device directory outside
 the repository. It includes a firmware snapshot, identity CSV/BIN, Wi-Fi QR,
@@ -57,6 +58,13 @@ mode, bootloaders configured for security provisioning or anti-rollback eFuse
 updates, unknown flash capacity, and unsupported configurations without overrides.
 Supported detected capacities are 1/2/4/8/16/32 MiB and must fit the build.
 Detecting capacity does not prove mode/frequency compatibility or USB recovery.
+
+The build must enable `KEYBOARD_HTTP_DEVELOPMENT`; otherwise the web server,
+setup card URL, and owner-claim flow are unavailable. Local validation requires
+the generated setting to be `true`. Downloaded manifests bind
+`security.httpDevelopment: true` to the image hashes, and the Python helper
+independently enforces that contract. This explicit development-protocol setting
+does not add transport encryption or establish production security.
 
 ## Offline Check
 
@@ -193,7 +201,8 @@ node tools/install-device.mjs --firmware build
 The Node suite checks credential preparation, input rejection, explicit CLI
 consent, offline behavior, security/manifest validation, and private snapshot isolation. The Python suite uses
 the real SDK parsers/NVS generator with a fake device for security/MAC/capacity
-refusals, backup ordering and integrity, layout/NVS guards, sparse writes, and
+refusals, backup ordering and integrity, sector-rounded application bounds,
+HTTP owner-claim prerequisites, layout/NVS guards, sparse writes, and
 verification failure. Contract tests also call the real esptool `read_flash`,
 `write_flash`, and `verify_flash` functions with only the hardware access mocked:
 reads without an output path return bytes, and writes/verification accept byte

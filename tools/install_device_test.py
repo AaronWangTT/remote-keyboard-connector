@@ -111,7 +111,8 @@ class InstallerTests(unittest.TestCase):
         self.table = self.sdk.partitions.PartitionTable.from_csv(
             "nvs,data,nvs,0x9000,0x6000,\nphy_init,data,phy,0xf000,0x1000,\nfactory,app,factory,0x10000,1M,\n")
         self.firmware = {"settings": {"flash_mode": "dio", "flash_freq": "80m", "flash_size": "2MB"},
-                         "security": {"secureBoot": False, "flashEncryption": False, "signedApps": False, "antiRollback": False},
+                         "security": {"secureBoot": False, "flashEncryption": False, "signedApps": False,
+                                      "antiRollback": False, "httpDevelopment": True},
                          "flashBytes": 2097152, "images": []}
         for role, offset in (("bootloader", 0), ("partition-table", 0x8000), ("app", 0x10000)):
             if role == "partition-table":
@@ -146,6 +147,18 @@ class InstallerTests(unittest.TestCase):
         plan = inspect_firmware(self.firmware, self.sdk)
         self.assertEqual(plan["nvs"], {"offset": 0x9000, "size": 0x6000})
         self.assertEqual(plan["partitionTable"]["offset"], 0x8000)
+
+    def test_missing_or_disabled_http_claim_ui_never_connects(self):
+        for value in (None, False, "true", 1):
+            with self.subTest(value=value):
+                self.firmware["security"]["httpDevelopment"] = value
+                with self.assertRaisesRegex(ValueError, "HTTP owner-claim"):
+                    install(self.request, self.connected_sdk)
+        del self.firmware["security"]["httpDevelopment"]
+        with self.assertRaisesRegex(ValueError, "HTTP owner-claim"):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, [])
+        self.assertFalse(self.output.exists())
 
     def test_real_esptool_read_flash_returns_bytes_without_output(self):
         contents = b"\xff" * 4096
@@ -198,6 +211,7 @@ class InstallerTests(unittest.TestCase):
         configuration.mkdir()
         (configuration / "sdkconfig.json").write_text(json.dumps({
             "IDF_TARGET": "esp32s3", "SECURE_BOOT": False, "SECURE_FLASH_ENC_ENABLED": False,
+            "KEYBOARD_HTTP_DEVELOPMENT": True,
             "UNRELATED_PRIVATE_SETTING": "must-not-be-exported"}), encoding="utf-8")
         command = ["node", str(Path(__file__).with_name("install-device.mjs")), "--firmware", str(self.root),
                    "--idf-path", os.environ["IDF_PATH"], "--python", sys.executable]
@@ -261,6 +275,34 @@ class InstallerTests(unittest.TestCase):
         self.assertIn(b"kb_identity", data)
         with self.assertRaisesRegex(ValueError, "already exists"):
             generate_nvs(self.root, "001122334455", 0x6000)
+
+    def test_application_fit_includes_the_final_flash_sector(self):
+        image = self.sdk.images.ESP32S3FirmwareImage()
+        image.chip_id = image.ROM_LOADER.IMAGE_CHIP_ID
+        image.segments.append(self.sdk.images.ImageSegment(0x3FC88000, bytes(4096)))
+        image.segments[0].name = "fixture"
+        data = image.save(None)
+        self.assertGreater(len(data), 4096)
+        self.assertNotEqual(len(data) % 4096, 0)
+        self.set_image("app", 0x10000, data)
+        application = self.table.find_by_name("factory")
+        self.assertIsNotNone(application)
+        assert application is not None
+        application.size = len(data)
+        self.set_image("partition-table", 0x8000, self.table.to_binary())
+        with self.assertRaisesRegex(self.sdk.partitions.ValidationError, "Size .*not aligned"):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, [])
+        self.assertFalse(self.output.exists())
+        application.size = ((len(data) + 4095) // 4096) * 4096
+        self.set_image("partition-table", 0x8000, self.table.to_binary())
+        inspect_firmware(self.firmware, self.sdk)
+        application.size -= 4096
+        self.set_image("partition-table", 0x8000, self.table.to_binary())
+        with self.assertRaisesRegex(ValueError, "declared partition"):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, [])
+        self.assertFalse(self.output.exists())
 
     def test_csv_rejects_a_different_mac_or_unexpected_records_without_secrets(self):
         for contents in (self.csv.replace("001122334455", "aabbccddeeff"),
