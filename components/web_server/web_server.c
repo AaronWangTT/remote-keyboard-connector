@@ -452,6 +452,7 @@ static esp_err_t network_handler(httpd_req_t *request)
     esp_err_t result = network_submit(payload, length, scan, &job_id);
     mbedtls_platform_zeroize(payload, sizeof(payload));
     if (result == ESP_ERR_INVALID_ARG) return problem(request, "400 Bad Request", "invalid_network_request");
+    if (result == ESP_FAIL) return problem(request, "503 Service Unavailable", "storage_failed");
     if (result != ESP_OK) return problem(request, "409 Conflict", "network_busy");
     response_headers(request);
     httpd_resp_set_status(request, "202 Accepted");

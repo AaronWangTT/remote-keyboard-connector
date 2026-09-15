@@ -29,6 +29,7 @@ let pendingProfile = null;
 const networkDelay = Math.max(50, Number(process.env.PREVIEW_NETWORK_DELAY_MS) || 200);
 const scanTtl = Math.max(50, Number(process.env.PREVIEW_SCAN_TTL_MS) || 30000);
 const confirmationTtl = Math.max(100, Number(process.env.PREVIEW_CONFIRM_TTL_MS) || 60000);
+const storageFault = process.env.PREVIEW_STORAGE_FAULT === "1";
 let confirmationUntil = 0;
 let managementUntil = 0;
 
@@ -88,14 +89,19 @@ async function networkRequest(request, response) {
       (value.action === "rename" && (typeof value.hostname !== "string" || value.hostname.length > 32 || value.hostname === "localhost" ||
         !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(value.hostname)))) return sendJson(response, 400, { error: "invalid_network_request" });
   if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "release_control_first" });
+  const writesConfiguration = !scan && value.action !== "confirm" && (value.action !== "cancel" ||
+    (network.station_online && network.ap_active && network.job !== "scanning"));
+  if (storageFault && writesConfiguration) return sendJson(response, 503, { error: "storage_failed" });
   if (network.busy && !["cancel", "confirm"].includes(value.action)) return sendJson(response, 409, { error: "network_busy" });
   if (value.action === "cancel" && !network.busy) return sendJson(response, 409, { error: "network_busy" });
   if (value.action === "confirm" && !["awaiting_confirmation", "awaiting_ap_reconnect"].includes(network.job)) return sendJson(response, 409, { error: "network_busy" });
   const confirmReconnect = value.action === "confirm" && network.job === "awaiting_ap_reconnect";
+  const cancelScan = value.action === "cancel" && network.job === "scanning";
   const id = ++network.job_id;
   sendJson(response, 202, { job_id: id, management_url: `http://${request.headers.host}/` });
   const action = value.action;
   if (action === "cancel") {
+    if (cancelScan) { finishNetwork("cancelled"); return; }
     if (network.station_online) network.desired_station = false;
     pendingProfile = null;
     Object.assign(network, { ap_active: true, ap_ip: network.ap_ip || "192.168.4.1", ap_reconnect_ip: "", station_online: false, station_ip: "", station_ssid: "", phase: "ap" });

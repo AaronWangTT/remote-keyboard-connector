@@ -366,9 +366,9 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | --- | --- |
 | Native C | Five suites passed: owner-record persistence/claim consumption, access/credential validation, network state/persistence selection, eight USB-state cases, and the full-state JSON parser. Initial Windows validation used Zig 0.15.2 without sanitizers; Linux review follow-up passed ASan/UBSan, including interrupted claims, malformed UTF-8, and maximum-length raw SSID cases. |
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
-| Provisioning and browser/API | All 24 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, idle-cancel rejection, confirmed/abandoned AP-address transitions, abandoned handover expiry, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
+| Provisioning and browser/API | All 25 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, storage-fault admission, mode-preserving scan cancellation, confirmed/abandoned AP-address transitions, abandoned handover expiry, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf4080` bytes; `0xbf80` bytes (49,024 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf4230` bytes; `0xbdd0` bytes (48,592 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -497,6 +497,13 @@ removes only its newly created output directory after a caught ACL, QR, or file
 write failure, and reports cleanup failure explicitly. Existing directories are
 never removed or overwritten. Tests cover generation failure, partial output,
 same-path retry, and invalid owner records returning before marker lookup.
+
+A latched storage fault rejects persistent changes before job admission with a
+restart-required error; status, scans, and non-writing control remain available.
+Cancelling a scan only stops the scan and undoes temporary AP scan mode, leaving
+the saved profile and current STA/AP state intact. Firmware fault injection and
+API regressions verify no job-ID mutation on rejected writes and mode preservation
+on cancellation. Configuration-application failures have a specific UI message.
 
 Both firmware JSON parsers validate complete request text as UTF-8 before cJSON
 parsing. Malformed raw UTF-8 and unpaired JSON surrogate escapes are rejected in

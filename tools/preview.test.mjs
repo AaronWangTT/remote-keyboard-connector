@@ -154,6 +154,10 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   const idleStation = await status();
   assert.equal((await submit({ action: "cancel" })).status, 409);
   assert.deepEqual(await status(), idleStation);
+  assert.equal((await fetch(scanEndpoint, { method: "POST", headers })).status, 202);
+  assert.equal((await submit({ action: "cancel" })).status, 202);
+  await expect.poll(status).toMatchObject({ job: "cancelled", busy: false, phase: "station", ap_active: false,
+    station_online: true, desired_station: true, saved_ssid: "Home Wi-Fi", station_ip: "192.168.1.88" });
   assert.equal((await submit({ action: "connect", ssid: "Other network", password: "wrong-password" })).status, 202);
   await expect.poll(status).toMatchObject({ job: "failed", error: "authentication_failed", ap_active: true, saved_ssid: "Home Wi-Fi" });
   assert.equal((await submit({ action: "ap" })).status, 202);
@@ -162,6 +166,24 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   await expect.poll(status).toMatchObject({ saved_ssid: "", has_profile: false, ap_active: true, busy: false });
   assert.equal((await submit({ action: "connect", ssid: "literal\\u0000", password: "literal\\u0000" })).status, 202);
   await expect.poll(status).toMatchObject({ saved_ssid: "literal\\u0000", job: "awaiting_confirmation" });
+});
+
+test("storage faults reject writes immediately while status and scans remain usable", { timeout: 10000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_STORAGE_FAULT: "1" });
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
+  const status = async () => (await fetch(new URL("/api/v1/network/job", url), { headers })).json();
+  const before = await status();
+  for (const value of [{ action: "ap" }, { action: "forget" }, { action: "rename", hostname: "kb-desk" },
+    { action: "station" }, { action: "connect", ssid: "Home Wi-Fi", password: "test-router-password" }]) {
+    const response = await fetch(new URL("/api/v1/network", url), { method: "POST", headers, body: JSON.stringify(value) });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "storage_failed" });
+    assert.deepEqual(await status(), before);
+  }
+  assert.equal((await fetch(new URL("/api/v1/network/scan", url), { method: "POST", headers })).status, 202);
+  await expect.poll(status).toMatchObject({ busy: false, job: "succeeded" });
+  await takeRequest(url, session);
 });
 
 test("abandoned handover becomes idle without another credential submission", { timeout: 10000 }, async context => {
@@ -205,6 +227,12 @@ test("browser Network view scans, tests, confirms handover and forgets without U
   await page.keyboard.up("a");
   await expect.poll(counters).toMatchObject({ pressed: false, connected: false });
   await expect(page.getByRole("heading", { name: "Network", exact: true })).toBeVisible();
+  await page.route("**/api/v1/network/job", async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...await response.json(), job: "failed", error: "configuration_failed" } });
+  });
+  await expect(page.locator("#network-job-status")).toHaveText("Network settings could not be applied. Check the current network status before retrying.");
+  await page.unroute("**/api/v1/network/job");
   const before = (await counters()).down;
   await page.getByLabel("Join Wi-Fi", { exact: true }).check();
   await page.getByRole("button", { name: "Scan networks", exact: true }).click();

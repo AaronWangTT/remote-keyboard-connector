@@ -196,7 +196,9 @@ static esp_err_t save_configuration(const network_config_t *configuration)
     if (result == ESP_OK) {
         saved = *configuration;
     } else {
+        portENTER_CRITICAL(&lock);
         storage_fault = true;
+        portEXIT_CRITICAL(&lock);
     }
     return result;
 }
@@ -535,7 +537,15 @@ static void run_command(const network_command_t *command)
         return;
     }
     if (request->action == NETWORK_ACTION_CANCEL) {
-        if (scanning) esp_wifi_scan_stop();
+        if (scanning) {
+            esp_err_t result = esp_wifi_scan_stop();
+            if (result == ESP_OK) {
+                scanning = false;
+                if (state.phase == NETWORK_AP) result = esp_wifi_set_mode(WIFI_MODE_AP);
+            }
+            job_result(result == ESP_OK ? "cancelled" : "failed", result == ESP_OK ? "" : "scan_failed", scanning);
+            return;
+        }
         if (state.online && state.ap) {
             network_config_t keep_ap = saved;
             keep_ap.station = 0;
@@ -704,12 +714,16 @@ esp_err_t network_submit(const uint8_t *payload, size_t length, bool scan, uint3
     network_command_t command = {.scan = scan};
     if (!scan && !network_request_parse(payload, length, &command.request)) return ESP_ERR_INVALID_ARG;
     portENTER_CRITICAL(&lock);
+    bool writes_configuration = !scan && (command.request.action != NETWORK_ACTION_CONFIRM &&
+        (command.request.action != NETWORK_ACTION_CANCEL || (snapshot.station_online && snapshot.ap_active &&
+         strcmp(snapshot.job, "scanning") != 0)));
+    bool storage_blocked = storage_fault && writes_configuration;
     bool terminal_action = command.request.action == NETWORK_ACTION_CANCEL || command.request.action == NETWORK_ACTION_CONFIRM;
     bool invalid_confirmation = command.request.action == NETWORK_ACTION_CONFIRM &&
         strcmp(snapshot.job, "awaiting_confirmation") != 0 &&
         strcmp(snapshot.job, "awaiting_ap_reconnect") != 0;
     bool invalid_cancellation = command.request.action == NETWORK_ACTION_CANCEL && !snapshot.busy;
-    bool busy = !snapshot.available || command_pending || invalid_confirmation || invalid_cancellation ||
+    bool busy = storage_blocked || !snapshot.available || command_pending || invalid_confirmation || invalid_cancellation ||
                 (snapshot.busy && (!terminal_action || strcmp(snapshot.job, "queued") == 0));
     if (!busy) {
         command_pending = true;
@@ -724,7 +738,7 @@ esp_err_t network_submit(const uint8_t *payload, size_t length, bool scan, uint3
     portEXIT_CRITICAL(&lock);
     if (busy) {
         mbedtls_platform_zeroize(&command, sizeof(command));
-        return ESP_ERR_INVALID_STATE;
+        return storage_blocked ? ESP_FAIL : ESP_ERR_INVALID_STATE;
     }
     disarm(false, false);
     bool queued = xQueueSend(commands, &command, 0) == pdTRUE;

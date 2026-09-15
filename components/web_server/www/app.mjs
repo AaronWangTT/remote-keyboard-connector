@@ -45,6 +45,7 @@ function errorMessage(error) {
     provisioning_required: "This keyboard needs sender provisioning.", claim_failed: "Owner setup could not be saved. Reconnect before trying again.",
     network_busy: "Network operation in progress. Refresh its status before trying again.",
     release_control_first: "Release keyboard control before changing the network.",
+    storage_failed: "Settings storage is unavailable. Restart the keyboard before retrying.",
     invalid_network_request: "Check the network name, password, and hostname.",
     login_required: "Sign in to continue." })[error.code] ?? "Cannot reach the keyboard. Check the connection and try again.";
 }
@@ -157,6 +158,7 @@ function renderNetwork() {
     connection_failed: "Wi-Fi connection failed.", connection_lost: "Wi-Fi connection lost.",
     scan_failed: "Network scan failed.", scan_timeout: "Network scan timed out.", scan_unavailable: "Network scan is unavailable.",
     no_saved_network: "No saved Wi-Fi network.", storage_failed: "Settings could not be saved. Restart the keyboard before retrying.",
+    configuration_failed: "Network settings could not be applied. Check the current network status before retrying.",
     unsupported_network: "This network's security mode is not supported.", subnet_overlap: "The AP and router address ranges overlap.",
     saved_configuration_invalid: "Saved settings are invalid. Recovery AP is available.", wifi_unavailable: "Wi-Fi is unavailable.",
     handover_failed: "Could not switch to Wi-Fi. Recovery AP is available.",
