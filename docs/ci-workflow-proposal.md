@@ -165,8 +165,8 @@ On 2026-09-15, the Node provisioning/installer tests and ESP-IDF Python installe
 tests passed locally. The current build also passed the real offline installer
 command, which derived NVS offset `0x9000` and size `0x6000` from its partition
 table. No serial port was opened and no actual device identity was generated.
-Hosted validation of the updated workflow and physical installation remain
-separate gates; the earlier runs below do not establish either.
+The corrected workflow's hosted validation subsequently passed as recorded
+below. Physical installation and recovery remain separate, unverified gates.
 
 The first packaging-branch manual run built firmware and passed native/browser
 tests, but installer setup rejected the pinned image's esptool 5.3.1 because the
@@ -174,9 +174,14 @@ initial guard required 5.4.x. The guard now accepts the two explicitly validated
 versions, 5.3.1 and 5.4.0. All 26 SDK tests pass locally with each version,
 including real esptool read/write/verify API contract tests with hardware mocked.
 Offline validation of the actual local build also passed with 5.3.1 and its
-unprefixed generated sdkconfig JSON. A fresh hosted run is still required for
-the corrected commit; no toolchain pin, configuration schema, or hardware safety
-gate was relaxed to bypass the failure.
+unprefixed generated sdkconfig JSON. The
+[hosted follow-up](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34909122460)
+passed both **Firmware and Native Tests** and **Browser Integration** for
+corrected commit `ad77de0429b4881efe3a9650f6fec3891886999b`. It included a fresh
+firmware build, all 26 installer tests, and real-build offline manifest
+validation in the pinned esptool 5.3.1 container. No toolchain pin, configuration
+schema, or hardware safety gate was relaxed to bypass the failure. This hosted
+pass is software validation, not evidence of physical installation or recovery.
 
 ## Historical Validation Record
 
