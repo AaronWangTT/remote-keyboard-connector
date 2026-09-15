@@ -360,7 +360,7 @@ static bool non_overlapping_ap(const esp_netif_ip_info_t *station_info)
             esp_netif_set_ip_info(ap_interface, &current);
             esp_netif_dhcps_start(ap_interface);
         }
-        esp_wifi_deauth_sta(0);
+        if (result == ESP_OK) esp_wifi_deauth_sta(0);
         mdns_netif_action(ap_interface, MDNS_EVENT_ENABLE_IP4);
         clear_ap_reconnect();
         if (result == ESP_OK && state.online) {

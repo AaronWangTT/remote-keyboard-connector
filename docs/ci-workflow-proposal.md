@@ -94,6 +94,11 @@ and **Browser Integration** check names. It also keeps the PR requirement, zero
 reviewer approvals, no bypass actors, and the blocks on force pushes and branch
 deletion.
 
+These required checks were configured before PR #3. Its Wi-Fi review fixes do
+not change branch protection. The effective `rules/branches/main` API was
+rechecked during that review and confirmed both GitHub Actions check names and
+zero required approvals; no ruleset mutation was performed.
+
 The workflow was introduced through a feature branch and PR. Manual dispatch is
 available from the default branch; workflow changes do not themselves alter the
 ruleset, merge a PR, or require new approvals.

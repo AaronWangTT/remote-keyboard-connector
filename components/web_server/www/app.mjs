@@ -27,6 +27,8 @@ let networkPolling = false;
 let networkMutating = false;
 let networkUncertain = false;
 let networkFieldsInitialized = false;
+let networkFieldsJob = 0;
+let renderedProfile = "";
 let renderedScan = "";
 
 function notify(message = "") {
@@ -143,6 +145,8 @@ function renderNetwork() {
     const reconnect = document.createElement("a");
     reconnect.href = `http://${state.ap_reconnect_ip}/`;
     reconnect.textContent = state.ap_reconnect_ip;
+    reconnect.target = "_blank";
+    reconnect.rel = "noopener";
     document.querySelector("#network-ap-address").append(" -> ", reconnect);
   }
   document.querySelector("#network-station-address").textContent = state.station_ip || "Not connected";
@@ -163,7 +167,9 @@ function renderNetwork() {
   document.querySelector("#network-job-status").textContent = networkUncertain ? "Connection changed. Checking the last operation; credentials will not be resubmitted." :
     state.error ? errors[state.error] ?? "Network operation failed." : jobs[state.job] ?? state.job;
   document.querySelector("#network-job-status").dataset.error = String(Boolean(state.error));
-  if (!networkFieldsInitialized) {
+  const committedProfile = JSON.stringify([state.desired_station, state.saved_ssid_hex || state.saved_ssid, state.requested_hostname]);
+  const committedJob = networkFieldsJob === state.job_id && ["succeeded", "cancelled"].includes(state.job);
+  if (!networkFieldsInitialized || (!state.busy && (renderedProfile !== committedProfile || committedJob))) {
     document.querySelector(`[name="network-mode"][value="${state.desired_station ? "station" : "ap"}"]`).checked = true;
     const input = document.querySelector("#wifi-ssid");
     input.value = state.saved_ssid || "";
@@ -172,6 +178,8 @@ function renderNetwork() {
     document.querySelector("#wifi-network").value = "";
     document.querySelector("#network-hostname").value = state.requested_hostname || "kb";
     networkFieldsInitialized = true;
+    renderedProfile = committedProfile;
+    if (!state.busy) networkFieldsJob = 0;
     renderNetwork();
     return;
   }
@@ -211,8 +219,6 @@ async function pollNetwork() {
 
 async function submitNetwork(action, fields = {}) {
   if (networkMutating || networkUncertain) return;
-  const apReconnectIp = action === "confirm" && networkState?.job === "awaiting_ap_reconnect" ? networkState.ap_reconnect_ip : "";
-  const currentApIp = networkState?.ap_ip;
   disconnect();
   notify();
   networkMutating = true;
@@ -220,10 +226,7 @@ async function submitNetwork(action, fields = {}) {
   try {
     const result = await api(action === "scan" ? "/api/v1/network/scan" : "/api/v1/network", "POST",
       action === "scan" ? undefined : { action, ...fields });
-    if (apReconnectIp && result.management_url && new URL(result.management_url).hostname === currentApIp) {
-      location.replace(`http://${apReconnectIp}/`);
-      return;
-    }
+    if (["connect", "ap", "station", "forget", "cancel"].includes(action)) networkFieldsJob = result.job_id;
     if (action === "rename" && location.hostname.endsWith(".local") && result.management_url) {
       location.replace(result.management_url);
       return;
@@ -516,6 +519,11 @@ document.querySelector("#account-form").addEventListener("submit", async event =
   disconnect();
   notify();
   const password = document.querySelector("#owner-password").value;
+  const passwordBytes = new TextEncoder().encode(password).length;
+  if (passwordBytes < 12 || passwordBytes > 128 || password.includes("\0")) {
+    notify(errorMessage({ code: "invalid_credentials" }));
+    return;
+  }
   const claiming = !account.claimed;
   if (claiming && password !== document.querySelector("#owner-password-confirm").value) {
     notify("Owner passwords do not match.");

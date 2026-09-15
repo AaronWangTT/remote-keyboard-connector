@@ -231,8 +231,9 @@ in-flight requests; this grace period does not retain the old mDNS record.
 
 An overlapping subnet pauses the job at `awaiting_ap_reconnect` and publishes
 `ap_reconnect_ip` without renumbering or deauthenticating the AP client. Confirm
-authorizes that advertised address change; the UI moves AP-origin clients to the
-new numeric endpoint while LAN-origin clients keep their working address.
+authorizes that advertised address change; the UI retains the current status and
+retry page plus an explicit recovery link that opens separately. It does not
+navigate on the queued `202` response or assume the new IP is already live.
 Candidate credentials commit after the confirmed transition passes the existing
 association/DHCP checks. Cancel retains the current AP address and clears the
 pending change. Idle cancellation is rejected with `409` without changing the
@@ -355,7 +356,7 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
 | Provisioning and browser/API | All 23 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, idle-cancel rejection, confirmed AP-address transitions, handover, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf3410` bytes; `0xcbf0` bytes (52,208 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf35b0` bytes; `0xca50` bytes (51,792 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -389,6 +390,14 @@ after neutral completion, and an old release cannot affect a fresh generation.
 WebSocket clients and reservations retain their admitted generation; an open
 socket alone cannot reacquire input after network disarm. No additional lease
 mechanism was introduced.
+
+The latest browser checks cover a delayed AP transition with no premature
+navigation, preserved status/recovery links, committed mode/profile form updates,
+UTF-8 byte-length owner passwords, and Host/Origin rejection before session
+activity refresh. Fault-injected AP rollback skips deauthentication when any
+address-transition step fails. Pinned mDNS 1.13.0 initializes already-addressed
+interfaces in `mdns_priv_netif_init()` as well as registering later Wi-Fi/IP
+events; predefined AP/STA and IPv4 are enabled in the generated configuration.
 
 The native interrupted-save tests inject failure around the same stage/activate
 selection helper used by the NVS adapter. They verify old-or-new complete-record

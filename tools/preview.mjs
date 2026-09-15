@@ -357,8 +357,8 @@ server.on("upgrade", (request, socket, head) => {
     socket.destroy();
     return;
   }
-  const session = sessionFor(request);
-  if (!requestAllowed(request, true) || !session) {
+  const session = requestAllowed(request, true) ? sessionFor(request) : null;
+  if (!session) {
     socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     return;
   }

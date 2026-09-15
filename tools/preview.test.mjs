@@ -131,6 +131,12 @@ test("browser Network view scans, tests, confirms handover and forgets without U
   await page.getByRole("button", { name: "Test and Connect", exact: true }).click();
   await expect(page.locator("#network-station-address")).toHaveText("192.168.1.88");
   await expect(page.locator("#network-confirm")).toBeVisible();
+  await page.getByRole("button", { name: "Keep AP mode", exact: true }).click();
+  await expect(page.getByLabel("Standalone AP", { exact: true })).toBeChecked();
+  await expect(page.getByLabel("Network name (SSID)")).toHaveValue("<Office & Guests>");
+  await page.getByLabel("Join Wi-Fi", { exact: true }).check();
+  await page.getByRole("button", { name: "Connect saved network", exact: true }).click();
+  await expect(page.locator("#network-confirm")).toBeVisible();
   await page.getByRole("button", { name: "Switch to Wi-Fi", exact: true }).click();
   await expect(page.locator("#network-phase")).toHaveText("Connected to Wi-Fi");
   await page.getByLabel("Local hostname", { exact: true }).fill("kb-desk");
@@ -144,6 +150,9 @@ test("browser Network view scans, tests, confirms handover and forgets without U
   await page.locator("#forget-confirm").click();
   await expect(page.locator("#network-saved")).toHaveText("None");
   await expect(page.locator("#network-phase")).toHaveText("Standalone AP");
+  await expect(page.getByLabel("Standalone AP", { exact: true })).toBeChecked();
+  await expect(page.getByLabel("Network name (SSID)")).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Use Standalone AP", exact: true })).toBeVisible();
   assert.equal((await counters()).down, before);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.getByRole("button", { name: "Back to keyboard" }).click();
@@ -152,16 +161,19 @@ test("browser Network view scans, tests, confirms handover and forgets without U
 });
 
 test("overlapping AP subnet is announced and confirmed before reconnecting at the new address", { timeout: 20000 }, async context => {
-  const url = await startPreview(context);
+  const url = await startPreview(context, { PREVIEW_NETWORK_DELAY_MS: "1500" });
+  const session = await loginRequest(url);
   const browser = await chromium.launch();
   context.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 320, height: 568 } });
   let confirmations = 0;
+  let retired = false;
   page.on("request", request => {
     if (request.method() === "POST" && request.postDataJSON()?.action === "confirm") confirmations++;
   });
-  await page.route(/^http:\/\/(?:192\.168\.4\.1|172\.30\.4\.1)\//, async route => {
+  await page.context().route(/^http:\/\/(?:192\.168\.4\.1|172\.30\.4\.1)\//, async route => {
     const request = route.request();
+    if (retired && new URL(request.url()).hostname === "192.168.4.1") { await route.abort("addressunreachable"); return; }
     const destination = new URL(new URL(request.url()).pathname, url);
     const headers = { ...request.headers(), host: destination.host };
     if (headers.origin) headers.origin = destination.origin;
@@ -171,6 +183,7 @@ test("overlapping AP subnet is announced and confirmed before reconnecting at th
       const accepted = JSON.parse(body.toString());
       accepted.management_url = new URL("/", request.url()).href;
       body = Buffer.from(JSON.stringify(accepted));
+      if (request.postDataJSON()?.action === "confirm") retired = true;
     }
     await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body });
   });
@@ -188,13 +201,21 @@ test("overlapping AP subnet is announced and confirmed before reconnecting at th
   assert.equal(confirmations, 0);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.getByRole("button", { name: "Change AP address", exact: true }).click();
-  await expect(page).toHaveURL("http://172.30.4.1/");
-  await page.getByLabel("Owner password", { exact: true }).fill("preview-owner-password");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await page.getByRole("button", { name: "Network settings", exact: true }).click();
-  await expect(page.locator("#network-ap-address")).toHaveText("172.30.4.1");
-  await expect(page.locator("#network-saved")).toHaveText("overlap-network");
-  await expect(page.getByRole("button", { name: "Switch to Wi-Fi", exact: true })).toBeVisible();
+  await expect(page.locator("#network-retry")).toBeVisible();
+  await expect(page).toHaveURL("http://192.168.4.1/");
+  const status = async () => (await fetch(new URL("/api/v1/network/job", url), { headers: { Cookie: session.cookie } })).json();
+  await expect.poll(status).toMatchObject({ ap_ip: "172.30.4.1", job: "awaiting_confirmation" });
+  const popup = page.context().waitForEvent("page");
+  await page.getByRole("link", { name: "172.30.4.1", exact: true }).click();
+  const reconnected = await popup;
+  await expect(reconnected).toHaveURL("http://172.30.4.1/");
+  await expect(page).toHaveURL("http://192.168.4.1/");
+  await reconnected.getByLabel("Owner password", { exact: true }).fill("preview-owner-password");
+  await reconnected.getByRole("button", { name: "Sign in", exact: true }).click();
+  await reconnected.getByRole("button", { name: "Network settings", exact: true }).click();
+  await expect(reconnected.locator("#network-ap-address")).toHaveText("172.30.4.1");
+  await expect(reconnected.locator("#network-saved")).toHaveText("overlap-network");
+  await expect(reconnected.getByRole("button", { name: "Switch to Wi-Fi", exact: true })).toBeVisible();
   assert.equal(confirmations, 1);
   assert.equal((await (await fetch(new URL("/__test__/input", url))).json()).down, 0);
 });
@@ -322,15 +343,26 @@ test("browser owner setup keeps credentials local and requires explicit control 
   const browser = await chromium.launch();
   context.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const ownerPassword = "\u{1f600}".repeat(4);
+  let claims = 0;
+  page.on("request", request => { if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/claim") claims++; });
   await page.goto(url);
   await expect(page.getByRole("heading", { name: "Claim keyboard" })).toBeVisible();
   await page.getByLabel("Owner setup code").fill("0123456789abcdef01234567");
-  await page.getByLabel("Owner password", { exact: true }).fill("recipient-chosen-password");
-  await page.getByLabel("Confirm owner password").fill("recipient-chosen-password");
+  for (const invalidPassword of ["short", "\u00e9".repeat(65)]) {
+    await page.getByLabel("Owner password", { exact: true }).fill(invalidPassword);
+    await page.getByLabel("Confirm owner password").fill(invalidPassword);
+    await page.getByRole("button", { name: "Claim keyboard", exact: true }).click();
+    await expect(page.locator("#ui-message")).toContainText("12 to 128 bytes");
+    assert.equal(claims, 0);
+  }
+  await page.getByLabel("Owner password", { exact: true }).fill(ownerPassword);
+  await page.getByLabel("Confirm owner password").fill(ownerPassword);
   await page.getByRole("button", { name: "Claim keyboard", exact: true }).click();
   const counters = async () => (await fetch(new URL("/__test__/input", url))).json();
   const key = page.getByRole("button", { name: "A", exact: true });
   await expect(page.locator("#take-control")).toBeVisible();
+  assert.equal(claims, 1);
   await expect(key).toBeDisabled();
   assert.equal((await counters()).down, 0);
   assert.equal(await page.evaluate(() => document.cookie.includes("kb_session")), false);
@@ -355,7 +387,7 @@ test("browser owner setup keeps credentials local and requires explicit control 
     }
     await expect(page.getByRole("heading", { name: "Sign in", exact: true })).toBeVisible();
     await expect(page.locator("#wifi-password")).toHaveValue("");
-    await page.getByLabel("Owner password", { exact: true }).fill("recipient-chosen-password");
+    await page.getByLabel("Owner password", { exact: true }).fill(ownerPassword);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
   }
   await takeControl(page);
@@ -410,7 +442,8 @@ test("WebSocket authorization requires a session and explicit control reservatio
   const session = await loginRequest(url);
   const endpoint = new URL("/api/v1/keyboard", url);
   endpoint.protocol = "ws:";
-  for (const headers of [{ Origin: url }, { Origin: url, Cookie: session.cookie }]) {
+  for (const headers of [{ Origin: url }, { Origin: url, Cookie: session.cookie },
+    { Origin: "http://untrusted.invalid", Cookie: session.cookie }, { Origin: url, Host: "untrusted.invalid", Cookie: session.cookie }]) {
     const denied = new WebSocket(endpoint, { headers });
     const error = await once(denied, "error");
     assert.match(error[0].message, /403/);
