@@ -1,13 +1,17 @@
 # ESP32-S3 Development Setup and Project Structure
 
-Current implementation: the [iPhone-first typing keyboard](keyboard-enhancement-plan.md)
-passes native, Chromium/WebKit, and ESP-IDF v6.1 build checks. It expands the
-earlier single-A prototype without adding Wi-Fi setup or authorization. On
-2026-09-14 the user confirmed successful local board operation with both the
-separate-image ZIP and merged BIN; see the [hardware test record](../hardware/README.md#hardware-test-status).
-Earlier environment audits and starter examples below are historical setup
-context. Detailed safety, power, and host/controller compatibility checks remain
-pending, separate from this user-reported board smoke-test pass.
+Current firmware uses authenticated AP/STA networking and owner setup; see the
+[Wi-Fi implementation record](wifi-enhancement-plan.md) and the
+[current sender-provisioning instructions](../README.md#sender-provisioning).
+This page retains earlier environment and keyboard-only setup notes. References
+below to unauthenticated AP access, ZIP/merged-BIN packages, or their flashing
+workflow are historical, not the current provisioning or CI artifact contract.
+
+On 2026-09-14 the user reported successful board operation with the earlier
+keyboard-only ZIP and merged BIN; see the
+[hardware test record](../hardware/README.md#hardware-test-status). That smoke
+test does not validate the authenticated Wi-Fi firmware. Current device safety,
+power, provisioning, and host/controller compatibility gates remain open.
 
 In the verified WSL EIM installation, the working activation command is:
 

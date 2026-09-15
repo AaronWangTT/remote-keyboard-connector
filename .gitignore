@@ -4,6 +4,7 @@
 /sdkconfig
 /sdkconfig.old
 
+/.clangd
 /.vscode/*
 !/.vscode/extensions.json
 

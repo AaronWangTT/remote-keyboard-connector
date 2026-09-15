@@ -6,8 +6,16 @@
 #include <inttypes.h>
 
 #include "esp_http_server.h"
+#include "esp_netif.h"
+#include "esp_random.h"
 #include "esp_timer.h"
+#include "access_control.h"
+#include "cJSON.h"
+#include "device_identity.h"
 #include "input_protocol.h"
+#include "mbedtls/platform_util.h"
+#include "lwip/sockets.h"
+#include "network.h"
 #include "usb_keyboard.h"
 
 extern const char index_start[] asm("_binary_index_html_start");
@@ -28,6 +36,18 @@ extern const char return_start[] asm("_binary_return_svg_start");
 extern const char return_end[] asm("_binary_return_svg_end");
 extern const char release_start[] asm("_binary_release_svg_start");
 extern const char release_end[] asm("_binary_release_svg_end");
+extern const char settings_start[] asm("_binary_settings_svg_start");
+extern const char settings_end[] asm("_binary_settings_svg_end");
+extern const char logout_start[] asm("_binary_logout_svg_start");
+extern const char logout_end[] asm("_binary_logout_svg_end");
+extern const char eye_start[] asm("_binary_eye_svg_start");
+extern const char eye_end[] asm("_binary_eye_svg_end");
+extern const char eye_off_start[] asm("_binary_eye_off_svg_start");
+extern const char eye_off_end[] asm("_binary_eye_off_svg_end");
+extern const char back_start[] asm("_binary_back_svg_start");
+extern const char back_end[] asm("_binary_back_svg_end");
+extern const char refresh_start[] asm("_binary_refresh_svg_start");
+extern const char refresh_end[] asm("_binary_refresh_svg_end");
 
 typedef struct {
     const char *uri;
@@ -46,6 +66,12 @@ static const web_asset_t assets[] = {
     {"/icons/backspace.svg", "image/svg+xml", backspace_start, backspace_end},
     {"/icons/return.svg", "image/svg+xml", return_start, return_end},
     {"/icons/release.svg", "image/svg+xml", release_start, release_end},
+    {"/icons/settings.svg", "image/svg+xml", settings_start, settings_end},
+    {"/icons/logout.svg", "image/svg+xml", logout_start, logout_end},
+    {"/icons/eye.svg", "image/svg+xml", eye_start, eye_end},
+    {"/icons/eye-off.svg", "image/svg+xml", eye_off_start, eye_off_end},
+    {"/icons/back.svg", "image/svg+xml", back_start, back_end},
+    {"/icons/refresh.svg", "image/svg+xml", refresh_start, refresh_end},
 };
 
 typedef struct {
@@ -53,14 +79,138 @@ typedef struct {
     uint32_t generation;
     uint32_t last_sequence;
     int64_t last_seen;
+    access_session_t *owner;
+    uint32_t owner_generation;
 } input_client_t;
 
 static input_client_t *active_client;
+static httpd_handle_t server;
+static access_control_t access_control;
+static access_session_t *pending_owner;
+static uint32_t pending_generation;
+static uint32_t pending_usb_generation;
+static int64_t pending_until;
+static esp_timer_handle_t control_timer;
+
+static void response_headers(httpd_req_t *request);
+static cJSON *network_json(void);
+
+static esp_err_t problem(httpd_req_t *request, const char *status, const char *code)
+{
+    response_headers(request);
+    httpd_resp_set_status(request, status);
+    httpd_resp_set_type(request, "application/json");
+    char response[128];
+    snprintf(response, sizeof(response), "{\"error\":\"%s\"}", code);
+    return httpd_resp_sendstr(request, response);
+}
+
+static bool header(httpd_req_t *request, const char *name, char *value, size_t capacity)
+{
+    size_t length = httpd_req_get_hdr_value_len(request, name);
+    return length > 0 && length < capacity && httpd_req_get_hdr_value_str(request, name, value, capacity) == ESP_OK;
+}
+
+static bool request_allowed(httpd_req_t *request, bool mutation)
+{
+    char host[80];
+    char origin[96];
+    network_status_t network;
+    network_status(&network);
+    char hostname[72];
+    char previous_hostname[72];
+    snprintf(hostname, sizeof(hostname), "%s.local", network.hostname);
+    const char *allowed[] = {hostname, network.ap_ip, network.station_ip, previous_hostname};
+    size_t allowed_count = 3;
+    if (network.previous_hostname[0] != '\0') {
+        snprintf(previous_hostname, sizeof(previous_hostname), "%s.local", network.previous_hostname);
+        allowed_count++;
+    }
+    bool valid = header(request, "Host", host, sizeof(host)) &&
+                 access_host_allowed(host, allowed, allowed_count, false);
+    if (mutation) valid = valid && header(request, "Origin", origin, sizeof(origin)) &&
+                          access_origin_allowed(host, origin, allowed, allowed_count, false);
+    if (!valid) problem(request, "403 Forbidden", "origin_denied");
+    return valid;
+}
+
+static uint32_t local_address(httpd_req_t *request)
+{
+    struct sockaddr_storage address = {0};
+    socklen_t length = sizeof(address);
+    if (getsockname(httpd_req_to_sockfd(request), (struct sockaddr *)&address, &length) != 0) return 0;
+    if (address.ss_family == AF_INET) return ((const struct sockaddr_in *)&address)->sin_addr.s_addr;
+#if CONFIG_LWIP_IPV6
+    if (address.ss_family == AF_INET6) {
+        const struct sockaddr_in6 *ipv6 = (const struct sockaddr_in6 *)&address;
+        if (IN6_IS_ADDR_V4MAPPED(&ipv6->sin6_addr)) {
+            uint32_t ipv4;
+            memcpy(&ipv4, &ipv6->sin6_addr.s6_addr[12], sizeof(ipv4));
+            return ipv4;
+        }
+    }
+#endif
+    return 0;
+}
+
+static access_session_t *request_session(httpd_req_t *request, bool mutation)
+{
+    char cookie[513];
+    access_session_t *session = header(request, "Cookie", cookie, sizeof(cookie)) ?
+        access_session_find(&access_control, cookie, esp_timer_get_time()) : NULL;
+    if (session == NULL) {
+        problem(request, "401 Unauthorized", "login_required");
+        return NULL;
+    }
+    if (mutation) {
+        char csrf[ACCESS_TOKEN_LENGTH + 1];
+        if (!header(request, "X-CSRF-Token", csrf, sizeof(csrf)) || !access_token_equal(csrf, session->csrf)) {
+            problem(request, "403 Forbidden", "csrf_denied");
+            return NULL;
+        }
+    }
+    if (mutation) network_management_touch(local_address(request));
+    return session;
+}
+
+static void release_control(void)
+{
+    if (pending_owner != NULL) network_control_end(pending_usb_generation);
+    pending_owner = NULL;
+    if (active_client != NULL) {
+        input_client_t *previous = active_client;
+        active_client = NULL;
+        network_control_end(previous->generation);
+        usb_keyboard_release(previous->generation);
+        httpd_sess_trigger_close(server, previous->socket);
+    }
+}
+
+static void expire_control(void *argument)
+{
+    (void)argument;
+    int64_t now = esp_timer_get_time();
+    if (pending_owner != NULL && (now >= pending_until || pending_usb_generation != usb_keyboard_status().generation ||
+        !access_session_valid(pending_owner, pending_generation, now, false))) {
+        network_control_end(pending_usb_generation);
+        pending_owner = NULL;
+    }
+    if (active_client != NULL && (now - active_client->last_seen >= INT64_C(1000000) ||
+        active_client->generation != usb_keyboard_status().generation ||
+        !access_session_valid(active_client->owner, active_client->owner_generation, now, false))) release_control();
+}
+
+static void control_tick(void *argument)
+{
+    (void)argument;
+    if (server != NULL) httpd_queue_work(server, expire_control, NULL);
+}
 
 static void free_input_client(void *context)
 {
     input_client_t *client = context;
     if (active_client == client) {
+        network_control_end(client->generation);
         usb_keyboard_release(client->generation);
         active_client = NULL;
     }
@@ -69,23 +219,29 @@ static void free_input_client(void *context)
 
 static esp_err_t input_handshake(httpd_req_t *request)
 {
+    if (!request_allowed(request, true)) return ESP_FAIL;
+    access_session_t *session = request_session(request, false);
+    if (session == NULL) return ESP_FAIL;
     int64_t now = esp_timer_get_time();
+    expire_control(NULL);
     usb_keyboard_status_t status = usb_keyboard_status();
-    if (active_client != NULL &&
-        (active_client->generation != status.generation ||
-         now - active_client->last_seen >= INT64_C(1000000))) {
-        usb_keyboard_release(active_client->generation);
-        httpd_sess_trigger_close(request->handle, active_client->socket);
-        active_client = NULL;
-        status = usb_keyboard_status();
-    }
     if (active_client != NULL) {
-        httpd_resp_set_status(request, "409 Conflict");
-        httpd_resp_sendstr(request, "busy");
+        problem(request, "409 Conflict", "busy");
+        return ESP_FAIL;
+    }
+    if (pending_owner != session || pending_generation != session->generation || now >= pending_until) {
+        problem(request, "403 Forbidden", "take_control_required");
+        return ESP_FAIL;
+    }
+    pending_owner = NULL;
+    if (!status.ready || pending_usb_generation != status.generation) {
+        network_control_end(pending_usb_generation);
+        problem(request, "503 Service Unavailable", "usb_unavailable");
         return ESP_FAIL;
     }
     input_client_t *client = calloc(1, sizeof(*client));
     if (client == NULL) {
+        network_control_end(pending_usb_generation);
         httpd_resp_set_status(request, "503 Service Unavailable");
         httpd_resp_sendstr(request, "unavailable");
         return ESP_FAIL;
@@ -93,6 +249,8 @@ static esp_err_t input_handshake(httpd_req_t *request)
     client->socket = httpd_req_to_sockfd(request);
     client->generation = status.generation;
     client->last_seen = now;
+    client->owner = session;
+    client->owner_generation = session->generation;
     request->sess_ctx = client;
     request->free_ctx = free_input_client;
     active_client = client;
@@ -134,7 +292,8 @@ static esp_err_t input_handler(httpd_req_t *request)
     int64_t now = esp_timer_get_time();
     usb_keyboard_status_t status = usb_keyboard_status();
     if (client == NULL || client != active_client || client->generation != status.generation ||
-        now - client->last_seen >= INT64_C(1000000)) {
+        now - client->last_seen >= INT64_C(1000000) ||
+        !access_session_valid(client->owner, client->owner_generation, now, false)) {
         return input_fault(client);
     }
     httpd_ws_frame_t frame = {0};
@@ -157,6 +316,7 @@ static esp_err_t input_handler(httpd_req_t *request)
         return input_fault(client);
     }
     client->last_seen = now;
+    if (!access_session_valid(client->owner, client->owner_generation, now, true)) return input_fault(client);
     char reply[128];
     if (message.type == INPUT_HEARTBEAT) {
         if (status.ready && !usb_keyboard_heartbeat(client->generation)) {
@@ -185,6 +345,7 @@ static void response_headers(httpd_req_t *request)
 
 static esp_err_t asset_handler(httpd_req_t *request)
 {
+    if (!request_allowed(request, false)) return ESP_OK;
     const web_asset_t *asset = request->user_ctx;
     response_headers(request);
     httpd_resp_set_type(request, asset->content_type);
@@ -193,19 +354,252 @@ static esp_err_t asset_handler(httpd_req_t *request)
 
 static esp_err_t status_handler(httpd_req_t *request)
 {
+    if (!request_allowed(request, false) || request_session(request, false) == NULL) return ESP_OK;
     response_headers(request);
     httpd_resp_set_type(request, "application/json");
     char reply[128];
     status_json(reply, sizeof(reply), usb_keyboard_status());
+    cJSON *root = cJSON_Parse(reply);
+    cJSON *network = network_json();
+    if (root == NULL || network == NULL || !cJSON_AddItemToObject(root, "network", network)) {
+        cJSON_Delete(root);
+        cJSON_Delete(network);
+        return problem(request, "503 Service Unavailable", "unavailable");
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == NULL) return problem(request, "503 Service Unavailable", "unavailable");
+    esp_err_t result = httpd_resp_sendstr(request, json);
+    cJSON_free(json);
+    return result;
+}
+
+static cJSON *network_json(void)
+{
+    network_status_t network;
+    network_status(&network);
+    cJSON *result = cJSON_CreateObject();
+    if (result == NULL) return NULL;
+    bool valid = cJSON_AddBoolToObject(result, "available", network.available) &&
+        cJSON_AddBoolToObject(result, "ap_active", network.ap_active) &&
+        cJSON_AddBoolToObject(result, "station_online", network.station_online) &&
+        cJSON_AddBoolToObject(result, "desired_station", network.desired_station) &&
+        cJSON_AddBoolToObject(result, "has_profile", network.has_profile) &&
+        cJSON_AddBoolToObject(result, "busy", network.busy) &&
+        cJSON_AddBoolToObject(result, "mdns", network.mdns) &&
+        cJSON_AddBoolToObject(result, "can_control", network.can_control) &&
+        cJSON_AddNumberToObject(result, "job_id", network.job_id) &&
+        cJSON_AddStringToObject(result, "phase", network.phase) &&
+        cJSON_AddStringToObject(result, "job", network.job) &&
+        cJSON_AddStringToObject(result, "error", network.error) &&
+        cJSON_AddStringToObject(result, "hostname", network.hostname) &&
+        cJSON_AddStringToObject(result, "requested_hostname", network.requested_hostname) &&
+        cJSON_AddStringToObject(result, "ap_ssid", network.ap_ssid) &&
+        cJSON_AddStringToObject(result, "saved_ssid", network.saved_ssid) &&
+        cJSON_AddStringToObject(result, "saved_ssid_hex", network.saved_ssid_hex) &&
+        cJSON_AddStringToObject(result, "station_ssid", network.station_ssid) &&
+        cJSON_AddStringToObject(result, "ap_ip", network.ap_ip) &&
+        cJSON_AddStringToObject(result, "ap_reconnect_ip", network.ap_reconnect_ip) &&
+        cJSON_AddStringToObject(result, "station_ip", network.station_ip);
+    cJSON *scan = valid ? cJSON_AddArrayToObject(result, "scan") : NULL;
+    valid = scan != NULL;
+    for (size_t index = 0; valid && index < network.scan_count; index++) {
+        cJSON *item = cJSON_CreateObject();
+        if (item == NULL) { valid = false; break; }
+        valid = cJSON_AddStringToObject(item, "ssid", network.scan[index].ssid) &&
+            cJSON_AddStringToObject(item, "ssid_hex", network.scan[index].ssid_hex) &&
+                cJSON_AddNumberToObject(item, "rssi", network.scan[index].rssi) &&
+                cJSON_AddBoolToObject(item, "supported", network.scan[index].supported);
+        if (!valid || !cJSON_AddItemToArray(scan, item)) { cJSON_Delete(item); valid = false; }
+    }
+    if (!valid) { cJSON_Delete(result); return NULL; }
+    return result;
+}
+
+static esp_err_t network_handler(httpd_req_t *request)
+{
+    if (!request_allowed(request, request->method != HTTP_GET) ||
+        request_session(request, request->method != HTTP_GET) == NULL) return ESP_OK;
+    if (request->method == HTTP_GET) {
+        cJSON *root = network_json();
+        char *json = root != NULL ? cJSON_PrintUnformatted(root) : NULL;
+        cJSON_Delete(root);
+        if (json == NULL) return problem(request, "503 Service Unavailable", "unavailable");
+        response_headers(request);
+        httpd_resp_set_type(request, "application/json");
+        esp_err_t result = httpd_resp_sendstr(request, json);
+        cJSON_free(json);
+        return result;
+    }
+    expire_control(NULL);
+    if (active_client != NULL || pending_owner != NULL) return problem(request, "409 Conflict", "release_control_first");
+    bool scan = strcmp(request->uri, "/api/v1/network/scan") == 0;
+    char type[64];
+    if (request->content_len > 1024 || (scan && request->content_len != 0)) return problem(request, "413 Content Too Large", "invalid_network_request");
+    if (!scan && (request->content_len == 0 || !header(request, "Content-Type", type, sizeof(type)) ||
+        (strcmp(type, "application/json") != 0 && strcmp(type, "application/json; charset=utf-8") != 0))) return problem(request, "400 Bad Request", "invalid_network_request");
+    uint8_t payload[1024];
+    size_t length = 0;
+    while (length < request->content_len) {
+        int count = httpd_req_recv(request, (char *)payload + length, request->content_len - length);
+        if (count <= 0) {
+            mbedtls_platform_zeroize(payload, sizeof(payload));
+            return ESP_FAIL;
+        }
+        length += count;
+    }
+    uint32_t job_id;
+    esp_err_t result = network_submit(payload, length, scan, &job_id);
+    mbedtls_platform_zeroize(payload, sizeof(payload));
+    if (result == ESP_ERR_INVALID_ARG) return problem(request, "400 Bad Request", "invalid_network_request");
+    if (result == ESP_FAIL) return problem(request, "503 Service Unavailable", "storage_failed");
+    if (result != ESP_OK) return problem(request, "409 Conflict", "network_busy");
+    response_headers(request);
+    httpd_resp_set_status(request, "202 Accepted");
+    httpd_resp_set_type(request, "application/json");
+    esp_ip4_addr_t address = {.addr = local_address(request)};
+    char management_url[32] = "";
+    if (address.addr != 0) snprintf(management_url, sizeof(management_url), "http://" IPSTR "/", IP2STR(&address));
+    char reply[128];
+    snprintf(reply, sizeof(reply), "{\"job_id\":%" PRIu32 ",\"management_url\":\"%s\"}", job_id, management_url);
     return httpd_resp_sendstr(request, reply);
+}
+
+static void random_token(char token[ACCESS_TOKEN_LENGTH + 1])
+{
+    uint8_t bytes[ACCESS_TOKEN_LENGTH / 2];
+    static const char hex[] = "0123456789abcdef";
+    esp_fill_random(bytes, sizeof(bytes));
+    for (size_t index = 0; index < sizeof(bytes); index++) {
+        token[index * 2] = hex[bytes[index] >> 4];
+        token[index * 2 + 1] = hex[bytes[index] & 15];
+    }
+    token[ACCESS_TOKEN_LENGTH] = '\0';
+    mbedtls_platform_zeroize(bytes, sizeof(bytes));
+}
+
+static esp_err_t session_reply(httpd_req_t *request, access_session_t *session)
+{
+    response_headers(request);
+    httpd_resp_set_type(request, "application/json");
+    char response[256];
+    snprintf(response, sizeof(response), "{\"provisioned\":%s,\"claimed\":%s,\"authenticated\":%s,\"csrf\":\"%s\"}",
+             device_identity_ready() ? "true" : "false", device_identity_claimed() ? "true" : "false",
+             session != NULL ? "true" : "false", session != NULL ? session->csrf : "");
+    return httpd_resp_sendstr(request, response);
+}
+
+static esp_err_t issue_session(httpd_req_t *request)
+{
+    char token[ACCESS_TOKEN_LENGTH + 1];
+    char csrf[ACCESS_TOKEN_LENGTH + 1];
+    random_token(token);
+    random_token(csrf);
+    access_session_t *session = access_session_create(&access_control, token, csrf, esp_timer_get_time());
+    if (session == NULL) return problem(request, "503 Service Unavailable", "session_capacity");
+    char cookie[192];
+    snprintf(cookie, sizeof(cookie), "kb_session=%s; Path=/; HttpOnly; SameSite=Strict", token);
+    httpd_resp_set_hdr(request, "Set-Cookie", cookie);
+    return session_reply(request, session);
+}
+
+static bool read_credentials(httpd_req_t *request, bool claim, access_credentials_t *credentials)
+{
+    char content_type[64];
+    if (request->content_len == 0 || request->content_len > ACCESS_CREDENTIAL_BODY_MAX ||
+        !header(request, "Content-Type", content_type, sizeof(content_type)) ||
+        (strcmp(content_type, "application/json") != 0 && strcmp(content_type, "application/json; charset=utf-8") != 0)) return false;
+    uint8_t payload[ACCESS_CREDENTIAL_BODY_MAX];
+    size_t received = 0;
+    while (received < request->content_len) {
+        int count = httpd_req_recv(request, (char *)payload + received, request->content_len - received);
+        if (count <= 0) {
+            mbedtls_platform_zeroize(payload, sizeof(payload));
+            return false;
+        }
+        received += count;
+    }
+    bool valid = access_credentials_parse(payload, received, claim, credentials);
+    mbedtls_platform_zeroize(payload, sizeof(payload));
+    return valid;
+}
+
+static esp_err_t session_handler(httpd_req_t *request)
+{
+    if (!request_allowed(request, request->method != HTTP_GET)) return ESP_OK;
+    expire_control(NULL);
+    if (request->method == HTTP_GET) {
+        char cookie[513];
+        access_session_t *session = header(request, "Cookie", cookie, sizeof(cookie)) ?
+            access_session_find(&access_control, cookie, esp_timer_get_time()) : NULL;
+        return session_reply(request, session);
+    }
+    if (request->method == HTTP_DELETE) {
+        access_session_t *session = request_session(request, true);
+        if (session == NULL) return ESP_OK;
+        if ((active_client != NULL && active_client->owner == session) || pending_owner == session) release_control();
+        access_session_revoke(session);
+        httpd_resp_set_hdr(request, "Set-Cookie", "kb_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+        return session_reply(request, NULL);
+    }
+    if (!device_identity_ready()) return problem(request, "503 Service Unavailable", "provisioning_required");
+    if (!device_identity_claimed()) return problem(request, "409 Conflict", "claim_required");
+    if (!access_login_attempt(&access_control, esp_timer_get_time())) return problem(request, "429 Too Many Requests", "login_rate_limited");
+    access_credentials_t credentials;
+    if (!read_credentials(request, false, &credentials)) return problem(request, "400 Bad Request", "invalid_credentials");
+    bool valid = device_identity_verify(credentials.password);
+    mbedtls_platform_zeroize(&credentials, sizeof(credentials));
+    return valid ? issue_session(request) : problem(request, "401 Unauthorized", "invalid_credentials");
+}
+
+static esp_err_t claim_handler(httpd_req_t *request)
+{
+    if (!request_allowed(request, true)) return ESP_OK;
+    if (!device_identity_ready()) return problem(request, "503 Service Unavailable", "provisioning_required");
+    if (device_identity_claimed()) return problem(request, "409 Conflict", "already_claimed");
+    if (!access_login_attempt(&access_control, esp_timer_get_time())) return problem(request, "429 Too Many Requests", "login_rate_limited");
+    access_credentials_t credentials;
+    if (!read_credentials(request, true, &credentials)) return problem(request, "400 Bad Request", "invalid_credentials");
+    esp_err_t result = device_identity_claim(credentials.setup_code, credentials.password);
+    mbedtls_platform_zeroize(&credentials, sizeof(credentials));
+    if (result == ESP_ERR_INVALID_CRC) return problem(request, "401 Unauthorized", "invalid_setup_code");
+    if (result != ESP_OK) return problem(request, "503 Service Unavailable", "claim_failed");
+    return issue_session(request);
+}
+
+static esp_err_t control_handler(httpd_req_t *request)
+{
+    if (!request_allowed(request, true)) return ESP_OK;
+    access_session_t *session = request_session(request, true);
+    if (session == NULL) return ESP_OK;
+    expire_control(NULL);
+    if (strcmp(request->uri, "/api/v1/control/stop") == 0) {
+        release_control();
+    } else {
+        if (active_client != NULL || pending_owner != NULL) return problem(request, "409 Conflict", "busy");
+        if (!usb_keyboard_status().ready) return problem(request, "503 Service Unavailable", "usb_unavailable");
+        uint32_t generation = usb_keyboard_status().generation;
+        if (!network_control_begin(local_address(request), generation)) return problem(request, "409 Conflict", "network_busy");
+        pending_owner = session;
+        pending_generation = session->generation;
+        pending_usb_generation = generation;
+        pending_until = esp_timer_get_time() + INT64_C(5000000);
+    }
+    response_headers(request);
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, "{\"ok\":true}");
 }
 
 esp_err_t web_server_start(void)
 {
-    httpd_handle_t server = NULL;
+#if !CONFIG_KEYBOARD_HTTP_DEVELOPMENT
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+    if (!device_identity_ready()) return ESP_ERR_INVALID_STATE;
     httpd_config_t configuration = HTTPD_DEFAULT_CONFIG();
-    configuration.max_uri_handlers = sizeof(assets) / sizeof(assets[0]) + 2;
+    configuration.max_uri_handlers = sizeof(assets) / sizeof(assets[0]) + 11;
     configuration.max_open_sockets = 7;
+    configuration.stack_size = 8192;
     configuration.recv_wait_timeout = 2;
     configuration.send_wait_timeout = 2;
     esp_err_t result = httpd_start(&server, &configuration);
@@ -235,6 +629,24 @@ esp_err_t web_server_start(void)
         httpd_stop(server);
         return result;
     }
+    const httpd_uri_t management_routes[] = {
+        {.uri = "/api/v1/session", .method = HTTP_GET, .handler = session_handler},
+        {.uri = "/api/v1/session", .method = HTTP_POST, .handler = session_handler},
+        {.uri = "/api/v1/session", .method = HTTP_DELETE, .handler = session_handler},
+        {.uri = "/api/v1/claim", .method = HTTP_POST, .handler = claim_handler},
+        {.uri = "/api/v1/control/take", .method = HTTP_POST, .handler = control_handler},
+        {.uri = "/api/v1/control/stop", .method = HTTP_POST, .handler = control_handler},
+        {.uri = "/api/v1/network", .method = HTTP_POST, .handler = network_handler},
+        {.uri = "/api/v1/network/scan", .method = HTTP_POST, .handler = network_handler},
+        {.uri = "/api/v1/network/job", .method = HTTP_GET, .handler = network_handler},
+    };
+    for (size_t index = 0; index < sizeof(management_routes) / sizeof(management_routes[0]); index++) {
+        result = httpd_register_uri_handler(server, &management_routes[index]);
+        if (result != ESP_OK) {
+            httpd_stop(server);
+            return result;
+        }
+    }
     httpd_uri_t input_route = {
         .uri = "/api/v1/keyboard",
         .method = HTTP_GET,
@@ -245,6 +657,18 @@ esp_err_t web_server_start(void)
     result = httpd_register_uri_handler(server, &input_route);
     if (result != ESP_OK) {
         httpd_stop(server);
+        return result;
+    }
+    const esp_timer_create_args_t timer = {.callback = control_tick, .name = "control_expiry"};
+    result = esp_timer_create(&timer, &control_timer);
+    if (result == ESP_OK) result = esp_timer_start_periodic(control_timer, 250000);
+    if (result != ESP_OK) {
+        if (control_timer != NULL) {
+            esp_timer_delete(control_timer);
+            control_timer = NULL;
+        }
+        httpd_stop(server);
+        server = NULL;
     }
     return result;
 }

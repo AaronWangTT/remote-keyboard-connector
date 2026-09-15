@@ -1,23 +1,26 @@
 # Remote Keyboard Connector
 
 ESP32-S3 Wi-Fi USB keyboard prototype using ESP-IDF v6.1. The firmware provides
-a default access point and an iPhone-first English (US) typing keyboard with
-letters, numbers, symbols, Shift/Caps Lock, Backspace, Space, and Return.
-Physical keyboard, mouse, and touch input share a bounded six-key USB report
-path. The page also fits tablet and desktop sizes. Automated host/browser tests
-and firmware builds pass. On 2026-09-14 the user confirmed successful flashing
-and operation on their board using both the separate-image ZIP and merged BIN.
-This is a user-reported hardware smoke-test pass; detailed safety, power, and
-host/controller compatibility results remain pending. See the
-[hardware test record](hardware/README.md#hardware-test-status).
+standalone AP and saved Wi-Fi station modes, temporary AP+STA setup/recovery,
+and the preferred name `kb.local`. Sender-provisioned private AP credentials,
+one-time owner claim, browser login, and explicit keyboard control are included.
+The iPhone-first English (US) keyboard retains letters, numbers, symbols,
+Shift/Caps Lock, Backspace, Space, and Return with bounded six-key USB reports.
 
-This is an unauthenticated HTTP/WS development prototype. Use only with an
-authorized, non-sensitive test host on an isolated network. The AP password is
-a public development default, not owner authentication.
+The Wi-Fi enhancement passes automated native/browser checks and an ESP32-S3
+build. It has not been provisioned or tested on the physical board. The earlier
+[hardware smoke-test record](hardware/README.md#hardware-test-status) applies to
+the previous keyboard-only firmware, not to these networking/authentication changes.
+
+This is an authenticated HTTP/WS development prototype for protected, trusted
+personal test networks and authorized, non-sensitive USB hosts. HTTP does not
+protect passwords, sessions, or input from network interception. HTTPS/WSS and
+encrypted credential storage remain lower-priority follow-up work.
 
 ## Documentation
 
 - [CI workflow setup proposal](docs/ci-workflow-proposal.md)
+- [Wi-Fi enhancement plan, implementation record, and remaining gates](docs/wifi-enhancement-plan.md)
 - [Keyboard enhancement plan and validation results](docs/keyboard-enhancement-plan.md)
 - [Minimal implementation plan and validation results](docs/minimal-implementation-plan.md)
 - [Wi-Fi USB remote keyboard design specification](docs/remote-keyboard-design.md)
@@ -30,7 +33,8 @@ Open the `remote-keyboard-connector` folder itself as the VS Code workspace so
 its ESP-IDF and C/C++ settings apply. This folder is the intended GitHub
 repository root; its parent directory is only a local container.
 
-Select v6.1 with `ESP-IDF: Select Current ESP-IDF Version`, then run
+Select v6.1 with `ESP-IDF: Select Current ESP-IDF Version` and select `esp32s3`
+with `ESP-IDF: Set Espressif Device Target`, then run
 `ESP-IDF: Open ESP-IDF Terminal`. From the repository root:
 
 ```bash
@@ -42,28 +46,50 @@ The target defaults to `esp32s3`. A successful build produces
 to use the generated compilation database; the setup guide explains how to
 apply that setting after a fresh clone.
 
-## Local Flash Package
+## Sender Provisioning
 
-To package the latest build for flashing on a separate Windows machine:
+The sender prepares each board before shipping; recipients do not need ESP-IDF,
+Python, a serial driver, or a flashing utility. Install the tools dependencies,
+then prepare private setup files using the verified factory base MAC:
 
-```bash
-idf.py build
-node tools/package-firmware.mjs
+```text
+node tools/provision-device.mjs --device-id <12-hex-digit-base-MAC> --output <new-private-directory-outside-repo>
 ```
 
-This creates `build/firmware-package.zip` and its `.sha256` sidecar. The ZIP
-contains the three images, generated offsets/settings, manifest/checksums,
-dependency lock, and Windows instructions. The packager uses Node.js and the
-build environment's Python standard-library ZIP command; it does not flash or
-erase a device. See the [local flashing guide](docs/flashing-local.md), especially
-the unverified flash settings and native USB recovery requirements.
+The utility generates a persistent unique AP password, a separate one-time owner
+setup code, an NVS CSV, a PNG Wi-Fi QR code, and a printable setup card. The output
+directory must be new and outside this repository. Windows ACLs or POSIX private
+permissions restrict access. It does not print secrets, create a firmware package,
+open a serial port, generate/write an NVS image, or erase a device.
+
+**Do not flash this firmware onto the existing board until its identity and NVS
+provisioning layout have been verified.** A complete sender workflow must use
+Espressif's NVS tooling to install the private record explicitly; an NVS image
+replaces a partition rather than merging settings. That device-writing step is
+not automated here. Missing or inconsistent provisioning leaves Wi-Fi/control
+disabled, without erasing NVS or falling back to the old public password.
 
 ## Keyboard Operation
 
-After hardware validation and flashing, the board is configured to start
-`WiFiKeyboard-<last-six-MAC-hex-digits>` with password `a-key-test-only`. Join that
-AP and open `http://192.168.4.1/`. No station credentials or Wi-Fi setup page are
-required. Only one associated controller and one input WebSocket are supported.
+After sender provisioning and hardware validation, join
+`WiFiKeyboard-<last-six-factory-MAC-hex-digits>` using the private Wi-Fi QR card.
+Open `http://kb.local/`, or the default AP fallback `http://192.168.4.1/`. Claim
+ownership once with the setup code and choose an owner password of 12-128 bytes.
+The setup code is retired after a successful claim; the AP password remains
+valid for standalone use and recovery. Later visits use the owner password.
+
+Select **Take Control** before typing. Only one controller is allowed across AP
+and STA together. Release, focus loss, disconnect, sign-out, and network changes
+require fresh explicit acquisition; reconnecting never resumes held input.
+
+The Network view offers Standalone AP or Join Wi-Fi, scan/manual SSID entry,
+credential testing, saved-network reuse, hostname changes, and confirmed Forget
+Network. This increment supports one 2.4 GHz WPA2-Personal profile and DHCP.
+Successful association and DHCP save the profile; **Switch to Wi-Fi** confirms
+handover before the temporary AP closes after a 15-second grace period. No
+Internet connection is required. Failed tests preserve the last committed
+profile and AP access. Router loss starts bounded retries and protected recovery.
+Physical-button recovery is not implemented until board wiring is verified.
 
 Typing keys are enabled only while USB is ready. Keep the page visible and the
 keyboard surface focused for physical typing, or use mouse/touch. `123`, `#+=`,
@@ -86,18 +112,31 @@ autocorrect, swipe typing, accented-key menus, or Unicode injection is included.
 After the firmware build has fetched its managed dependencies, run:
 
 ```bash
-bash tools/test-host.sh
+node tools/test-native.mjs
+node --test components/web_server/test/browser_input_test.mjs
 npm ci --prefix tools --ignore-scripts
 npm exec --prefix tools -- playwright install chromium --only-shell
 npm exec --prefix tools -- playwright install webkit
 npm --prefix tools test
 ```
 
-See the [test prerequisites and WSL runtime-library setup](docs/keyboard-enhancement-plan.md#reproducing-validation).
-Eight native USB tests, JSON parser checks, twelve model/layout tests, and ten
-Chromium/WebKit integration tests pass. They verify actual WebSocket receipt at
-a mock backend, not USB delivery or real iPhone/iPad Safari compatibility. The
-firmware has no npm runtime dependencies; the small Lucide icon set is embedded.
+The native runner accepts `HOST_CC` pointing to GCC, Clang, or Zig; a Zig
+executable is automatically invoked with its `cc` subcommand. On this Windows
+workspace it uses the checksum-verified Zig 0.15.2 installation in the ignored
+`.cache/toolchains` folder. Fresh machines must supply a host compiler; the
+ESP cross-compiler cannot execute native unit tests. The Bash entry point
+`tools/test-host.sh` uses the same suite list with a Linux compiler.
+On Linux, the runner selects `/usr/bin/` binutils explicitly so an activated
+ESP-IDF toolchain cannot substitute a cross-assembler or linker.
+
+Five native suites (including owner-record persistence and eight USB-state cases), twelve keyboard-model
+tests, and 25 provisioning/API/Chromium/WebKit tests pass in the Linux review
+validation. Native Windows tests ran without sanitizers; the Linux runner
+enables ASan/UBSan.
+Browser tests verify receipt at a mock backend, not real USB delivery, mDNS,
+radio behavior, or actual iPhone/iPad Safari. See the
+[implementation record](docs/wifi-enhancement-plan.md#implementation-record).
+The firmware has no npm runtime dependencies; the Lucide icons are embedded.
 
 For an interactive UI-only preview:
 
@@ -106,6 +145,14 @@ npm --prefix tools run preview
 ```
 
 Open `http://127.0.0.1:8080/`. USB is mocked and no keystrokes leave the preview.
+Sign in with the public mock-only password `preview-owner-password`, then take
+control or open Network settings. Do not use real credentials in the preview.
+`PREVIEW_CLAIMED=0` starts first-use setup with the public fixture code
+`0123456789abcdef01234567`. These credentials exist only in the loopback mock,
+not in the firmware. Mock router password `wrong-password` triggers failure;
+`offline-network` and `no-dhcp-network` simulate network/DHCP failures, while
+`overlap-network` exercises the confirmed AP-address transition. Mock handover
+timing is accelerated and never switches the computer's Wi-Fi.
 Check `http://127.0.0.1:8080/__test__/input` for receive counters; a tap adds one
 `down`, one `up`, and two `queued` replies. Shift/Caps actions can add extra
 modifier/lock reports. The endpoint also shows the current report and mock Caps
@@ -123,18 +170,20 @@ The [CI workflow](.github/workflows/ci.yml) defines two parallel checks on PRs t
 `main`, pushes to `main`, and manual runs: **Firmware and Native Tests** and
 **Browser Integration**. It builds in a pinned ESP-IDF v6.1 image, runs the
 existing native/model tests, and exercises Chromium/WebKit on Ubuntu 24.04.
-Successful firmware jobs upload the separate-image ZIP and merged BIN with
-checksums and a build summary. Available logs/screenshots are retained for
-diagnosis, including failures; artifact retention is 14 days.
+Successful firmware jobs upload the application, bootloader, and partition-table
+images with `flasher_args.json`, `flash_args`, and a build summary. Available
+logs/screenshots are retained for diagnosis, including failures; artifact
+retention is 14 days.
 
-The [first hosted PR run](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34860547440)
+Historically, PR #1's [first hosted run](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34860547440)
 passed Browser Integration but failed the firmware job's post-build Git check
 because of container checkout ownership. After an exact-workspace trust fix,
 the [rerun](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34861221888)
 passed both jobs, including native tests, packaging, and artifact uploads.
-Required CI checks have not yet been added to `main`'s ruleset; that rollout
-remains pending and must preserve zero reviewer approvals. See the proposal for
-the validation record, security boundaries, and rollout steps.
+Those packaging steps belonged to PR #1 and were subsequently removed; current
+CI uploads only the separate images and metadata listed above.
+Both checks are required by `main`'s ruleset. See the proposal for the validation
+record and security boundaries.
 
 ## Current Layout
 
@@ -147,13 +196,14 @@ remote-keyboard-connector/
 |-- .vscode/                Portable extension recommendations
 |-- components/
 |   |-- board/             Reserved until board pins are verified
-|   |-- network/           Default development AP
+|   |-- device_identity/   Private identity and one-time owner claim
+|   |-- network/           AP/STA, NVS settings, mDNS, and recovery jobs
 |   |-- usb_keyboard/      HID descriptors, ordered reports, safety tests
-|   `-- web_server/        HTTP/WS handlers and iPhone-style typing pages
+|   `-- web_server/        Owner sessions, Network view, and typing pages
 |-- docs/                   Setup notes and design documentation
 |-- hardware/               Board identification and wiring documentation
 |-- main/                   USB, AP, and web-service startup
-`-- tools/                  Host tests and loopback-only browser preview
+`-- tools/                  Host tests, private setup-card preparation, and preview
 ```
 
 Reserved empty directories use `.gitkeep` placeholders so they can be tracked.
@@ -171,9 +221,11 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-The enhanced image is `0xd7ff0` bytes, leaving 16% in the existing application
-partition. Actual flash capacity, power/suspend behavior, and the broader
-product's 20% partition-headroom goal are not yet verified.
+The Wi-Fi enhancement image is `0xf4580` bytes (1,000,832 bytes), leaving
+`0xba80` bytes (47,744 bytes, about 5%) in the existing 1 MiB application partition.
+Flash layout and PSRAM settings are unchanged. This is below the broader 20%
+headroom goal; physical flash capacity and runtime heap/stack/power behavior
+remain unverified.
 
 Do not commit credentials or machine-specific SDK paths. Generated build
 outputs and local configuration are excluded by the Git ignore rules. Project
