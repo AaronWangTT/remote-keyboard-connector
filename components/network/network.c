@@ -639,8 +639,7 @@ static void network_worker(void *argument)
             else if (now >= scan_deadline) {
                 esp_wifi_scan_stop();
                 scanning = false;
-                if (state.phase == NETWORK_AP) esp_wifi_set_mode(WIFI_MODE_AP);
-                job_result("failed", "scan_timeout", false);
+                if (restore_scan_mode()) job_result("failed", "scan_timeout", false);
             }
             refresh_snapshot();
             continue;
@@ -730,7 +729,7 @@ esp_err_t network_submit(const uint8_t *payload, size_t length, bool scan, uint3
         strcmp(snapshot.job, "awaiting_confirmation") != 0 &&
         strcmp(snapshot.job, "awaiting_ap_reconnect") != 0;
     bool invalid_cancellation = command.request.action == NETWORK_ACTION_CANCEL && !snapshot.busy;
-    bool busy = storage_blocked || !snapshot.available || command_pending || invalid_confirmation || invalid_cancellation ||
+    bool busy = storage_blocked || guarded || !snapshot.available || command_pending || invalid_confirmation || invalid_cancellation ||
                 (snapshot.busy && (!terminal_action || strcmp(snapshot.job, "queued") == 0));
     if (!busy) {
         command_pending = true;
