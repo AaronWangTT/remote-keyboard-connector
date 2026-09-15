@@ -368,7 +368,7 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
 | Provisioning and browser/API | All 25 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, storage-fault admission, mode-preserving scan cancellation, confirmed/abandoned AP-address transitions, abandoned handover expiry, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf4570` bytes; `0xba90` bytes (47,760 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf4580` bytes; `0xba80` bytes (47,744 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -528,6 +528,8 @@ is already non-writing under a storage fault; an online Keep AP save is blocked.
 Scan completion, timeout, cancellation, and failed startup check restoration of AP radio
 mode and enter recovery if it fails. Fault injection verifies a failed restoration
 cannot publish scan success or fall through to station processing after timeout.
+Timeout also checks scan-stop errors and enters recovery before treating the scan
+as stopped; an unsuccessful recovery retains its failure instead of a timeout result.
 Network job admission and control acquisition check ownership under the same lock;
 tests cover both orderings without releasing an already-owned USB generation.
 Owner and Wi-Fi password reveal controls return to

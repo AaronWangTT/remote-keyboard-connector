@@ -642,9 +642,11 @@ static void network_worker(void *argument)
             portEXIT_CRITICAL(&lock);
             if (done) finish_scan();
             else if (now >= scan_deadline) {
-                esp_wifi_scan_stop();
-                scanning = false;
-                if (restore_scan_mode()) job_result("failed", "scan_timeout", false);
+                if (esp_wifi_scan_stop() != ESP_OK) recovery("scan_failed", false);
+                else {
+                    scanning = false;
+                    if (restore_scan_mode()) job_result("failed", "scan_timeout", false);
+                }
             }
             refresh_snapshot();
             continue;
