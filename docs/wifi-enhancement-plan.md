@@ -368,7 +368,7 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
 | Provisioning and browser/API | All 25 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, storage-fault admission, mode-preserving scan cancellation, confirmed/abandoned AP-address transitions, abandoned handover expiry, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf44d0` bytes; `0xbb30` bytes (47,920 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf4570` bytes; `0xba90` bytes (47,760 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -520,6 +520,8 @@ API regressions verify no job-ID mutation on rejected writes and mode preservati
 on cancellation. Configuration-application failures have a specific UI message.
 Queued cancellation rechecks whether work remains busy before recovery, preserving
 the result and STA mode if a scan completed after cancellation was admitted.
+Browser scan cancellation also preserves unsaved mode, SSID, and hostname edits;
+it does not mark scan cancellation as a committed field-resetting job.
 Firmware and preview predicate checks confirm an offline pending-overlap cancel
 is already non-writing under a storage fault; an online Keep AP save is blocked.
 
@@ -531,6 +533,9 @@ tests cover both orderings without releasing an already-owned USB generation.
 Owner and Wi-Fi password reveal controls return to
 masked inputs with matching icons and accessible labels when cleared or signed
 out, including failed login, session expiry, and leaving Network settings.
+Page blur, pagehide, and hidden-tab events clear and mask the unsent Wi-Fi
+candidate as well as releasing keyboard input; browser lifecycle tests cover all
+three event handlers and the existing keyboard release behavior.
 
 Both firmware JSON parsers validate complete request text as UTF-8 before cJSON
 parsing. Malformed raw UTF-8 and unpaired JSON surrogate escapes are rejected in

@@ -214,7 +214,7 @@ async function signIn(page) {
 }
 
 test("browser Network view scans, tests, confirms handover and forgets without USB input", { timeout: 30000 }, async context => {
-  const url = await startPreview(context);
+  const url = await startPreview(context, { PREVIEW_NETWORK_DELAY_MS: "1000" });
   const browser = await chromium.launch();
   context.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
@@ -235,6 +235,15 @@ test("browser Network view scans, tests, confirms handover and forgets without U
   await page.unroute("**/api/v1/network/job");
   const before = (await counters()).down;
   await page.getByLabel("Join Wi-Fi", { exact: true }).check();
+  await page.getByLabel("Network name (SSID)").fill("Unsubmitted network");
+  await page.getByLabel("Local hostname", { exact: true }).fill("kb-unsaved");
+  await page.getByRole("button", { name: "Scan networks", exact: true }).click();
+  await expect(page.locator("#network-job-status")).toHaveText("Scanning networks");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator("#network-job-status")).toHaveText("Operation cancelled");
+  await expect(page.getByLabel("Join Wi-Fi", { exact: true })).toBeChecked();
+  await expect(page.getByLabel("Network name (SSID)")).toHaveValue("Unsubmitted network");
+  await expect(page.getByLabel("Local hostname", { exact: true })).toHaveValue("kb-unsaved");
   await page.getByRole("button", { name: "Scan networks", exact: true }).click();
   await expect(page.locator("#wifi-network")).toBeEnabled();
   await expect(page.locator("#wifi-network option")).toHaveCount(6);
@@ -524,6 +533,22 @@ test("browser owner setup keeps credentials local and requires explicit control 
   await page.reload();
   await expect(page.locator("#take-control")).toBeVisible();
   await expect(key).toBeDisabled();
+  await page.getByRole("button", { name: "Network settings", exact: true }).click();
+  await page.getByLabel("Join Wi-Fi", { exact: true }).check();
+  for (const event of ["blur", "pagehide", "visibilitychange"]) {
+    await page.getByLabel("Wi-Fi password", { exact: true }).fill("discard-hidden-candidate");
+    await revealPassword("wifi-password");
+    await page.evaluate(name => {
+      if (name === "visibilitychange") {
+        Object.defineProperty(document, "hidden", { configurable: true, value: true });
+        try { document.dispatchEvent(new Event(name)); }
+        finally { delete document.hidden; }
+      } else window.dispatchEvent(new Event(name));
+    }, event);
+    await expect(page.locator("#wifi-password")).toHaveValue("");
+    await expectPasswordHidden("wifi-password");
+  }
+  await page.getByRole("button", { name: "Back to keyboard", exact: true }).click();
   for (const ending of ["logout", "poll", "session-refresh", "expired-logout"]) {
     await page.getByRole("button", { name: "Network settings", exact: true }).click();
     await page.getByLabel("Join Wi-Fi", { exact: true }).check();

@@ -232,6 +232,8 @@ async function pollNetwork() {
 
 async function submitNetwork(action, fields = {}) {
   if (networkMutating || networkUncertain) return;
+  const resetsFields = ["connect", "ap", "station", "forget"].includes(action) ||
+    (action === "cancel" && networkState?.job !== "scanning");
   disconnect();
   notify();
   networkMutating = true;
@@ -239,7 +241,7 @@ async function submitNetwork(action, fields = {}) {
   try {
     const result = await api(action === "scan" ? "/api/v1/network/scan" : "/api/v1/network", "POST",
       action === "scan" ? undefined : { action, ...fields });
-    if (["connect", "ap", "station", "forget", "cancel"].includes(action)) networkFieldsJob = result.job_id;
+    if (resetsFields) networkFieldsJob = result.job_id;
     if (action === "rename" && location.hostname.endsWith(".local") && result.management_url) {
       location.replace(result.management_url);
       return;
@@ -626,8 +628,12 @@ document.querySelector("#forget-confirm").addEventListener("click", () => {
   document.querySelector("#forget-dialog").close();
   submitNetwork("forget");
 });
-for (const event of ["blur", "pagehide"]) window.addEventListener(event, disconnect);
-document.addEventListener("visibilitychange", () => { if (document.hidden) disconnect(); else loadSession(); });
+function suspendPage() {
+  clearNetworkPassword();
+  disconnect();
+}
+for (const event of ["blur", "pagehide"]) window.addEventListener(event, suspendPage);
+document.addEventListener("visibilitychange", () => { if (document.hidden) suspendPage(); else loadSession(); });
 
 setInterval(() => {
   if (!socket) return;
