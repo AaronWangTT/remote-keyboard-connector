@@ -244,6 +244,15 @@ Software validation on 2026-09-15 with ESP-IDF v6.1:
   bytes (1,002,400), leaving `0xb460` bytes (46,176). Both are below the broader
   20% headroom goal; the partition layout is unchanged.
 
+Follow-up capacity work on 2026-09-15 selected
+`CONFIG_COMPILER_OPTIMIZATION_SIZE=y` in the tracked defaults. The XinluCity
+profile then built at `0xe17c0` bytes (923,584), leaving `0x1e840` bytes
+(124,992, about 12%) and removing ESP-IDF's nearly-full warning. The four
+focused board suites and offline firmware validation passed. This did not
+change the partition table, NVS offsets, flash-size setting, or the remaining
+20% product-headroom goal; a larger live partition remains a separately
+reviewed migration.
+
 Native mocks do not validate concurrent FreeRTOS scheduling, radio behavior,
 electrical polarity, visible light, or real USB timing. Record those results in
 the hardware checklist only after a separately approved firmware write.
