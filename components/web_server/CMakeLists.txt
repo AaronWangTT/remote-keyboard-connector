@@ -10,6 +10,8 @@ target_add_binary_data(${COMPONENT_LIB} "www/icons/eye.svg" TEXT)
 target_add_binary_data(${COMPONENT_LIB} "www/icons/eye-off.svg" TEXT)
 target_add_binary_data(${COMPONENT_LIB} "www/icons/back.svg" TEXT)
 target_add_binary_data(${COMPONENT_LIB} "www/icons/refresh.svg" TEXT)
+target_add_binary_data(${COMPONENT_LIB} "www/icons/globe.svg" TEXT)
+target_add_binary_data(${COMPONENT_LIB} "www/icons/x.svg" TEXT)
 
 idf_component_get_property(cjson_library espressif__cjson COMPONENT_LIB)
 target_compile_definitions(${cjson_library} PRIVATE CJSON_NESTING_LIMIT=4)

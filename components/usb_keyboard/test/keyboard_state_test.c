@@ -35,10 +35,32 @@ static void test_typing_reports(void)
     }
     for (int usage = 0; usage <= 255; usage++) {
         const uint8_t candidate = usage;
-        bool supported = (usage >= 4 && usage <= 40) || usage == 42 ||
+        bool supported = (usage >= 4 && usage <= 42) ||
                          (usage >= 44 && usage <= 57 && usage != 50);
         assert(keyboard_report_build(&report, 0, &candidate, 1) == supported);
     }
+
+    const uint8_t space[] = {HID_KEY_SPACE};
+    assert(keyboard_report_build(&report, KEYBOARD_MODIFIER_LEFTCTRL, space, 1));
+    const uint8_t ios_globe[8] = {0x01, 0, HID_KEY_SPACE, 0, 0, 0, 0, 0};
+    assert(memcmp(&report, ios_globe, sizeof(ios_globe)) == 0);
+    assert(keyboard_report_build(&report, KEYBOARD_MODIFIER_LEFTGUI, space, 1));
+    const uint8_t windows_globe[8] = {0x08, 0, HID_KEY_SPACE, 0, 0, 0, 0, 0};
+    assert(memcmp(&report, windows_globe, sizeof(windows_globe)) == 0);
+
+    const uint8_t escape[] = {HID_KEY_ESCAPE};
+    assert(keyboard_report_build(&report, 0, escape, 1));
+    const uint8_t cancel[8] = {0, 0, HID_KEY_ESCAPE, 0, 0, 0, 0, 0};
+    assert(memcmp(&report, cancel, sizeof(cancel)) == 0);
+    assert(keyboard_report_build(&report, 0, NULL, 0));
+    assert(keyboard_report_empty(&report));
+    assert(!keyboard_report_build(&report, KEYBOARD_MODIFIER_LEFTCTRL, keys, 1));
+    assert(!keyboard_report_build(&report, KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTSHIFT, space, 1));
+    assert(!keyboard_report_build(&report, KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTGUI, space, 1));
+    const uint8_t escape_chord[] = {HID_KEY_ESCAPE, HID_KEY_A};
+    assert(!keyboard_report_build(&report, 0, escape_chord, 2));
+    assert(!keyboard_report_build(&report, KEYBOARD_MODIFIER_LEFTSHIFT, escape, 1));
+
     const uint8_t duplicate[] = {HID_KEY_A, HID_KEY_A};
     assert(!keyboard_report_build(&report, 0, duplicate, 2));
     assert(!keyboard_report_build(&report, 0, NULL, 1));

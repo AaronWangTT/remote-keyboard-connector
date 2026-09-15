@@ -4,8 +4,9 @@ ESP32-S3 Wi-Fi USB keyboard prototype using ESP-IDF v6.1. The firmware provides
 standalone AP and saved Wi-Fi station modes, temporary AP+STA setup/recovery,
 and the preferred name `kb.local`. Sender-provisioned private AP credentials,
 one-time owner claim, browser login, and explicit keyboard control are included.
-The iPhone-first English (US) keyboard retains letters, numbers, symbols,
-Shift/Caps Lock, Backspace, Space, and Return with bounded six-key USB reports.
+The iPhone-first US-ANSI keyboard provides letters, numbers, symbols,
+Shift/Caps Lock, Backspace, Space, Return, host input-source switching, and
+Cancel/Escape with bounded six-key USB reports.
 
 The Wi-Fi enhancement passes automated native/browser checks and an ESP32-S3
 build. It has not been provisioned or tested on the physical board. The earlier
@@ -160,15 +161,27 @@ and `ABC` select the familiar iPhone-style pages; this is a custom web keyboard,
 not the native iOS keyboard. Phone letter keys use the approved narrower widths
 to fit ten columns; key heights remain at least 44 CSS pixels.
 
+Globe and Cancel sit below the keycap row in portrait and join the Space row in
+landscape. The Host toggle offers iOS and Win. Globe sends Control+Space for
+the default iOS host profile or Windows+Space for the Windows profile. The browser
+remembers an explicitly selected valid profile, but does not detect the USB host,
+active language, or
+whether the shortcut succeeded; the visible key map remains US ANSI. Cancel
+sends one unmodified Escape tap. Escape may dismiss a pending host suggestion,
+but it is not a guaranteed autocorrection undo and the page does not claim one.
+Both controls clear held input and one-shot Shift before their host action.
+
 Tap Shift for the next chord, hold for simultaneous typing, or double-tap for
 Caps Lock. Caps state comes from USB host LED feedback, not a local guess. The
 release button, focus loss, cancellation, disconnect, and safety deadlines clear
 input. Reconnection never replays a hold, and page changes release hidden keys.
 Host layout, Caps Lock, and auto-repeat determine the actual text produced.
 
-Only typing keys and Shift are forwarded. Ctrl/Alt/Command shortcuts and input
-in other form fields stay local. No function/navigation panel, emoji, dictation,
-autocorrect, swipe typing, accented-key menus, or Unicode injection is included.
+Only typing keys and Shift are forwarded from the controller's physical
+keyboard. Ctrl/Alt/Command shortcuts and input in other form fields stay local;
+Left Control and Left GUI are generated only by the configured Globe action.
+No function/navigation panel, emoji, dictation, autocorrect engine, swipe
+typing, accented-key menus, or Unicode injection is included.
 
 ## Host Validation
 
@@ -203,6 +216,22 @@ The [sender guide](docs/sender-installation.md#verification) lists the additiona
 installer checks, including SDK-backed fake-device tests that never use hardware.
 The firmware has no npm runtime dependencies; the Lucide icons are embedded.
 
+The Globe/Cancel software increment passes all ten sanitized native suites,
+15 keyboard-model tests, and 34 API/Chromium/WebKit tests. After integrating
+compiler size optimization, fresh ESP-IDF v6.1 builds measure:
+
+| Profile | Application size | Free in the unchanged 1 MiB app partition |
+| --- | --- | --- |
+| Generic, LED disabled | `0xe19d0` (924,112 bytes) | `0x1e630` (124,464 bytes, about 12%) |
+| XinluCity status LED | `0xe2ea0` (929,440 bytes) | `0x1d160` (119,136 bytes, about 11%) |
+
+Both builds have `COMPILER_OPTIMIZATION_SIZE=true` and remain below the 20%
+product headroom goal. The earlier `0xF63E0`/`0x9C20` measurement describes the
+debug-optimized generic build before these defaults changed, not a fresh build.
+Real iPhone/iPad input-source switching and
+Escape behavior with pending, applied, and absent autocorrection suggestions
+remain hardware acceptance checks, not conclusions from the browser mock.
+
 For an interactive UI-only preview:
 
 ```bash
@@ -221,8 +250,10 @@ timing is accelerated and never switches the computer's Wi-Fi.
 Check `http://127.0.0.1:8080/__test__/input` for receive counters; a tap adds one
 `down`, one `up`, and two `queued` replies. Shift/Caps actions can add extra
 modifier/lock reports. The endpoint also shows the current report and mock Caps
-state, without retaining report history. Ctrl+C prints a summary. `PORT` selects
-another port; `PREVIEW_USB_READY=0` exercises the waiting state, and
+state, without retaining report history. Globe and Cancel each send a forced
+neutral, one command report, and a final neutral, producing three `queued`
+replies. Ctrl+C prints a summary. `PORT` selects another port;
+`PREVIEW_USB_READY=0` exercises the waiting state, and
 `PREVIEW_CAPS_LOCK=1` or `unknown` exercises Caps feedback states.
 
 The full-state JSON protocol replaces the earlier single-key text commands.
@@ -293,11 +324,11 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-With compiler size optimization and the XinluCity status-LED profile, the
-verified image is `0xe17c0` bytes (923,584 bytes), leaving `0x1e840` bytes
-(124,992 bytes, about 12%) in the existing 1 MiB application partition. This
-removes ESP-IDF's nearly-full warning and saves 86,368 bytes compared with the
-later `0xf6920`-byte (1,009,952-byte) debug-optimized LED image that was
+Before the Globe/Cancel increment, compiler size optimization with the XinluCity
+status-LED profile produced an image of `0xe17c0` bytes (923,584 bytes), leaving
+`0x1e840` bytes (124,992 bytes, about 12%) in the existing 1 MiB application
+partition. That build removed ESP-IDF's nearly-full warning and saved 86,368
+bytes compared with the later `0xf6920`-byte (1,009,952-byte) debug-optimized LED image that was
 physically flashed during hardware validation. The earlier isolated profile
 build recorded `0xf6400`; it was not the comparison baseline. Flash layout,
 NVS offsets, and PSRAM settings are unchanged. The result remains below the
