@@ -71,6 +71,19 @@ test("network jobs are owner-only, bounded and preserve the last working profile
     '{"action":"ap",}', '{/*comment*/"action":"ap"}',
   ]) assert.equal((await fetch(endpoint, { method: "POST", headers, body })).status, 400);
   assert.equal((await fetch(endpoint, { method: "POST", headers: { ...headers, "X-CSRF-Token": "bad" }, body: '{"action":"ap"}' })).status, 403);
+  const scanEndpoint = new URL("/api/v1/network/scan", url);
+  const beforeScan = await status();
+  for (const body of [" ", "{}", "not-json", "x".repeat(2048)]) {
+    assert.equal((await fetch(scanEndpoint, { method: "POST", headers, body })).status, 413);
+  }
+  const chunkedScan = httpRequest(scanEndpoint, { method: "POST", headers: { ...headers, "Transfer-Encoding": "chunked" } });
+  const scanResponse = once(chunkedScan, "response");
+  chunkedScan.write("unexpected");
+  chunkedScan.end("body");
+  const [rejectedScan] = await scanResponse;
+  assert.equal(rejectedScan.statusCode, 413);
+  rejectedScan.resume();
+  assert.deepEqual(await status(), beforeScan);
   assert.equal((await fetch(new URL("/api/v1/network/scan", url), { method: "POST", headers })).status, 202);
   await expect.poll(async () => (await status()).scan.length).toBe(5);
   await expect.poll(async () => (await status()).scan.length).toBe(0);
@@ -404,11 +417,18 @@ test("browser owner setup keeps credentials local and requires explicit control 
   await page.reload();
   await expect(page.locator("#take-control")).toBeVisible();
   await expect(key).toBeDisabled();
-  for (const ending of ["logout", "poll", "session-refresh"]) {
+  for (const ending of ["logout", "poll", "session-refresh", "expired-logout"]) {
     await page.getByRole("button", { name: "Network settings", exact: true }).click();
     await page.getByLabel("Join Wi-Fi", { exact: true }).check();
     await page.getByLabel("Wi-Fi password", { exact: true }).fill("discard-this-candidate");
     if (ending === "logout") await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    else if (ending === "expired-logout") {
+      await page.getByRole("button", { name: "Back to keyboard", exact: true }).click();
+      await page.context().clearCookies();
+      const signedOut = page.waitForResponse(response => response.request().method() === "DELETE" && new URL(response.url()).pathname === "/api/v1/session");
+      await page.getByRole("button", { name: "Sign out", exact: true }).click();
+      assert.equal((await signedOut).status(), 401);
+    }
     else {
       await page.context().clearCookies();
       if (ending === "session-refresh") await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
@@ -426,10 +446,25 @@ test("owner session requires authentication, exact origin and CSRF before contro
   assert.equal((await fetch(new URL("/api/v1/status", url))).status, 401);
   const session = await loginRequest(url);
   const endpoint = new URL("/api/v1/control/take", url);
+  const available = async () => {
+    const headers = { Cookie: session.cookie };
+    const status = await (await fetch(new URL("/api/v1/status", url), { headers })).json();
+    const job = await (await fetch(new URL("/api/v1/network/job", url), { headers })).json();
+    assert.equal(status.network.can_control, job.can_control);
+    return job.can_control;
+  };
+  assert.equal(await available(), true);
   assert.equal((await fetch(endpoint, { method: "POST", headers: { Origin: "http://untrusted.invalid", Cookie: session.cookie, "X-CSRF-Token": session.csrf } })).status, 403);
   assert.equal((await fetch(endpoint, { method: "POST", headers: { Origin: url, Cookie: session.cookie } })).status, 403);
   await takeRequest(url, session);
+  assert.equal(await available(), false);
   assert.equal((await fetch(endpoint, { method: "POST", headers: { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf } })).status, 409);
+  const recoverySession = await loginRequest(url);
+  const recoveryHeaders = { Origin: url, Cookie: recoverySession.cookie, "X-CSRF-Token": recoverySession.csrf };
+  assert.equal((await fetch(endpoint, { method: "POST", headers: recoveryHeaders })).status, 409);
+  assert.equal((await fetch(new URL("/api/v1/control/stop", url), { method: "POST", headers: recoveryHeaders })).status, 200);
+  assert.equal(await available(), true);
+  await takeRequest(url, session);
   const logout = await fetch(new URL("/api/v1/session", url), { method: "DELETE", headers: { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf } });
   assert.equal(logout.status, 200);
   assert.equal((await fetch(new URL("/api/v1/status", url), { headers: { Cookie: session.cookie } })).status, 401);
@@ -485,8 +520,13 @@ test("WebSocket authorization requires a session and explicit control reservatio
   const connection = new WebSocket(endpoint, { headers: { Origin: url, Cookie: session.cookie } });
   context.after(() => connection.terminate());
   await once(connection, "open");
+  const activeStatus = await (await fetch(new URL("/api/v1/status", url), { headers: { Cookie: session.cookie } })).json();
+  assert.equal(activeStatus.network.can_control, false);
+  const recoverySession = await loginRequest(url);
+  const recoveryHeaders = { Origin: url, Cookie: recoverySession.cookie, "X-CSRF-Token": recoverySession.csrf };
+  assert.equal((await fetch(new URL("/api/v1/control/take", url), { method: "POST", headers: recoveryHeaders })).status, 409);
   const response = await fetch(new URL("/api/v1/control/stop", url), {
-    method: "POST", headers: { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf },
+    method: "POST", headers: recoveryHeaders,
   });
   assert.equal(response.status, 200);
   await expect.poll(async () => (await (await fetch(new URL("/__test__/input", url))).json()).connected).toBe(false);

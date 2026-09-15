@@ -543,7 +543,6 @@ static esp_err_t session_handler(httpd_req_t *request)
     }
     if (!device_identity_ready()) return problem(request, "503 Service Unavailable", "provisioning_required");
     if (!device_identity_claimed()) return problem(request, "409 Conflict", "claim_required");
-    if (active_client != NULL || pending_owner != NULL) return problem(request, "409 Conflict", "busy");
     if (!access_login_attempt(&access_control, esp_timer_get_time())) return problem(request, "429 Too Many Requests", "login_rate_limited");
     access_credentials_t credentials;
     if (!read_credentials(request, false, &credentials)) return problem(request, "400 Bad Request", "invalid_credentials");

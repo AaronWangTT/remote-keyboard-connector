@@ -61,7 +61,7 @@ async function api(path, method = "GET", body) {
     const error = new Error(result.error ?? "request_failed");
     error.code = result.error;
     error.status = response.status;
-    if (response.status === 401 && !["/api/v1/session", "/api/v1/claim"].includes(path)) {
+    if (response.status === 401 && !(method === "POST" && ["/api/v1/session", "/api/v1/claim"].includes(path))) {
       account.authenticated = false;
       account.csrf = "";
       disconnect();

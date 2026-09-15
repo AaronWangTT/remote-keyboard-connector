@@ -19,7 +19,9 @@ let pendingControl = null;
 let loginWindow = 0;
 let loginAttempts = 0;
 const network = { available: true, ap_active: true, station_online: false, desired_station: false,
-  has_profile: false, busy: false, mdns: true, can_control: true, job_id: 0, phase: "ap", job: "idle", error: "",
+  has_profile: false, busy: false, mdns: true,
+  get can_control() { return this.available && !this.busy && pendingControl === null && controller?.readyState !== WebSocket.OPEN; },
+  job_id: 0, phase: "ap", job: "idle", error: "",
   hostname: "kb", requested_hostname: "kb", ap_ssid: "WiFiKeyboard-123456", saved_ssid: "", saved_ssid_hex: "", station_ssid: "",
   ap_ip: "192.168.4.1", ap_reconnect_ip: "", station_ip: "", scan: [] };
 let pendingProfile = null;
@@ -52,7 +54,6 @@ function finishNetwork(job, error = "") {
   network.job = job;
   network.error = error;
   network.busy = ["scanning", "testing", "handing_over", "awaiting_confirmation", "awaiting_ap_reconnect", "changing_ap_address"].includes(job);
-  network.can_control = !network.busy;
   if (["awaiting_confirmation", "awaiting_ap_reconnect"].includes(job)) confirmationUntil = performance.now() + confirmationTtl;
 }
 
@@ -61,6 +62,14 @@ async function networkRequest(request, response) {
   if (request.method === "GET") return sendJson(response, 200, network);
   if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "release_control_first" });
   const scan = request.url === "/api/v1/network/scan";
+  if (scan) {
+    for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+      if (chunk.length !== 0) {
+        request.resume();
+        return sendJson(response, 413, { error: "invalid_network_request" });
+      }
+    }
+  }
   const value = scan ? { action: "scan" } : await jsonBody(request);
   if (!value || typeof value !== "object" || Array.isArray(value)) return sendJson(response, 400, { error: "invalid_network_request" });
   const fields = value.action === "connect" ? ["action", "ssid", "ssid_hex", "password"] : value.action === "rename" ? ["action", "hostname"] : ["action"];
@@ -76,6 +85,7 @@ async function networkRequest(request, response) {
         typeof value.password !== "string" || !/^[\x20-\x7e]{8,63}$/.test(value.password))) ||
       (value.action === "rename" && (typeof value.hostname !== "string" || value.hostname.length > 32 || value.hostname === "localhost" ||
         !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(value.hostname)))) return sendJson(response, 400, { error: "invalid_network_request" });
+  if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "release_control_first" });
   if (network.busy && !["cancel", "confirm"].includes(value.action)) return sendJson(response, 409, { error: "network_busy" });
   if (value.action === "cancel" && !network.busy) return sendJson(response, 409, { error: "network_busy" });
   if (value.action === "confirm" && !["awaiting_confirmation", "awaiting_ap_reconnect"].includes(network.job)) return sendJson(response, 409, { error: "network_busy" });
@@ -308,7 +318,6 @@ const server = createServer(async (request, response) => {
   if (["/api/v1/session", "/api/v1/claim"].includes(request.url) && request.method === "POST") {
     const claim = request.url === "/api/v1/claim";
     if (claim === claimed) return sendJson(response, 409, { error: claimed ? "already_claimed" : "claim_required" });
-    if (!claim && (controller?.readyState === WebSocket.OPEN || pendingControl)) return sendJson(response, 409, { error: "busy" });
     const now = performance.now();
     if (now - loginWindow >= 60000) { loginWindow = now; loginAttempts = 0; }
     if (++loginAttempts > 5) return sendJson(response, 429, { error: "login_rate_limited" });
@@ -380,7 +389,7 @@ server.on("upgrade", (request, socket, head) => {
     socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     return;
   }
-  if (pendingControl?.session !== session || performance.now() >= pendingControl.until || !usbReady || !network.can_control) {
+  if (pendingControl?.session !== session || performance.now() >= pendingControl.until || !usbReady || !network.available || network.busy) {
     socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     return;
   }
