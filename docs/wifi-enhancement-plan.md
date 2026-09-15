@@ -368,7 +368,7 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
 | Provisioning and browser/API | All 24 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, idle-cancel rejection, confirmed/abandoned AP-address transitions, abandoned handover expiry, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf4060` bytes; `0xbfa0` bytes (49,056 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf4080` bytes; `0xbf80` bytes (49,024 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -490,6 +490,13 @@ Initial saved-STA driver startup also enters protected AP fallback on failure
 without skipping worker creation; a failed fallback is serviced by the same
 timed retries. Provisioning validates the device ID before creating any parent
 or output directory, allowing a corrected MAC to reuse the intended path.
+
+Recovery retries a station that remains associated without DHCP at its bounded
+idle retry deadline; active management still defers that restart. Provisioning
+removes only its newly created output directory after a caught ACL, QR, or file
+write failure, and reports cleanup failure explicitly. Existing directories are
+never removed or overwritten. Tests cover generation failure, partial output,
+same-path retry, and invalid owner records returning before marker lookup.
 
 Both firmware JSON parsers validate complete request text as UTF-8 before cJSON
 parsing. Malformed raw UTF-8 and unpaired JSON surrogate escapes are rejected in

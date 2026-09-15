@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { pbkdf2Sync } from "node:crypto";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import QRCode from "qrcode";
 import { createIdentity, identityCsv, passwordIterations, wifiPayload, writeIdentity } from "./provision-device.mjs";
 
 test("identity generation uses independent device-bound AP and claim credentials", () => {
@@ -25,7 +26,7 @@ test("identity generation uses independent device-bound AP and claim credentials
   }
 });
 
-test("private setup files are outside Git, contain a PNG/card, and never overwrite", async () => {
+test("private setup files are outside Git, contain a PNG/card, and never overwrite", async context => {
   await assert.rejects(writeIdentity("001122334455", ".cache/not-private"));
   const temporary = await mkdtemp(join(tmpdir(), "keyboard-provision-test-"));
   try {
@@ -33,6 +34,19 @@ test("private setup files are outside Git, contain a PNG/card, and never overwri
     const directory = join(parent, "device");
     await assert.rejects(writeIdentity("mistyped-MAC", directory));
     await assert.rejects(access(parent), { code: "ENOENT" });
+    const generationFailure = context.mock.method(QRCode, "toBuffer", async () => { throw new Error("Injected QR failure"); });
+    await assert.rejects(writeIdentity("001122334455", directory), /Injected QR failure/);
+    await assert.rejects(access(directory), { code: "ENOENT" });
+    generationFailure.mock.restore();
+    const originalToBuffer = QRCode.toBuffer;
+    const writeFailure = context.mock.method(QRCode, "toBuffer", async (...arguments_) => {
+      const png = await originalToBuffer(...arguments_);
+      await mkdir(join(directory, "wifi-qr.png"));
+      return png;
+    });
+    await assert.rejects(writeIdentity("001122334455", directory));
+    await assert.rejects(access(directory), { code: "ENOENT" });
+    writeFailure.mock.restore();
     await writeIdentity("001122334455", directory);
     const before = await readFile(join(directory, "identity.csv"), "utf8");
     const card = await readFile(join(directory, "setup-card.html"), "utf8");

@@ -23,6 +23,7 @@ typedef struct {
     unsigned failure;
     unsigned calls;
     unsigned read_failure;
+    unsigned consumed_reads;
 } test_store_t;
 
 static owner_store_result_t read_owner(void *argument, owner_record_t *owner)
@@ -37,6 +38,7 @@ static owner_store_result_t read_owner(void *argument, owner_record_t *owner)
 static owner_store_result_t read_consumed(void *argument, uint8_t *marker)
 {
     test_store_t *store = argument;
+    store->consumed_reads++;
     if (store->read_failure == 2) return OWNER_STORE_ERROR;
     if (!store->durable.consumed) return OWNER_STORE_NOT_FOUND;
     *marker = store->durable.marker;
@@ -157,10 +159,13 @@ int main(void)
     assert(owner_store_load(&store, iterations, &loaded) == OWNER_STORE_INVALID_STATE);
     context.durable.marker = 1;
     context.durable.owner.version = 2;
+    unsigned consumed_reads = context.consumed_reads;
     assert(owner_store_load(&store, iterations, &loaded) == OWNER_STORE_INVALID_VERSION);
+    assert(context.consumed_reads == consumed_reads && loaded.version == 0);
     context.durable.owner = candidate;
     context.durable.owner.iterations--;
     assert(owner_store_load(&store, iterations, &loaded) == OWNER_STORE_INVALID_VERSION);
+    assert(context.consumed_reads == consumed_reads && loaded.version == 0);
     assert(owner_store_claim(&store, iterations, &context.durable.owner) == OWNER_STORE_INVALID_VERSION && context.calls == 0);
     assert(owner_store_load(NULL, iterations, &loaded) == OWNER_STORE_INVALID_STATE);
     assert(owner_store_load(&store, iterations, NULL) == OWNER_STORE_INVALID_STATE);

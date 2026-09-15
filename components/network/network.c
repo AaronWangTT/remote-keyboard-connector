@@ -674,6 +674,8 @@ static void network_worker(void *argument)
             disarm(false, false);
             if (esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK) job_result("succeeded", "", false);
             else recovery("handover_failed", true);
+        } else if (effect == NETWORK_TRY_CONNECT && associated && !online && state.phase == NETWORK_RECOVERY) {
+            recovery("dhcp_timeout", true);
         } else if (effect == NETWORK_TRY_CONNECT && !associated) {
             portENTER_CRITICAL(&lock);
             bool pending = connecting || (state.phase == NETWORK_RECOVERY &&

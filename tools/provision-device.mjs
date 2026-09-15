@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { pbkdf2Sync, randomBytes } from "node:crypto";
-import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
@@ -55,13 +55,14 @@ export async function writeIdentity(deviceId, output) {
   const parent = await realpath(dirname(directory));
   assert.ok(outsideRepository(parent), "Private output must not resolve into the repository");
   await mkdir(directory, { mode: 0o700 });
-  if (process.platform === "win32") {
-    assert.ok(process.env.USERDOMAIN && process.env.USERNAME, "Cannot identify the Windows account for private permissions");
-    execFileSync("icacls.exe", [directory, "/inheritance:r", "/grant:r",
-      `${process.env.USERDOMAIN}\\${process.env.USERNAME}:(OI)(CI)F`], { stdio: "pipe" });
-  }
-  const png = await QRCode.toBuffer(wifiPayload(identity), { type: "png", errorCorrectionLevel: "M", margin: 4, width: 360 });
-  const card = `<!doctype html>
+  try {
+    if (process.platform === "win32") {
+      assert.ok(process.env.USERDOMAIN && process.env.USERNAME, "Cannot identify the Windows account for private permissions");
+      execFileSync("icacls.exe", [directory, "/inheritance:r", "/grant:r",
+        `${process.env.USERDOMAIN}\\${process.env.USERNAME}:(OI)(CI)F`], { stdio: "pipe" });
+    }
+    const png = await QRCode.toBuffer(wifiPayload(identity), { type: "png", errorCorrectionLevel: "M", margin: 4, width: 360 });
+    const card = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Private Wi-Fi Keyboard Setup</title><style>
 body{font-family:Verdana,sans-serif;max-width:620px;margin:32px auto;padding:24px;color:#172b29;line-height:1.6}
@@ -75,10 +76,15 @@ code{font-size:16px}small{display:block;margin-top:24px} @media print{body{margi
 <p>Join the protected Wi-Fi, open the browser address, and choose your own owner password. The setup code stops working after ownership is claimed. The Wi-Fi password remains useful for AP operation and recovery.</p>
 <small>HTTP/WS development firmware: use a protected, trusted test network. Application credentials and input are not protected against network interception. This card grants Wi-Fi access; keep it private.</small>
 </body></html>\n`;
-  await writeFile(resolve(directory, "identity.csv"), identityCsv(identity), { flag: "wx", mode: 0o600 });
-  await writeFile(resolve(directory, "wifi-qr.png"), png, { flag: "wx", mode: 0o600 });
-  await writeFile(resolve(directory, "setup-card.html"), card, { flag: "wx", mode: 0o600 });
-  return directory;
+    await writeFile(resolve(directory, "identity.csv"), identityCsv(identity), { flag: "wx", mode: 0o600 });
+    await writeFile(resolve(directory, "wifi-qr.png"), png, { flag: "wx", mode: 0o600 });
+    await writeFile(resolve(directory, "setup-card.html"), card, { flag: "wx", mode: 0o600 });
+    return directory;
+  } catch (error) {
+    try { await rm(directory, { recursive: true, force: true }); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "Private setup failed and incomplete output could not be removed"); }
+    throw error;
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
