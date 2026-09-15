@@ -995,6 +995,20 @@ test("Globe and Cancel preserve profiles and send isolated report sequences", { 
   await expectCommand(globe, { modifiers: 8, keys: [44] });
   await expectKeyboardCommand(cancel, "Space", { modifiers: 0, keys: [41] });
   await expectKeyboardCommand(globe, "Enter", { modifiers: 8, keys: [44] });
+  const beforeModifiedCommands = states.length;
+  await cancel.focus();
+  for (const shortcut of ["Control+Space", "Alt+Enter", "Meta+Space"]) {
+    await page.keyboard.press(shortcut);
+  }
+  assert.equal(states.length, beforeModifiedCommands);
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("Space");
+  await page.keyboard.up("Shift");
+  await expect.poll(() => states.length).toBe(beforeModifiedCommands + 4);
+  assert.deepEqual(states.slice(beforeModifiedCommands), [
+    { modifiers: 2, keys: [] }, { modifiers: 2, keys: [44] },
+    { modifiers: 2, keys: [] }, neutral,
+  ]);
   await expect(page.locator(".keyboard-meta")).toContainText("Key map: US ANSI");
 
   await page.reload();

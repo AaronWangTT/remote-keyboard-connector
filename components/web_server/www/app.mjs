@@ -514,9 +514,11 @@ surface.addEventListener("keydown", event => {
     const key = definitions.get(button.dataset.key);
     if (key.action === "globe" || key.action === "cancel") {
       event.preventDefault();
-      if (!event.repeat && !button.disabled) activateCommand(key.action);
+      if (!event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+        if (!event.repeat && !button.disabled) activateCommand(key.action);
+        return;
+      }
     }
-    return;
   }
   if (!ready) return;
   if (event.ctrlKey || event.altKey || event.metaKey) {
