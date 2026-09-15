@@ -175,11 +175,13 @@ images with `flasher_args.json`, `flash_args`, and a build summary. Available
 logs/screenshots are retained for diagnosis, including failures; artifact
 retention is 14 days.
 
-The [first hosted PR run](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34860547440)
+Historically, PR #1's [first hosted run](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34860547440)
 passed Browser Integration but failed the firmware job's post-build Git check
 because of container checkout ownership. After an exact-workspace trust fix,
 the [rerun](https://github.com/AaronWangTT/remote-keyboard-connector/actions/runs/34861221888)
 passed both jobs, including native tests, packaging, and artifact uploads.
+Those packaging steps belonged to PR #1 and were subsequently removed; current
+CI uploads only the separate images and metadata listed above.
 Both checks are required by `main`'s ruleset. See the proposal for the validation
 record and security boundaries.
 
@@ -219,8 +221,8 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-The Wi-Fi enhancement image is `0xf37f0` bytes (997,360 bytes), leaving
-`0xc810` bytes (51,216 bytes, about 5%) in the existing 1 MiB application partition.
+The Wi-Fi enhancement image is `0xf3800` bytes (997,376 bytes), leaving
+`0xc800` bytes (51,200 bytes, about 5%) in the existing 1 MiB application partition.
 Flash layout and PSRAM settings are unchanged. This is below the broader 20%
 headroom goal; physical flash capacity and runtime heap/stack/power behavior
 remain unverified.

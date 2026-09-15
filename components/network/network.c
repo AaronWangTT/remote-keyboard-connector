@@ -693,7 +693,9 @@ esp_err_t network_start(void)
     IP4_ADDR(&address.ip, 192, 168, 4, 1);
     address.gw = address.ip;
     IP4_ADDR(&address.netmask, 255, 255, 255, 0);
-    ESP_RETURN_ON_ERROR(esp_netif_dhcps_stop(ap_interface), TAG, "DHCP stop failed");
+    esp_err_t dhcp_result = esp_netif_dhcps_stop(ap_interface);
+    if (dhcp_result == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) dhcp_result = ESP_OK;
+    ESP_RETURN_ON_ERROR(dhcp_result, TAG, "DHCP stop failed");
     ESP_RETURN_ON_ERROR(esp_netif_set_ip_info(ap_interface, &address), TAG, "AP address setup failed");
     ESP_RETURN_ON_ERROR(esp_netif_dhcps_start(ap_interface), TAG, "DHCP start failed");
     esp_netif_set_hostname(ap_interface, saved.hostname);
