@@ -600,10 +600,14 @@ persistence/reconnect silence, every-page rotation cleanup, responsive placement
 and safe areas, with exact commands exercised through touch, mouse, and keyboard.
 WebKit delivers the exact iOS/Windows Globe and isolated Escape reports through
 touch. Both engines load the local icons, and physical shortcuts remain excluded.
-The ESP-IDF v6.1 build passes at `0xF63E0` bytes with `0x9C20` bytes (about 4%)
-free in the unchanged 1 MiB application partition. The real-host checks above
-remain pending, and the low application headroom is not an operational-release
-signoff.
+After integrating compiler size optimization from main, fresh ESP-IDF v6.1
+builds pass at `0xe15f0` bytes with `0x1ea10` bytes free (about 12%) for the
+generic LED-disabled profile, and `0xe2ad0` bytes with `0x1d530` bytes free
+(about 11%) for the XinluCity status-LED profile. Both retain the unchanged
+1 MiB application partition and explicitly verify `COMPILER_OPTIMIZATION_SIZE`.
+The earlier `0xF63E0`/`0x9C20` measurement was a debug-optimized generic build.
+The real-host checks above remain pending, and headroom below the 20% product
+goal is not an operational-release signoff.
 
 ## 10. Storage and Resource Budgets
 

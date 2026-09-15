@@ -363,6 +363,18 @@ repository, run:
 idf.py build
 ```
 
+This command uses the current generated `sdkconfig`. A fresh configuration
+selects the generic profile and leaves GPIO48 untouched. For the XinluCity
+ESP32S3 NANO G48 feature, explicitly select and verify the board profile using
+the [optional board status LED build instructions](../README.md#optional-board-status-led)
+before flashing.
+
+Fresh project configurations also use the tracked compiler size-optimization
+default. Existing generated configurations keep their prior selection, so
+verify `COMPILER_OPTIMIZATION_SIZE=true` in `build/config/sdkconfig.json` before
+comparing image headroom. Selecting the debug optimization profile is valid for
+debugging, but produces a larger image and can restore the low-headroom warning.
+
 Alternatively, use a separate official example to test the installation:
 
 1. Run `ESP-IDF: Show Examples Projects`, choose the installed ESP-IDF version,

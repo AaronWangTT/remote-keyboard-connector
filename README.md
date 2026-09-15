@@ -49,17 +49,45 @@ The target defaults to `esp32s3`. A successful build produces
 to use the generated compilation database; the setup guide explains how to
 apply that setting after a fresh clone.
 
+Tracked defaults select compiler size optimization for deployable firmware.
+An existing generated `sdkconfig` retains its previous optimization choice;
+before evaluating capacity, verify that generated `build/config/sdkconfig.json`
+reports `COMPILER_OPTIMIZATION_SIZE=true`. A deliberate debug build can select
+the debug optimization profile through menuconfig, but its larger image may
+have substantially less partition headroom.
+
 ### Optional Board Status LED
 
-Generic builds leave GPIO48 untouched. The opt-in XinluCity ESP32S3 NANO /
-ESP32-S3-N16R8 profile uses the schematic's active-low, single-color G48:
-one short pulse every two seconds for ready/idle, steady ON for a valid live
-controller, and two short pulses for not ready. PWR remains independent.
-No brightness setting or web UI change is included.
+Generic builds leave GPIO48 untouched. On a fresh configuration, plain
+`idf.py build` selects `BOARD_STATUS_LED_DISABLED`; an existing generated
+`sdkconfig` retains whichever profile was selected previously.
+
+For an interactive local build, run **ESP-IDF: SDK Configuration Editor
+(menuconfig)**, then select **Board status LED > Board profile > XinluCity
+ESP32S3 NANO / ESP32-S3-N16R8 (G48 active-low)** and rebuild. This updates the
+ignored local `sdkconfig`; do not commit that generated file.
+
+For a reproducible profile build, use the tracked overlay with a fresh build
+and configuration directory because `SDKCONFIG_DEFAULTS` does not override an
+existing generated configuration:
+
+```bash
+idf.py -B .cache/board-led-enabled -D SDKCONFIG=.cache/board-led-enabled/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.board-xinlucity" build
+```
+
+Before flashing, verify the generated configuration reports
+`BOARD_XINLUCITY_ESP32S3_NANO=true` and `BOARD_STATUS_LED_DISABLED=false`.
+The profile uses the schematic's active-low, single-color G48: one short pulse
+every two seconds for ready/idle, steady ON for a valid live controller, and
+two short pulses for not ready. PWR remains independent. No brightness setting
+or web UI change is included.
 
 See the [profile build commands and validation record](docs/board-status-led-proposal.md#software-implementation-record).
-Software tests pass, but physical polarity, visible timing, and USB/load
-acceptance remain pending; this is not approval to flash a board.
+Focused software checks and a 2026-09-15 physical check of the previously
+flashed debug-optimized LED image passed for visible G48 ready/idle, active
+control, and release back to idle. The optimized image described below was not
+flashed. Startup/not-ready timing, suspend, failure handling, USB/load effects,
+and endurance remain pending.
 
 ## Sender Provisioning
 
@@ -188,9 +216,18 @@ installer checks, including SDK-backed fake-device tests that never use hardware
 The firmware has no npm runtime dependencies; the Lucide icons are embedded.
 
 The Globe/Cancel software increment passes all ten sanitized native suites,
-15 keyboard-model tests, and 34 API/Chromium/WebKit tests. Its ESP-IDF v6.1
-build is `0xF63E0` bytes, leaving `0x9C20` bytes (about 4%) in the unchanged
-1 MiB application partition. Real iPhone/iPad input-source switching and
+15 keyboard-model tests, and 34 API/Chromium/WebKit tests. After integrating
+compiler size optimization, fresh ESP-IDF v6.1 builds measure:
+
+| Profile | Application size | Free in the unchanged 1 MiB app partition |
+| --- | --- | --- |
+| Generic, LED disabled | `0xe15f0` (923,120 bytes) | `0x1ea10` (125,456 bytes, about 12%) |
+| XinluCity status LED | `0xe2ad0` (928,464 bytes) | `0x1d530` (120,112 bytes, about 11%) |
+
+Both builds have `COMPILER_OPTIMIZATION_SIZE=true` and remain below the 20%
+product headroom goal. The earlier `0xF63E0`/`0x9C20` measurement describes the
+debug-optimized generic build before these defaults changed, not a fresh build.
+Real iPhone/iPad input-source switching and
 Escape behavior with pending, applied, and absent autocorrection suggestions
 remain hardware acceptance checks, not conclusions from the browser mock.
 
@@ -286,14 +323,17 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-Before the Globe/Cancel increment, board-status validation measured the generic
-LED-disabled image at `0xf4ba0` bytes with `0xb460` bytes free, and the opt-in
-status-LED image with `0x9c00` bytes free. Those historical builds also had about
-4% headroom; the current generic image is recorded under Host Validation above.
-See the LED implementation record for its checked configurations. Flash layout
-and PSRAM settings are unchanged. Current headroom remains below the broader 20%
-goal; physical flash capacity and runtime heap/stack/power behavior remain
-unverified.
+Before the Globe/Cancel increment, compiler size optimization with the XinluCity
+status-LED profile produced an image of `0xe17c0` bytes (923,584 bytes), leaving
+`0x1e840` bytes (124,992 bytes, about 12%) in the existing 1 MiB application
+partition. That build removed ESP-IDF's nearly-full warning and saved 86,368
+bytes compared with the later `0xf6920`-byte (1,009,952-byte) debug-optimized LED image that was
+physically flashed during hardware validation. The earlier isolated profile
+build recorded `0xf6400`; it was not the comparison baseline. Flash layout,
+NVS offsets, and PSRAM settings are unchanged. The result remains below the
+broader 20% product headroom goal. Enlarging or replacing the live partition
+table is a separate migration, not a routine firmware update; runtime
+heap/stack/power behavior also remains to be fully characterized.
 
 Do not commit credentials or machine-specific SDK paths. Generated build
 outputs and local configuration are excluded by the Git ignore rules. Project
