@@ -507,7 +507,9 @@ Both chords contain only `HID_KEY_SPACE` (`0x2C`); the following all-keys-up
 report has zero modifiers and no keys. Use these exact states in report tests.
 
 On first use with no saved preference, preselect iOS without a mandatory host
-selection dialog. A Globe tap sends its preset when the normal control and USB
+selection dialog. An iOS/Win segmented toggle exposes the configured profile;
+unsupported saved values leave both segments unselected until the user chooses one.
+A Globe tap sends its preset when the normal control and USB
 readiness gates permit input. Keep the host-type setting editable and retain a
 saved selection across reloads and reconnects rather than resetting it to iOS.
 Loading the page or changing the host setting must never send a chord. An invalid
@@ -601,8 +603,8 @@ and safe areas, with exact commands exercised through touch, mouse, and keyboard
 WebKit delivers the exact iOS/Windows Globe and isolated Escape reports through
 touch. Both engines load the local icons, and physical shortcuts remain excluded.
 After integrating compiler size optimization from main, fresh ESP-IDF v6.1
-builds pass at `0xe15f0` bytes with `0x1ea10` bytes free (about 12%) for the
-generic LED-disabled profile, and `0xe2ad0` bytes with `0x1d530` bytes free
+builds pass at `0xe19d0` bytes with `0x1e630` bytes free (about 12%) for the
+generic LED-disabled profile, and `0xe2ea0` bytes with `0x1d160` bytes free
 (about 11%) for the XinluCity status-LED profile. Both retain the unchanged
 1 MiB application partition and explicitly verify `COMPILER_OPTIMIZATION_SIZE`.
 The earlier `0xF63E0`/`0x9C20` measurement was a debug-optimized generic build.

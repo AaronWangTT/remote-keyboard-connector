@@ -972,25 +972,31 @@ test("Globe and Cancel preserve profiles and send isolated report sequences", { 
   };
 
   await page.goto(url);
-  await expect(page.locator("#host-profile")).toHaveValue("ios");
+  const hostProfile = page.locator("#host-profile");
+  const iosHost = hostProfile.locator('input[value="ios"]');
+  const windowsHost = hostProfile.locator('input[value="windows"]');
+  await expect(iosHost).toBeChecked();
   await expect(page.locator(".keyboard-meta")).toContainText("Key map: US ANSI");
   assert.equal(await page.evaluate(() => localStorage.getItem("keyboard.host-profile.v1")), null);
   await signIn(page);
 
-  const hostProfile = page.locator("#host-profile");
-  await page.evaluate(() => {
-    window.hostProfileClickDefaults = [];
-    document.addEventListener("click", event => {
-      if (event.target.id === "host-profile") window.hostProfileClickDefaults.push(event.defaultPrevented);
-    });
-  });
-  await hostProfile.click();
-  await page.keyboard.press("Escape");
-  const hostProfileBox = await hostProfile.boundingBox();
-  await page.touchscreen.tap(hostProfileBox.x + hostProfileBox.width / 2,
-                             hostProfileBox.y + hostProfileBox.height / 2);
-  await page.keyboard.press("Escape");
-  assert.deepEqual(await page.evaluate(() => window.hostProfileClickDefaults), [false, false]);
+  await expect(page.getByRole("radiogroup", { name: "Host", exact: true })).toBeVisible();
+  await expect(windowsHost).toHaveAccessibleName("Win");
+  const beforeToggles = states.length;
+  await windowsHost.click();
+  await expect(windowsHost).toBeChecked();
+  await expect(iosHost).not.toBeChecked();
+  await iosHost.tap();
+  await expect(iosHost).toBeChecked();
+  await iosHost.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(windowsHost).toBeChecked();
+  await page.keyboard.press("Space");
+  await expect(windowsHost).toBeChecked();
+  await page.keyboard.press("ArrowLeft");
+  await expect(iosHost).toBeChecked();
+  assert.equal(states.length, beforeToggles);
+  assert.equal(await page.evaluate(() => localStorage.getItem("keyboard.host-profile.v1")), "ios");
 
   await page.locator("#keyboard").focus();
   await page.keyboard.down("Shift");
@@ -1004,7 +1010,7 @@ test("Globe and Cancel preserve profiles and send isolated report sequences", { 
   await page.keyboard.up("Shift");
 
   const beforeProfileChange = states.length;
-  await hostProfile.selectOption("windows");
+  await windowsHost.click();
   assert.equal(states.length, beforeProfileChange);
   assert.equal(await page.evaluate(() => localStorage.getItem("keyboard.host-profile.v1")), "windows");
   await expectCommand(globe, { modifiers: 8, keys: [44] });
@@ -1027,14 +1033,15 @@ test("Globe and Cancel preserve profiles and send isolated report sequences", { 
   await expect(page.locator(".keyboard-meta")).toContainText("Key map: US ANSI");
 
   await page.reload();
-  await expect(page.locator("#host-profile")).toHaveValue("windows");
+  await expect(windowsHost).toBeChecked();
   const beforeReconnect = states.length;
   await takeControl(page);
   assert.equal(states.length, beforeReconnect);
 
   await page.evaluate(() => localStorage.setItem("keyboard.host-profile.v1", "macos"));
   await page.reload();
-  await expect(page.locator("#host-profile")).toHaveValue("");
+  await expect(hostProfile.locator("input:checked")).toHaveCount(0);
+  await expect(hostProfile).toHaveAttribute("aria-invalid", "true");
   await expect(globe).toBeDisabled();
   await takeControl(page);
   await expect(globe).toBeDisabled();
@@ -1042,7 +1049,9 @@ test("Globe and Cancel preserve profiles and send isolated report sequences", { 
   await globe.evaluate(button => button.click());
   assert.equal(states.length, beforeBlockedGlobe);
 
-  await page.locator("#host-profile").selectOption("ios");
+  await iosHost.tap();
+  await expect(iosHost).toBeChecked();
+  await expect(hostProfile).toHaveAttribute("aria-invalid", "false");
   await page.locator("#keyboard").focus();
   const beforePhysicalShortcuts = states.length;
   await page.keyboard.press("Control+a");
@@ -1065,7 +1074,7 @@ test("rotation clears input without changing page or host profile", { timeout: 2
   const neutral = { modifiers: 0, keys: [] };
   await page.goto(url);
   await signIn(page);
-  await page.locator("#host-profile").selectOption("windows");
+  await page.getByRole("radio", { name: "Win", exact: true }).click();
 
   const selectPage = async mode => {
     let current = await page.locator("#key-rows").getAttribute("data-page");
@@ -1097,7 +1106,7 @@ test("rotation clears input without changing page or host profile", { timeout: 2
       await expect.poll(() => states.length).toBe(beforeRotation + 1);
       assert.deepEqual(states[beforeRotation], neutral);
       await expect(page.locator("#key-rows")).toHaveAttribute("data-page", mode);
-      await expect(page.locator("#host-profile")).toHaveValue("windows");
+      await expect(page.getByRole("radio", { name: "Win", exact: true })).toBeChecked();
       await page.keyboard.up("a");
       await page.keyboard.up("Shift");
     }
@@ -1178,6 +1187,20 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
         const header = document.querySelector("header").getBoundingClientRect();
         const footer = document.querySelector("footer").getBoundingClientRect();
         const problems = [];
+        const metadata = [...document.querySelectorAll(".keyboard-meta > span, .host-profile-field")];
+        const metaBounds = metadata.map(element => element.getBoundingClientRect());
+        metadata.forEach((element, index) => {
+          const box = metaBounds[index];
+          if (box.left < 0 || box.right > innerWidth || box.top < header.bottom) problems.push("metadata bounds");
+          if (element.scrollWidth > element.clientWidth + 1) problems.push("metadata label overflow");
+          for (const next of metaBounds.slice(index + 1)) {
+            if (box.left < next.right && box.right > next.left && box.top < next.bottom && box.bottom > next.top) problems.push("metadata overlap");
+          }
+        });
+        for (const segment of document.querySelectorAll("#host-profile label")) {
+          if (segment.getBoundingClientRect().width < 44) problems.push("host toggle target");
+          if (segment.scrollWidth > segment.clientWidth + 1) problems.push("host toggle label overflow");
+        }
         const bounds = keys.map(button => button.getBoundingClientRect());
         keys.forEach((button, index) => {
           const box = bounds[index];
@@ -1338,12 +1361,15 @@ test("WebKit types and sends Globe and Cancel across iPhone layouts", { timeout:
   await page.getByRole("button", { name: "#+=", exact: true }).tap();
   await page.getByRole("button", { name: "~", exact: true }).tap();
   await expect.poll(counters).toMatchObject({ down: 4, up: 4, pressed: false });
-  await expect(page.locator("#host-profile")).toHaveValue("ios");
+  await expect(page.getByRole("radio", { name: "iOS", exact: true })).toBeChecked();
   const globe = page.getByRole("button", { name: "Switch input source" });
   const cancel = page.getByRole("button", { name: "Cancel (Escape)" });
   await tapCommand(globe, { modifiers: 1, keys: [44] });
   await tapCommand(cancel, { modifiers: 0, keys: [41] });
-  await page.locator("#host-profile").selectOption("windows");
+  const beforeHostToggle = states.length;
+  await page.getByRole("radio", { name: "Win", exact: true }).tap();
+  await expect(page.getByRole("radio", { name: "Win", exact: true })).toBeChecked();
+  assert.equal(states.length, beforeHostToggle);
   await tapCommand(globe, { modifiers: 8, keys: [44] });
   await expect.poll(counters).toMatchObject({ down: 7, up: 7, pressed: false });
   assert.ok(await page.locator('[data-code="Backspace"] .icon').evaluate(element => getComputedStyle(element).maskImage !== "none"));
@@ -1353,7 +1379,7 @@ test("WebKit types and sends Globe and Cancel across iPhone layouts", { timeout:
   await page.setViewportSize({ width: 844, height: 390 });
   const layout = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight }));
   assert.ok(layout.width <= 844 && layout.height <= 390);
-  await expect(page.locator("#host-profile")).toHaveValue("windows");
+  await expect(page.getByRole("radio", { name: "Win", exact: true })).toBeChecked();
   await page.getByRole("button", { name: "Return", exact: true }).tap();
   await expect.poll(counters).toMatchObject({ down: 8, up: 8, pressed: false });
   assert.deepEqual(errors, []);

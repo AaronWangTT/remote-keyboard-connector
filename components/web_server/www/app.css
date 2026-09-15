@@ -111,8 +111,14 @@ dialog p { overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; }
 
 .keyboard-meta { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin: 0 6px 16px; }
 .host-profile-field { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
-.host-profile-field select { min-width: 76px; height: 32px; padding: 0 22px 0 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: #fff; font: inherit; }
-.host-profile-field select[aria-invalid="true"] { border-color: #b85a61; }
+.host-profile-toggle { display: flex; height: 32px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.host-profile-toggle label { position: relative; display: flex; }
+.host-profile-toggle label + label { border-left: 1px solid var(--line); }
+.host-profile-toggle input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.host-profile-toggle span { display: flex; align-items: center; justify-content: center; min-width: 44px; padding: 0 8px; color: var(--muted); background: #fff; }
+.host-profile-toggle input:checked + span { color: #005b50; background: #dbf0e8; }
+.host-profile-toggle input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+.host-profile-toggle[aria-invalid="true"] { border-color: #b85a61; }
 #caps-status[data-state="on"] { color: var(--accent); }
 #caps-status[data-state="pending"] { color: var(--waiting); }
 #key-rows { --key-height: 48px; --row-gap: 10px; display: grid; gap: var(--row-gap); }
@@ -199,6 +205,12 @@ dialog p { overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; }
 output { min-width: 72px; text-align: center; font-size: 12px; }
 footer { border-top: 1px solid var(--line); padding: 14px 6px 0; color: var(--muted); font-size: 12px; gap: 8px; }
 #network-summary { max-width: 45%; overflow-wrap: anywhere; }
+
+@media (max-width: 359px) {
+  .keyboard-meta { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; }
+  .host-profile-field { grid-column: 2; grid-row: 1 / span 2; }
+  #caps-status { grid-column: 1; grid-row: 2; }
+}
 
 @media (min-width: 360px) {
   main { padding-right: max(10px, var(--safe-right)); padding-left: max(10px, var(--safe-left)); }

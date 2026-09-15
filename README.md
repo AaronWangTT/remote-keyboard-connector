@@ -162,9 +162,10 @@ not the native iOS keyboard. Phone letter keys use the approved narrower widths
 to fit ten columns; key heights remain at least 44 CSS pixels.
 
 Globe and Cancel sit below the keycap row in portrait and join the Space row in
-landscape. Globe sends Control+Space for the default iOS host profile or
-Windows+Space for the Windows profile. The browser remembers an explicitly
-selected valid profile, but does not detect the USB host, active language, or
+landscape. The Host toggle offers iOS and Win. Globe sends Control+Space for
+the default iOS host profile or Windows+Space for the Windows profile. The browser
+remembers an explicitly selected valid profile, but does not detect the USB host,
+active language, or
 whether the shortcut succeeded; the visible key map remains US ANSI. Cancel
 sends one unmodified Escape tap. Escape may dismiss a pending host suggestion,
 but it is not a guaranteed autocorrection undo and the page does not claim one.
@@ -221,8 +222,8 @@ compiler size optimization, fresh ESP-IDF v6.1 builds measure:
 
 | Profile | Application size | Free in the unchanged 1 MiB app partition |
 | --- | --- | --- |
-| Generic, LED disabled | `0xe15f0` (923,120 bytes) | `0x1ea10` (125,456 bytes, about 12%) |
-| XinluCity status LED | `0xe2ad0` (928,464 bytes) | `0x1d530` (120,112 bytes, about 11%) |
+| Generic, LED disabled | `0xe19d0` (924,112 bytes) | `0x1e630` (124,464 bytes, about 12%) |
+| XinluCity status LED | `0xe2ea0` (929,440 bytes) | `0x1d160` (119,136 bytes, about 11%) |
 
 Both builds have `COMPILER_OPTIMIZATION_SIZE=true` and remain below the 20%
 product headroom goal. The earlier `0xF63E0`/`0x9C20` measurement describes the

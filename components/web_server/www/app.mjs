@@ -7,7 +7,7 @@ const connectionStatus = document.querySelector("#connection-status");
 const usbStatus = document.querySelector("#usb-status");
 const capsStatus = document.querySelector("#caps-status");
 const keyState = document.querySelector("#key-state");
-const hostProfileSelect = document.querySelector("#host-profile");
+const hostProfileToggle = document.querySelector("#host-profile");
 const keyboard = new KeyboardInput();
 const definitions = new Map();
 const pending = new Map();
@@ -17,7 +17,6 @@ try {
   const savedProfile = localStorage.getItem(hostProfileStorageKey);
   if (savedProfile !== null) hostProfile = savedProfile;
 } catch {}
-hostProfileSelect.value = validHostProfile(hostProfile) ? hostProfile : "";
 let page = "letters";
 let landscape = innerWidth > innerHeight;
 let socket = null;
@@ -336,7 +335,8 @@ function render() {
   capsStatus.textContent = keyboard.capsPending ? "Caps pending" : keyboard.capsLock === null ? "Caps unknown" :
     keyboard.capsLock ? "Caps on" : "Caps off";
   capsStatus.dataset.state = keyboard.capsPending ? "pending" : keyboard.capsLock ? "on" : "off";
-  hostProfileSelect.setAttribute("aria-invalid", String(!validHostProfile(hostProfile)));
+  hostProfileToggle.setAttribute("aria-invalid", String(!validHostProfile(hostProfile)));
+  for (const input of hostProfileToggle.querySelectorAll("input")) input.checked = input.value === hostProfile;
   keyState.textContent = report.keys.length || report.modifiers ? "Pressed" : "Released";
 }
 
@@ -496,10 +496,10 @@ surface.addEventListener("lostpointercapture", event => {
 surface.addEventListener("pointercancel", disconnect);
 surface.addEventListener("contextmenu", event => event.preventDefault());
 surface.addEventListener("click", event => {
-  if (event.target.closest("input, textarea, select, [contenteditable]")) return;
-  event.preventDefault();
   const button = event.target.closest("button[data-key]");
-  if (!button || button.disabled || event.detail !== 0) return;
+  if (!button) return;
+  event.preventDefault();
+  if (button.disabled || event.detail !== 0) return;
   const key = definitions.get(button.dataset.key);
   surface.focus({ preventScroll: true });
   if (key.action === "page") { switchPage(key.page); return; }
@@ -543,12 +543,12 @@ document.querySelector("#release").addEventListener("click", () => {
   disconnect();
   api("/api/v1/control/stop", "POST").catch(error => notify(errorMessage(error)));
 });
-hostProfileSelect.addEventListener("change", event => {
+hostProfileToggle.addEventListener("change", event => {
+  if (!event.target.matches('input[name="host-profile"]') || !event.target.checked ||
+      !validHostProfile(event.target.value)) return;
   hostProfile = event.target.value;
-  if (validHostProfile(hostProfile)) {
-    try { localStorage.setItem(hostProfileStorageKey, hostProfile); }
-    catch { notify("Host preference could not be saved."); }
-  }
+  try { localStorage.setItem(hostProfileStorageKey, hostProfile); }
+  catch { notify("Host preference could not be saved."); }
   render();
 });
 document.querySelector("#take-control").addEventListener("click", async () => {
