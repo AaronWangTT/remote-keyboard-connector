@@ -94,8 +94,12 @@ node tools/install-device.mjs --firmware build --device-id <12-hex-factory-base-
 
 `npm --prefix tools run install:device -- <options>` invokes the same command.
 The output directory must not already exist. Windows ACLs or POSIX private
-permissions restrict access. Serial baud defaults to 460800; `--baud 115200`
-is available for a slower connection.
+permissions restrict access. The Python helper independently creates a new
+`installation` subdirectory and restricts its permissions before writing private
+data, including when invoked directly. Its JSON request carries the MAC-bound
+identity CSV over stdin; an existing output directory is never accepted. Windows
+account or ACL failures stop preparation before a serial connection.
+Serial baud defaults to 460800; `--baud 115200` is available for a slower connection.
 
 One invocation performs these steps:
 
@@ -107,7 +111,8 @@ One invocation performs these steps:
 3. Open only the supplied port, confirm ESP32-S3, security state, and expected
    factory MAC, then detect physical flash capacity.
 4. Read the complete detected flash, verify its digest against the device,
-   save it privately, and verify the saved backup before any flash write.
+  save it privately, synchronize it as described below, and verify the saved
+  backup before any flash write.
 5. Refuse differing existing partition tables and refuse non-empty NVS unless
    the sender explicitly requested replacement.
 6. Write bootloader, partition table, NVS identity, and application in one
@@ -124,15 +129,16 @@ erase, security-force option, or eFuse change is performed.
 The private output contains:
 
 ```text
-firmware/                 Three images, firmware-only flash metadata, and manifest
-identity.csv              Private NVS input, bound to the expected factory MAC
-identity.bin              Generated NVS image
-wifi-qr.png               Private Wi-Fi connection QR
-setup-card.html           Wi-Fi password and separate one-time owner setup code
-install-plan.json         Intended offsets, sizes, hashes, and replacement policy
-flash-backup.bin          Complete original flash, when backup succeeds
-flash-backup.json         Backup device ID, size, offset, and SHA-256
-install-result.json       Created only after all written images verify
+firmware/                       Three images, flash metadata, and manifest
+identity.csv                    Private input, bound to the factory MAC
+wifi-qr.png                     Private Wi-Fi connection QR
+setup-card.html                 Wi-Fi password and one-time owner setup code
+installation/identity.csv       Validated private NVS input copy
+installation/identity.bin       Generated NVS image
+installation/install-plan.json  Offsets, sizes, hashes, and replacement policy
+installation/flash-backup.bin   Complete original flash, when backup succeeds
+installation/flash-backup.json  Device ID, size, offset, SHA-256, and durability
+installation/install-result.json  Created only after all written images verify
 ```
 
 For file-only CSV/QR/card generation, `tools/provision-device.mjs` remains
@@ -148,6 +154,18 @@ directory, use the verified ROM recovery procedure, and review the saved plan
 and backup before a separately authorized recovery write. Do not delete a
 successful backup or start a fresh credential set to recover a partial install.
 A failed preflight can leave private preparation files but never writes flash.
+
+A verified backup is not an unconditional host power-loss recovery guarantee.
+On POSIX, private file contents and their directory entries are synchronized with
+`fsync`; the new directory's ancestor entries are also synchronized. A failed
+synchronization stops installation before any flash write. This relies on the
+filesystem and storage device honoring those requests.
+On Windows, file contents are synchronized, but directory-entry durability is not
+guaranteed. The installer warns about this limitation and records `file-sync-only`
+in the backup metadata and result, rather than claiming a power-loss-durable
+backup. Keep both the host and backup storage powered; a host or storage failure
+can still lose the backup needed for recovery. POSIX metadata records
+`file-and-directory-sync`, not a guarantee against every storage failure.
 
 For ordinary updates with an unchanged compatible partition layout, flash only
 firmware and preserve the existing NVS. `idf.py -p <COMx> flash` in the project
@@ -179,10 +197,14 @@ refusals, backup ordering and integrity, layout/NVS guards, sparse writes, and
 verification failure. Contract tests also call the real esptool `read_flash`,
 `write_flash`, and `verify_flash` functions with only the hardware access mocked:
 reads without an output path return bytes, and writes/verification accept byte
-payloads. All 26 Python tests pass with both validated esptool versions. The
-existing build passed offline validation with 5.3.1 as well. CI runs the SDK
-suite and the freshly built firmware's offline check in the
-firmware job; Node tests run with the existing browser/provisioning job.
+payloads. The original 26-test Python suite passed with both validated esptool
+versions. The existing build passed offline validation with 5.3.1 as well.
+The suite now also checks fresh private-directory creation, existing-directory
+and symlink rejection, ACL failures, directory-sync failures, and explicit Windows
+durability reporting. Windows ACL subprocesses are mocked in Linux testing; these
+tests do not establish Windows filesystem acceptance. CI runs the SDK suite and
+the freshly built firmware's offline check in the firmware job; Node tests run
+with the existing browser/provisioning job.
 
 These checks passed locally on 2026-09-15 against the existing build. They do
 not establish that the combined installer has run on a physical board. No real

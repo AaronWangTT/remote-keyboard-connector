@@ -206,6 +206,9 @@ test("installer defaults to offline checks and installs from an immutable privat
     assert.equal(calls[2].request.replaceNvs, false);
     assert.equal(calls[2].request.firmware.root, await realpath(join(output, "firmware")));
     const csv = await readFile(join(output, "identity.csv"), "utf8");
+    assert.equal(calls[2].request.directory, join(output, "installation"));
+    assert.equal(calls[2].request.identityCsv, csv);
+    await assert.rejects(access(calls[2].request.directory), { code: "ENOENT" });
     const password = csv.split("\n").find(line => line.startsWith("ap_password,")).split(",")[3];
     assert.ok(!logs.join("\n").includes(password));
     await writeFile(join(source, "app.bin"), "changed build");

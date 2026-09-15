@@ -1,8 +1,10 @@
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -10,11 +12,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from install_device import generate_nvs, inspect_firmware, install, load_sdk, validate_identity
+from install_device import create_private_directory, generate_nvs, inspect_firmware, install, load_sdk, private_write, validate_identity
 
 
 class FakeDevice:
-    CHIP_NAME = "ESP32-S3"
+    CHIP_NAME: str = "ESP32-S3"
     secure_download_mode = False
     secure_boot = False
     encryption = False
@@ -50,7 +52,7 @@ class FakeDevice:
 
 
 class FakeEsptool:
-    detected_size = "2MB"
+    detected_size: str | None = "2MB"
     fail_verify = False
 
     def __init__(self, device, directory):
@@ -104,6 +106,7 @@ class InstallerTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="keyboard-sdk-test-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.output = self.root / "installation"
         self.sdk.partitions.offset_part_table = 0x8000
         self.table = self.sdk.partitions.PartitionTable.from_csv(
             "nvs,data,nvs,0x9000,0x6000,\nphy_init,data,phy,0xf000,0x1000,\nfactory,app,factory,0x10000,1M,\n")
@@ -126,9 +129,9 @@ class InstallerTests(unittest.TestCase):
                     "\nclaim_cost,data,u32,100000\n")
             (self.root / "identity.csv").write_text(self.csv, encoding="utf-8")
             self.request = {"execute": True, "deviceId": "001122334455", "port": "MOCK", "baud": 460800,
-                    "directory": str(self.root), "firmware": self.firmware, "replaceNvs": False}
+                    "directory": str(self.output), "identityCsv": self.csv, "firmware": self.firmware, "replaceNvs": False}
             self.device = FakeDevice(b"\xff" * 2097152)
-            self.transport = FakeEsptool(self.device, self.root)
+            self.transport = FakeEsptool(self.device, self.output)
             self.connected_sdk = SimpleNamespace(partitions=self.sdk.partitions, images=self.sdk.images,
                                  esptool=self.transport)
 
@@ -275,9 +278,113 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.transport.events, ["connect", "backup", "write", "verify", "reset"])
         self.assertEqual(len(self.transport.writes), 1)
         self.assertEqual([offset for offset, _data in self.transport.writes[0]], [0, 0x8000, 0x9000, 0x10000])
-        self.assertEqual((self.root / "flash-backup.bin").read_bytes(), b"\xff" * 2097152)
+        self.assertEqual((self.output / "flash-backup.bin").read_bytes(), b"\xff" * 2097152)
         self.assertTrue(self.device.closed)
-        self.assertNotIn("A" * 24, (self.root / "install-result.json").read_text())
+        self.assertNotIn("A" * 24, (self.output / "install-result.json").read_text())
+        if os.name != "nt":
+            self.assertEqual(self.output.stat().st_mode & 0o077, 0)
+            self.assertEqual(result["backupDurability"], "file-and-directory-sync")
+
+    def test_existing_installation_directory_never_connects(self):
+        self.request["directory"] = str(self.root)
+        with self.assertRaises(FileExistsError):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, [])
+        self.assertFalse((self.root / "identity.bin").exists())
+
+    def test_repository_installation_directory_never_connects(self):
+        self.request["directory"] = str(Path(__file__).resolve().parents[1] / self.root.name / "device")
+        with self.assertRaisesRegex(ValueError, "outside the repository"):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, [])
+        self.assertFalse(Path(self.request["directory"]).parent.exists())
+
+    @unittest.skipIf(os.name == "nt", "Creating symlinks can require Windows privileges")
+    def test_symlinked_installation_directories_never_connect(self):
+        repository_link = self.root / "repository-link"
+        repository_link.symlink_to(Path(__file__).resolve().parents[1], target_is_directory=True)
+        self.request["directory"] = str(repository_link / self.root.name)
+        with self.assertRaisesRegex(ValueError, "resolve into the repository"):
+            install(self.request, self.connected_sdk)
+        self.output.symlink_to(self.root / "missing", target_is_directory=True)
+        self.request["directory"] = str(self.output)
+        with self.assertRaises(FileExistsError):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, [])
+        self.assertFalse((self.root / "missing").exists())
+
+    def test_windows_acl_is_applied_to_a_new_empty_directory(self):
+        def restrict_directory(command, **options):
+            self.assertTrue(self.output.is_dir())
+            self.assertEqual(list(self.output.iterdir()), [])
+            self.assertEqual(command, ["icacls.exe", str(self.output), "/inheritance:r", "/grant:r",
+                                       "TESTDOMAIN\\sender:(OI)(CI)F"])
+            self.assertEqual(options, {"capture_output": True, "check": False})
+            return SimpleNamespace(returncode=0)
+
+        with patch("install_device.sys.platform", "win32"), \
+                patch.dict(os.environ, {"USERDOMAIN": "TESTDOMAIN", "USERNAME": "sender"}), \
+                patch("install_device.subprocess.run", side_effect=restrict_directory) as permissions:
+            self.assertEqual(create_private_directory(self.output), self.output)
+        permissions.assert_called_once()
+
+    def test_windows_acl_failure_never_prepares_or_connects(self):
+        with patch("install_device.sys.platform", "win32"), \
+                patch.dict(os.environ, {"USERDOMAIN": "TESTDOMAIN", "USERNAME": "sender"}), \
+                patch("install_device.subprocess.run", return_value=SimpleNamespace(returncode=1)), \
+                patch("install_device.generate_nvs") as generate:
+            with self.assertRaisesRegex(ValueError, "Cannot restrict Windows"):
+                install(self.request, self.connected_sdk)
+        generate.assert_not_called()
+        self.assertEqual(list(self.output.iterdir()), [])
+        self.assertEqual(self.transport.events, [])
+
+    def test_missing_windows_account_never_prepares_or_connects(self):
+        with patch("install_device.sys.platform", "win32"), \
+                patch.dict(os.environ, {"USERDOMAIN": "", "USERNAME": ""}), \
+                patch("install_device.subprocess.run") as permissions:
+            with self.assertRaisesRegex(ValueError, "Cannot identify the Windows account"):
+                install(self.request, self.connected_sdk)
+        permissions.assert_not_called()
+        self.assertEqual(list(self.output.iterdir()), [])
+        self.assertEqual(self.transport.events, [])
+
+    def test_windows_backup_reports_limited_durability(self):
+        with patch("install_device.sys.platform", "win32"), \
+                patch.dict(os.environ, {"USERDOMAIN": "TESTDOMAIN", "USERNAME": "sender"}), \
+                patch("install_device.subprocess.run", return_value=SimpleNamespace(returncode=0)), \
+                patch("install_device.generate_nvs", return_value=bytes(0x6000)), \
+                patch("install_device.sys.stderr", new_callable=io.StringIO) as diagnostics:
+            result = install(self.request, self.connected_sdk)
+        self.assertIn("not guaranteed durable across host power loss", diagnostics.getvalue())
+        self.assertEqual(result["backupDurability"], "file-sync-only")
+        backup = json.loads((self.output / "flash-backup.json").read_text())
+        self.assertEqual(backup["durability"], "file-sync-only")
+        self.assertEqual(self.transport.events, ["connect", "backup", "write", "verify", "reset"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions are checked independently of Windows ACLs")
+    def test_non_private_directory_mode_is_rejected(self):
+        with patch("install_device.Path.stat", return_value=SimpleNamespace(st_uid=os.getuid(), st_mode=0o777)):
+            with self.assertRaisesRegex(ValueError, "Installation directory is not private"):
+                create_private_directory(self.output)
+        self.assertEqual(list(self.output.iterdir()), [])
+
+    @unittest.skipIf(os.name == "nt", "Directory fsync is POSIX-only")
+    def test_new_directory_syncs_all_ancestor_entries(self):
+        with patch("install_device.sync_directory") as synchronize:
+            create_private_directory(self.output)
+        self.assertEqual([invocation.args[0] for invocation in synchronize.call_args_list],
+                         list(self.output.resolve().parents))
+
+    @unittest.skipIf(os.name == "nt", "Directory fsync is POSIX-only")
+    def test_parent_directory_sync_failure_never_prepares_or_connects(self):
+        with patch("install_device.sync_directory", side_effect=OSError("Parent directory sync failed")), \
+                patch("install_device.generate_nvs") as generate:
+            with self.assertRaisesRegex(OSError, "Parent directory sync failed"):
+                install(self.request, self.connected_sdk)
+        generate.assert_not_called()
+        self.assertEqual(list(self.output.iterdir()), [])
+        self.assertEqual(self.transport.events, [])
 
     def test_no_execute_flag_never_connects(self):
         self.request["execute"] = False
@@ -334,6 +441,34 @@ class InstallerTests(unittest.TestCase):
             install(self.request, self.connected_sdk)
         self.assertEqual(self.transport.events, ["connect", "backup"])
 
+    @unittest.skipIf(os.name == "nt", "Directory fsync is POSIX-only")
+    def test_private_write_syncs_file_then_directory(self):
+        synchronized = []
+        original_sync = os.fsync
+
+        def record_sync(descriptor):
+            synchronized.append("directory" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file")
+            original_sync(descriptor)
+
+        with patch("install_device.os.fsync", side_effect=record_sync):
+            private_write(self.root, "durability.bin", b"backup")
+        self.assertEqual(synchronized, ["file", "directory"])
+
+    @unittest.skipIf(os.name == "nt", "Directory fsync is POSIX-only")
+    def test_backup_directory_sync_failure_never_writes(self):
+        original_sync = os.fsync
+
+        def fail_backup_directory_sync(descriptor):
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode) and (self.output / "flash-backup.json").exists():
+                raise OSError("Backup directory sync failed")
+            original_sync(descriptor)
+
+        with patch("install_device.os.fsync", side_effect=fail_backup_directory_sync):
+            with self.assertRaisesRegex(OSError, "Backup directory sync failed"):
+                install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, ["connect", "backup"])
+        self.assertTrue(self.device.closed)
+
     def test_changed_partition_layout_cannot_be_overridden(self):
         self.device.flash[0x8000] = 0
         self.request["replaceNvs"] = True
@@ -358,15 +493,15 @@ class InstallerTests(unittest.TestCase):
         self.request["replaceNvs"] = True
         install(self.request, self.connected_sdk)
         self.assertEqual(self.device.flash[0xf000], 0x42)
-        self.assertEqual((self.root / "flash-backup.bin").read_bytes()[0x9000], 0)
+        self.assertEqual((self.output / "flash-backup.bin").read_bytes()[0x9000], 0)
 
     def test_failed_write_verification_never_resets_or_reports_success(self):
         self.transport.fail_verify = True
         with self.assertRaisesRegex(ValueError, "Write verification failed"):
             install(self.request, self.connected_sdk)
         self.assertEqual(self.transport.events, ["connect", "backup", "write", "verify"])
-        self.assertFalse((self.root / "install-result.json").exists())
-        self.assertTrue((self.root / "flash-backup.bin").is_file())
+        self.assertFalse((self.output / "install-result.json").exists())
+        self.assertTrue((self.output / "flash-backup.bin").is_file())
 
 
 if __name__ == "__main__":

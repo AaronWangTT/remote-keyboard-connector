@@ -171,7 +171,7 @@ below. Physical installation and recovery remain separate, unverified gates.
 The first packaging-branch manual run built firmware and passed native/browser
 tests, but installer setup rejected the pinned image's esptool 5.3.1 because the
 initial guard required 5.4.x. The guard now accepts the two explicitly validated
-versions, 5.3.1 and 5.4.0. All 26 SDK tests pass locally with each version,
+versions, 5.3.1 and 5.4.0. The original 26 SDK tests passed locally with each version,
 including real esptool read/write/verify API contract tests with hardware mocked.
 Offline validation of the actual local build also passed with 5.3.1 and its
 unprefixed generated sdkconfig JSON. The

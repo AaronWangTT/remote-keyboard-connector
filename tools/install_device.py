@@ -85,12 +85,48 @@ def inspect_firmware(firmware, sdk):
             "settings": firmware["settings"], "flashBytes": firmware["flashBytes"]}
 
 
+def sync_directory(directory):
+    if sys.platform == "win32":
+        return
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def create_private_directory(output):
+    directory = Path(output).absolute()
+    repository = Path(__file__).resolve().parents[1]
+    require(not directory.is_relative_to(repository), "Private installation files must be outside the repository")
+    parent = directory.parent.resolve(strict=True)
+    require(not parent.is_relative_to(repository), "Private output must not resolve into the repository")
+    directory = parent / directory.name
+    directory.mkdir(mode=0o700)
+    if sys.platform == "win32":
+        domain = os.environ.get("USERDOMAIN")
+        username = os.environ.get("USERNAME")
+        require(domain and username, "Cannot identify the Windows account for private permissions")
+        permissions = subprocess.run(
+            ["icacls.exe", str(directory), "/inheritance:r", "/grant:r", f"{domain}\\{username}:(OI)(CI)F"],
+            capture_output=True, check=False)
+        require(permissions.returncode == 0, "Cannot restrict Windows installation directory permissions")
+    else:
+        permissions = directory.stat()
+        require(permissions.st_uid == os.getuid() and permissions.st_mode & 0o077 == 0,
+                "Installation directory is not private")
+    for ancestor in directory.parents:
+        sync_directory(ancestor)
+    return directory
+
+
 def private_write(directory, name, data):
     descriptor = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as output:
         output.write(data)
         output.flush()
         os.fsync(output.fileno())
+    sync_directory(directory)
 
 
 def validate_identity(contents, device_id):
@@ -142,13 +178,14 @@ def install(request, sdk):
     require(isinstance(request["port"], str) and request["port"] and "://" not in request["port"],
             "An explicit local serial port is required")
     require(request["baud"] in (115200, 230400, 460800, 921600), "Unsupported serial baud rate")
-    directory = Path(request["directory"]).resolve(strict=True)
-    require(directory.is_dir() and not directory.is_relative_to(Path(__file__).resolve().parents[1]),
-            "Private installation files must be outside the repository")
-    require(os.name == "nt" or directory.stat().st_mode & 0o077 == 0, "Installation directory is not private")
+    identity_csv = request["identityCsv"]
+    require(isinstance(identity_csv, str), "A MAC-bound identity CSV is required")
+    validate_identity(identity_csv, device_id)
     firmware = request["firmware"]
     plan = inspect_firmware(firmware, sdk)
     require(flash_capacity(plan["settings"]["flash_size"]) == plan["flashBytes"], "Inconsistent flash capacity")
+    directory = create_private_directory(request["directory"])
+    private_write(directory, "identity.csv", identity_csv.encode("utf-8"))
     nvs_data = generate_nvs(directory, device_id, plan["nvs"]["size"])
     payloads = [(image["offset"], image_bytes(image)) for image in firmware["images"]]
     payloads.append((plan["nvs"]["offset"], nvs_data))
@@ -158,6 +195,11 @@ def install(request, sdk):
                 "images": [{"offset": offset, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
                            for offset, data in payloads]}
     private_write(directory, "install-plan.json", (json.dumps(manifest, indent=2) + "\n").encode())
+    backup_durability = "file-and-directory-sync"
+    if sys.platform == "win32":
+        backup_durability = "file-sync-only"
+        print("Windows backups are verified but not guaranteed durable across host power loss; "
+              "keep the host and backup storage powered.", file=sys.stderr)
     with sdk.esptool.detect_chip(port=request["port"]) as connection:
         require(connection.CHIP_NAME == "ESP32-S3", "Connected board is not an ESP32-S3")
         require(connection.secure_download_mode is False and connection.get_secure_boot_enabled() is False and
@@ -179,7 +221,7 @@ def install(request, sdk):
         require(hashlib.sha256((directory / "flash-backup.bin").read_bytes()).hexdigest() == backup_hash,
             "Saved flash backup verification failed")
         private_write(directory, "flash-backup.json", (json.dumps({"deviceId": device_id, "bytes": detected_bytes,
-                  "sha256": backup_hash, "offset": 0}, indent=2) + "\n").encode())
+                  "sha256": backup_hash, "offset": 0, "durability": backup_durability}, indent=2) + "\n").encode())
         table_image = next(image for image in firmware["images"] if image["role"] == "partition-table")
         table_offset = plan["partitionTable"]["offset"]
         existing_table = backup[table_offset:table_offset + 4096]
@@ -193,7 +235,7 @@ def install(request, sdk):
         sdk.esptool.write_flash(device, payloads, **plan["settings"], erase_all=False, force=False, no_progress=True)
         sdk.esptool.verify_flash(device, payloads, **plan["settings"])
         result = {"deviceId": device_id, "verified": True, "flashBytes": detected_bytes,
-              "backupSha256": backup_hash, "images": manifest["images"]}
+              "backupSha256": backup_hash, "backupDurability": backup_durability, "images": manifest["images"]}
         private_write(directory, "install-result.json", (json.dumps(result, indent=2) + "\n").encode())
         sdk.esptool.reset_chip(device, "hard-reset")
     return result

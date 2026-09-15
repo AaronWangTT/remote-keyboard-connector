@@ -220,7 +220,8 @@ Private output includes a firmware snapshot, identity, setup card, and backup. N
   try {
     const snapshot = await snapshotFirmware(firmware, directory);
     log("Checking the board and backing up flash before one combined firmware and NVS write.");
-    const result = await sdk("install", { firmware: snapshot, idfPath: options.idfPath, directory,
+    const result = await sdk("install", { firmware: snapshot, idfPath: options.idfPath,
+      directory: join(directory, "installation"), identityCsv: await readFile(join(directory, "identity.csv"), "utf8"),
       deviceId: options.deviceId, port: options.port, baud: options.baud, execute: true, replaceNvs: options.replaceNvs });
     assert.equal(result.verified, true, "The helper did not confirm write verification");
     log("Firmware and NVS verified on flash. Keep the private backup and setup card; runtime acceptance is still required.");
