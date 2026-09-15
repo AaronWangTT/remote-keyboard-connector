@@ -169,7 +169,7 @@ static access_session_t *request_session(httpd_req_t *request, bool mutation)
             return NULL;
         }
     }
-    network_management_touch(local_address(request));
+    if (mutation) network_management_touch(local_address(request));
     return session;
 }
 

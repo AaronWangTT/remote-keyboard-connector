@@ -113,7 +113,8 @@ an abandoned recovery session to become idle. Final timer values are tunable
 after hardware testing, not promises about uninterrupted connectivity.
 
 The implementation grants a 60-second candidate-confirmation grace period and
-keeps AP handover deferred while authenticated management remains active. Once
+keeps AP handover deferred after authenticated management mutations. Read-only
+status polling does not refresh this activity window. Once
 the grace period and management activity expire, a successful saved candidate
 becomes idle STA without another credential submission. An unconfirmed AP-address
 change instead expires without renumbering, retaining the previous profile and
@@ -429,6 +430,14 @@ Invalid JSON content types and oversized bodies are drained before the next
 keep-alive request; the regression sends a rejected partial body and verifies
 the same socket can then retrieve unchanged job status. The shared scan and
 association predicate rejects WPA2/WPA3 transition mode as outside this increment.
+
+Frequent status polling is covered by the abandonment regression and cannot
+prevent confirmation expiry. Form-reset regressions also verify that resetting
+the selected value preserves all unexpired scan options. ESP-IDF v6.1 performs
+the firmware's unread-body cleanup in `httpd_req_delete()` before accepting a
+subsequent request; failed purging returns failure through session processing,
+which closes the socket. A sanitizer-enabled harness exercised the actual SDK
+purge function with empty, partial, oversized, and receive-failure cases.
 
 The native interrupted-save tests inject failure around the same stage/activate
 selection helper used by the NVS adapter. They verify old-or-new complete-record

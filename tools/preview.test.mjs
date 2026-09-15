@@ -146,13 +146,13 @@ test("abandoned handover becomes idle without another credential submission", { 
   assert.equal(response.status, 202);
   const status = async () => (await fetch(new URL("/api/v1/network/job", url), { headers })).json();
   await expect.poll(status).toMatchObject({ job: "awaiting_confirmation", busy: true, ap_active: true });
-  await expect.poll(status, { intervals: [750] }).toMatchObject({ job: "succeeded", busy: false, ap_active: false, saved_ssid: "Home Wi-Fi" });
+  await expect.poll(status, { intervals: [50] }).toMatchObject({ job: "succeeded", busy: false, ap_active: false, saved_ssid: "Home Wi-Fi" });
   const overlap = await fetch(new URL("/api/v1/network", url), {
     method: "POST", headers, body: JSON.stringify({ action: "connect", ssid: "overlap-network", password: "test-router-password" }),
   });
   assert.equal(overlap.status, 202);
   await expect.poll(status).toMatchObject({ job: "awaiting_ap_reconnect", busy: true, ap_reconnect_ip: "172.30.4.1" });
-  await expect.poll(status, { intervals: [750] }).toMatchObject({ job: "failed", error: "confirmation_timeout", busy: false,
+  await expect.poll(status, { intervals: [50] }).toMatchObject({ job: "failed", error: "confirmation_timeout", busy: false,
     ap_active: true, ap_ip: "192.168.4.1", ap_reconnect_ip: "", saved_ssid: "Home Wi-Fi" });
   await takeRequest(url, session);
 });
@@ -199,6 +199,9 @@ test("browser Network view scans, tests, confirms handover and forgets without U
   await expect(page.getByLabel("Standalone AP", { exact: true })).toBeChecked();
   await expect(page.getByLabel("Network name (SSID)")).toHaveValue("<Office & Guests>");
   await page.getByLabel("Join Wi-Fi", { exact: true }).check();
+  await expect(page.locator("#wifi-network option")).toHaveCount(6);
+  await page.locator("#wifi-network").selectOption("43616665ff");
+  await expect(page.getByLabel("Network name (SSID)")).toHaveValue("Cafe\\xFF");
   await page.getByRole("button", { name: "Connect saved network", exact: true }).click();
   await expect(page.locator("#network-confirm")).toBeVisible();
   await page.getByRole("button", { name: "Switch to Wi-Fi", exact: true }).click();
@@ -217,6 +220,7 @@ test("browser Network view scans, tests, confirms handover and forgets without U
   await expect(page.getByLabel("Standalone AP", { exact: true })).toBeChecked();
   await expect(page.getByLabel("Network name (SSID)")).toHaveValue("");
   await expect(page.getByRole("button", { name: "Use Standalone AP", exact: true })).toBeVisible();
+  await expect(page.locator("#wifi-network option")).toHaveCount(6);
   assert.equal((await counters()).down, before);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.getByRole("button", { name: "Back to keyboard" }).click();

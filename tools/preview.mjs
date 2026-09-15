@@ -196,7 +196,7 @@ function authorized(request, response, mutation = false) {
     sendJson(response, 403, { error: "csrf_denied" });
     return null;
   }
-  if (network.ap_active) managementUntil = performance.now() + confirmationTtl;
+  if (mutation && network.ap_active) managementUntil = performance.now() + confirmationTtl;
   return session;
 }
 
