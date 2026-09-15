@@ -276,6 +276,34 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already exists"):
             generate_nvs(self.root, "001122334455", 0x6000)
 
+    @unittest.skipIf(os.name == "nt", "Directory fsync is POSIX-only")
+    def test_generated_nvs_syncs_file_then_directory_before_connecting(self):
+        synchronized = []
+        original_sync = os.fsync
+
+        def record_sync(descriptor):
+            synchronized.append("directory" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file")
+            original_sync(descriptor)
+
+        with patch("install_device.os.fsync", side_effect=record_sync):
+            generate_nvs(self.root, "001122334455", 0x6000)
+        self.assertEqual(synchronized, ["file", "directory"])
+        self.assertEqual(self.transport.events, [])
+
+    def test_generated_nvs_sync_failure_never_connects(self):
+        original_sync = os.fsync
+
+        def fail_generated_image_sync(descriptor):
+            if (self.output / "identity.bin").exists():
+                raise OSError("NVS image sync failed")
+            original_sync(descriptor)
+
+        with patch("install_device.os.fsync", side_effect=fail_generated_image_sync):
+            with self.assertRaisesRegex(OSError, "NVS image sync failed"):
+                install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, [])
+        self.assertFalse((self.output / "install-plan.json").exists())
+
     def test_application_fit_includes_the_final_flash_sector(self):
         image = self.sdk.images.ESP32S3FirmwareImage()
         image.chip_id = image.ROM_LOADER.IMAGE_CHIP_ID

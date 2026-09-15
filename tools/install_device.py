@@ -24,7 +24,8 @@ def load_sdk(idf_path):
     parser_path = Path(idf_path) / "components/partition_table/gen_esp32part.py"
     require(parser_path.is_file(), "Set IDF_PATH or --idf-path to the ESP-IDF SDK")
     specification = importlib.util.spec_from_file_location("keyboard_partitions", parser_path)
-    require(specification is not None and specification.loader is not None, "Cannot load ESP-IDF partition parser")
+    if specification is None or specification.loader is None:
+        raise ValueError("Cannot load ESP-IDF partition parser")
     partitions = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(partitions)
     esptool = importlib.import_module("esptool")
@@ -58,8 +59,8 @@ def inspect_firmware(firmware, sdk):
     table.verify_size_fits(firmware["flashBytes"])
     require(not any(partition.encrypted for partition in table), "Encrypted partitions need a separate installer")
     nvs = table.find_by_name("nvs")
-    require(nvs is not None and nvs.type == 1 and nvs.subtype == 2 and not nvs.readonly,
-            "A writable default nvs partition is required")
+    if nvs is None or nvs.type != 1 or nvs.subtype != 2 or nvs.readonly:
+        raise ValueError("A writable default nvs partition is required")
     require(nvs.size >= 0x3000 and nvs.size % 4096 == 0, "Unsupported NVS partition size")
     applications = [partition for partition in table if partition.type == 0]
     require(len(applications) == 1 and applications[0].subtype == 0 and
@@ -161,8 +162,11 @@ def generate_nvs(directory, device_id, size):
         capture_output=True, check=False)
     require(generated.returncode == 0, "ESP-IDF NVS generation failed; check the SDK environment and private CSV")
     target.chmod(0o600)
-    data = target.read_bytes()
-    require(len(data) == size, "NVS generator produced an unexpected image size")
+    with target.open("r+b") as generated_image:
+        data = generated_image.read()
+        require(len(data) == size, "NVS generator produced an unexpected image size")
+        os.fsync(generated_image.fileno())
+    sync_directory(directory)
     return data
 
 

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { pbkdf2Sync } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
-import { firmwareManifest, firmwareMetadata, firmwareSecurity, installOptions, loadFirmware, runInstaller } from "./install-device.mjs";
+import { firmwareManifest, firmwareMetadata, firmwareSecurity, installOptions, loadFirmware, runInstaller, syncPrivateDirectory } from "./install-device.mjs";
 import { createIdentity, identityCsv, passwordIterations, wifiPayload, writeIdentity } from "./provision-device.mjs";
 
 test("identity generation uses independent device-bound AP and claim credentials", () => {
@@ -181,6 +181,35 @@ test("installer verifies every firmware file before a device operation", async (
   }
 });
 
+test("private-package synchronization flushes each file and its containing directories", async context => {
+  const temporary = await mkdtemp(join(tmpdir(), "keyboard-package-sync-test-"));
+  const directory = join(temporary, "private");
+  try {
+    await mkdir(directory);
+    await writeFile(join(directory, "identity.csv"), "synthetic identity");
+    await mkdir(join(directory, "firmware"));
+    await writeFile(join(directory, "firmware", "app.bin"), "synthetic firmware");
+    const probe = await open(join(directory, "identity.csv"), "r+");
+    const prototype = Object.getPrototypeOf(probe);
+    const originalSync = prototype.sync;
+    await probe.close();
+    const synchronized = [];
+    const trackSync = context.mock.method(prototype, "sync", async function () {
+      synchronized.push((await this.stat()).isDirectory() ? "directory" : "file");
+      await originalSync.call(this);
+    });
+    await syncPrivateDirectory(directory);
+    trackSync.mock.restore();
+    assert.equal(synchronized.filter(kind => kind === "file").length, 2);
+    assert.equal(synchronized.filter(kind => kind === "directory").length, process.platform === "win32" ? 0 : 2);
+    if (process.platform !== "win32") assert.equal(synchronized.at(-1), "directory");
+    await symlink(temporary, join(directory, "unsafe-link"), process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(syncPrivateDirectory(directory), /symlinks or special files/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("installer CLI requires explicit execution, device identity, and private output", () => {
   assert.deepEqual(installOptions(["--help"], {}), { help: true });
   assert.throws(() => installOptions([], {}), /ESP-IDF terminal/);
@@ -210,8 +239,13 @@ test("installer defaults to offline checks and installs from an immutable privat
     }
     const calls = [];
     const logs = [];
+    const synchronized = [];
     const options = ["--firmware", source, "--idf-path", "sdk"];
-    const dependencies = { log: message => logs.push(message), sdk: async (operation, request) => {
+    const dependencies = { log: message => logs.push(message), syncPrivateDirectory: async directory => {
+      await syncPrivateDirectory(directory);
+      synchronized.push(directory);
+    }, sdk: async (operation, request) => {
+      if (operation === "install") assert.ok(synchronized.includes(dirname(request.directory)));
       calls.push({ operation, request });
       return operation === "inspect" ? { nvs: { offset: 0x9000, size: 0x6000 } } : { verified: true };
     } };
@@ -219,6 +253,7 @@ test("installer defaults to offline checks and installs from an immutable privat
       throw new Error("Offline check must not generate credentials");
     } })).mode, "check");
     assert.deepEqual(calls.map(call => call.operation), ["inspect"]);
+    assert.deepEqual(synchronized, []);
     const output = join(temporary, "private");
     const result = await runInstaller([...options, "--execute", "--device-id", "001122334455", "--port", "MOCK", "--output", output], dependencies);
     assert.equal(result.mode, "install");
@@ -236,6 +271,16 @@ test("installer defaults to offline checks and installs from an immutable privat
     assert.equal((await readFile(join(output, "firmware/app.bin"))).length, 256);
     await assert.rejects(runInstaller([...options, "--execute", "--device-id", "001122334455", "--port", "MOCK", "--output", output], dependencies), { code: "EEXIST" });
     assert.equal(calls.filter(call => call.operation === "install").length, 1);
+    const failedOutput = join(temporary, "sync-failure");
+    await assert.rejects(runInstaller([...options, "--execute", "--device-id", "001122334455", "--port", "MOCK",
+      "--output", failedOutput], { ...dependencies, syncPrivateDirectory: async directory => {
+      assert.equal(directory, failedOutput);
+      assert.ok((await readFile(join(directory, "setup-card.html"), "utf8")).includes("WiFiKeyboard-334455"));
+      throw new Error("Private package sync failed");
+    } }), /Private package sync failed/);
+    assert.equal(calls.filter(call => call.operation === "install").length, 1);
+    await access(join(failedOutput, "identity.csv"));
+    await assert.rejects(access(join(failedOutput, "installation")), { code: "ENOENT" });
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

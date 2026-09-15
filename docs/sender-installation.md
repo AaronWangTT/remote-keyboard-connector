@@ -113,9 +113,12 @@ One invocation performs these steps:
 
 1. Validate firmware offline; create independent random AP/setup credentials,
   a setup card, and a private firmware snapshot whose hashes are checked again
-  before writing.
+  before writing. Synchronize every credential, card, and snapshot file before
+  invoking the installation helper; on POSIX, also synchronize each containing
+  directory. Failure stops before a serial connection and retains the private files.
 2. Validate the MAC-bound identity CSV and use Espressif's NVS generator to
-   create an image exactly the size of the default NVS partition.
+   create an image exactly the size of the default NVS partition. Synchronize
+   that file and, on POSIX, its directory before connecting to the board.
 3. Open only the supplied port, confirm ESP32-S3, security state, and expected
    factory MAC, then detect physical flash capacity.
 4. Read the complete detected flash, verify its digest against the device,

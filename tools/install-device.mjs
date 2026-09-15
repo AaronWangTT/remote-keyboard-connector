@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { copyFile, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -164,6 +164,31 @@ function runSdk(options, operation, request) {
   });
 }
 
+export async function syncPrivateDirectory(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await syncPrivateDirectory(path);
+    } else {
+      assert.ok(entry.isFile(), "Private installation output must not contain symlinks or special files");
+      const file = await open(path, "r+");
+      try {
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+    }
+  }
+  if (process.platform !== "win32") {
+    const parent = await open(directory, "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+  }
+}
+
 async function snapshotFirmware(firmware, directory) {
   const destination = join(directory, "firmware");
   await mkdir(destination, { mode: 0o700 });
@@ -221,6 +246,7 @@ Private output includes a firmware snapshot, identity, setup card, and backup. N
   log(`Private installation files: ${directory}. Credentials are not printed.`);
   try {
     const snapshot = await snapshotFirmware(firmware, directory);
+    await (dependencies.syncPrivateDirectory ?? syncPrivateDirectory)(directory);
     log("Checking the board and backing up flash before one combined firmware and NVS write.");
     const result = await sdk("install", { firmware: snapshot, idfPath: options.idfPath,
       directory: join(directory, "installation"), identityCsv: await readFile(join(directory, "identity.csv"), "utf8"),
