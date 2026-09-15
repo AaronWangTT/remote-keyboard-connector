@@ -115,7 +115,11 @@ bool network_request_parse(const uint8_t *payload, size_t length, network_reques
     char buffer[NETWORK_REQUEST_MAX + 1];
     memcpy(buffer, payload, length);
     buffer[length] = '\0';
-    if (strstr(buffer, "\\u0000") != NULL) return false;
+    for (size_t index = 0; index < length; index++) {
+        if (buffer[index] != '\\') continue;
+        if (index + 6 <= length && memcmp(buffer + index, "\\u0000", 6) == 0) return false;
+        index++;
+    }
     cJSON *root = cJSON_ParseWithLengthOpts(buffer, length + 1, NULL, true);
     bool valid = false;
     if (!cJSON_IsObject(root)) goto done;
@@ -196,10 +200,11 @@ void network_state_test(network_state_t *state, int64_t now)
         .deadline = now + NETWORK_CONNECT_US, .retry_at = now };
 }
 
-void network_state_online(network_state_t *state)
+void network_state_online(network_state_t *state, int64_t now)
 {
     state->online = true;
     state->phase = state->phase == NETWORK_TESTING ? NETWORK_CONFIRMING : NETWORK_STATION;
+    state->deadline = now + NETWORK_CONFIRM_US;
     state->handover_at = 0;
 }
 
@@ -231,7 +236,8 @@ network_effect_t network_state_tick(network_state_t *state, int64_t now, bool he
 {
     if (state->online) {
         if (state->ap && ((state->handover_at != 0 && now >= state->handover_at) ||
-            (state->phase == NETWORK_STATION && !held))) {
+            (!held && (state->phase == NETWORK_STATION ||
+                       (state->phase == NETWORK_CONFIRMING && now >= state->deadline))))) {
             state->ap = false;
             state->phase = NETWORK_STATION;
             return NETWORK_CLOSE_AP;

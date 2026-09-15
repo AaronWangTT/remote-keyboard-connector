@@ -65,6 +65,11 @@ test("network jobs are owner-only, bounded and preserve the last working profile
     { ssid: "Home Wi-Fi", ssid_hex: "zz" }, { ssid: 42, ssid_hex: "486f6d65" }, { ssid: "Home", ssid_hex: "486f6d65" }]) {
     assert.equal((await submit({ action: "connect", ...fields, password: "test-router-password" })).status, 400);
   }
+  for (const body of [
+    '{"action":"connect","ssid":"A","password":"first-password","password":"last-password"}',
+    '{"action":"connect","ssid":"A","password":"first-password","pass\\u0077ord":"last-password"}',
+    '{"action":"ap",}', '{/*comment*/"action":"ap"}',
+  ]) assert.equal((await fetch(endpoint, { method: "POST", headers, body })).status, 400);
   assert.equal((await fetch(endpoint, { method: "POST", headers: { ...headers, "X-CSRF-Token": "bad" }, body: '{"action":"ap"}' })).status, 403);
   assert.equal((await fetch(new URL("/api/v1/network/scan", url), { method: "POST", headers })).status, 202);
   await expect.poll(async () => (await status()).scan.length).toBe(5);
@@ -91,6 +96,29 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   await expect.poll(status).toMatchObject({ phase: "ap", desired_station: false, has_profile: true, busy: false });
   assert.equal((await submit({ action: "forget" })).status, 202);
   await expect.poll(status).toMatchObject({ saved_ssid: "", has_profile: false, ap_active: true, busy: false });
+  assert.equal((await submit({ action: "connect", ssid: "literal\\u0000", password: "literal\\u0000" })).status, 202);
+  await expect.poll(status).toMatchObject({ saved_ssid: "literal\\u0000", job: "awaiting_confirmation" });
+});
+
+test("abandoned handover becomes idle without another credential submission", { timeout: 10000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_CONFIRM_TTL_MS: "300" });
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
+  const response = await fetch(new URL("/api/v1/network", url), {
+    method: "POST", headers, body: JSON.stringify({ action: "connect", ssid: "Home Wi-Fi", password: "test-router-password" }),
+  });
+  assert.equal(response.status, 202);
+  const status = async () => (await fetch(new URL("/api/v1/network/job", url), { headers })).json();
+  await expect.poll(status).toMatchObject({ job: "awaiting_confirmation", busy: true, ap_active: true });
+  await expect.poll(status, { intervals: [750] }).toMatchObject({ job: "succeeded", busy: false, ap_active: false, saved_ssid: "Home Wi-Fi" });
+  const overlap = await fetch(new URL("/api/v1/network", url), {
+    method: "POST", headers, body: JSON.stringify({ action: "connect", ssid: "overlap-network", password: "test-router-password" }),
+  });
+  assert.equal(overlap.status, 202);
+  await expect.poll(status).toMatchObject({ job: "awaiting_ap_reconnect", busy: true, ap_reconnect_ip: "172.30.4.1" });
+  await expect.poll(status, { intervals: [750] }).toMatchObject({ job: "failed", error: "confirmation_timeout", busy: false,
+    ap_active: true, ap_ip: "192.168.4.1", ap_reconnect_ip: "", saved_ssid: "Home Wi-Fi" });
+  await takeRequest(url, session);
 });
 
 async function signIn(page) {
@@ -413,8 +441,13 @@ test("one-time claim changes owner credentials and cannot be reused", { timeout:
   assert.equal(initial.claimed, false);
   const claim = async setupCode => fetch(new URL("/api/v1/claim", url), {
     method: "POST", headers: { Origin: url, "Content-Type": "application/json" },
-    body: JSON.stringify({ setup_code: setupCode, password: "recipient-chosen-password" }),
+    body: JSON.stringify({ setup_code: setupCode, password: "literal\\u0000" }),
   });
+  const duplicate = await fetch(new URL("/api/v1/claim", url), {
+    method: "POST", headers: { Origin: url, "Content-Type": "application/json" },
+    body: '{"setup_code":"0123456789abcdef01234567","password":"first-password","password":"last-password"}',
+  });
+  assert.equal(duplicate.status, 400);
   assert.equal((await claim("000000000000000000000000")).status, 401);
   const delayedBody = JSON.stringify({ setup_code: "0123456789abcdef01234567", password: "competing-owner-password" });
   const delayedClaim = httpRequest(new URL("/api/v1/claim", url), {
@@ -434,7 +467,7 @@ test("one-time claim changes owner credentials and cannot be reused", { timeout:
   assert.equal(rejected.headers["set-cookie"], undefined);
   rejected.resume();
   assert.equal((await claim("0123456789abcdef01234567")).status, 409);
-  await loginRequest(url, "recipient-chosen-password");
+  await loginRequest(url, "literal\\u0000");
 });
 
 test("WebSocket authorization requires a session and explicit control reservation", { timeout: 10000 }, async context => {

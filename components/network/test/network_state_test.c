@@ -83,6 +83,9 @@ int main(void)
     assert(network_request_parse((const uint8_t *)valid[1], strlen(valid[1]), &request));
     const uint8_t encoded_ssid[] = {'C', 'a', 'f', 'e', 0xff, 0};
     assert(memcmp(request.ssid, encoded_ssid, sizeof(encoded_ssid)) == 0);
+    const char *escaped_request = "{\"action\":\"connect\",\"ssid\":\"literal\\\\u0000\",\"password\":\"literal\\\\u0000\"}";
+    assert(network_request_parse((const uint8_t *)escaped_request, strlen(escaped_request), &request));
+    assert(strcmp(request.ssid, "literal\\u0000") == 0 && strcmp(request.password, "literal\\u0000") == 0);
     const char *invalid[] = {
         "{}", "[]", "null", "{\"action\":\"open\"}", "{\"action\":\"ap\",\"action\":\"ap\"}",
         "{\"action\":\"rename\",\"hostname\":\"kb.local\"}", "{\"action\":\"ap\",\"password\":\"test-password\"}",
@@ -93,6 +96,7 @@ int main(void)
         "{\"action\":\"connect\",\"ssid_hex\":\"zz\",\"password\":\"test-password\"}",
         "{\"action\":\"connect\",\"ssid\":\"network\",\"ssid_hex\":\"6e6574776f726b\",\"password\":\"test-password\"}",
         "{\"action\":\"connect\",\"ssid\":\"network\\u0000ignored\",\"password\":\"test-password\"}",
+        "{\"action\":\"connect\",\"ssid\":\"network\\\\\\u0000ignored\",\"password\":\"test-password\"}",
         "{\"action\":\"ap\"} {}"
     };
     for (size_t index = 0; index < sizeof(invalid) / sizeof(invalid[0]); index++) {
@@ -141,7 +145,7 @@ int main(void)
     assert(state.phase == NETWORK_RECOVERY && state.ap);
     assert(network_state_tick(&state, NETWORK_CONNECT_US * 2, true) == NETWORK_WAIT);
     assert(network_state_tick(&state, NETWORK_CONNECT_US * 2, false) == NETWORK_TRY_CONNECT);
-    network_state_online(&state);
+    network_state_online(&state, NETWORK_CONNECT_US * 2);
     assert(network_state_tick(&state, NETWORK_CONNECT_US * 2, true) == NETWORK_WAIT);
     assert(network_state_tick(&state, NETWORK_CONNECT_US * 2, false) == NETWORK_CLOSE_AP);
     assert(!state.ap && state.phase == NETWORK_STATION);
@@ -149,9 +153,14 @@ int main(void)
     assert(!state.online && state.phase == NETWORK_CONNECTING);
     network_state_test(&state, 0);
     assert(state.ap && state.phase == NETWORK_TESTING);
-    network_state_online(&state);
+    network_state_online(&state, 0);
     assert(state.phase == NETWORK_CONFIRMING);
-    assert(network_state_tick(&state, NETWORK_CONNECT_US * 3, false) == NETWORK_WAIT);
+    assert(network_state_tick(&state, NETWORK_CONFIRM_US - 1, false) == NETWORK_WAIT);
+    assert(network_state_tick(&state, NETWORK_CONFIRM_US, true) == NETWORK_WAIT);
+    network_state_t abandoned = state;
+    assert(network_state_tick(&abandoned, NETWORK_CONFIRM_US, false) == NETWORK_CLOSE_AP);
+    assert(abandoned.phase == NETWORK_STATION && !abandoned.ap && abandoned.online);
+    assert(network_state_tick(&state, NETWORK_CONNECT_US * 3, true) == NETWORK_WAIT);
     assert(network_state_confirm(&state, NETWORK_CONNECT_US * 3));
     assert(network_state_tick(&state, NETWORK_CONNECT_US * 3 + NETWORK_HANDOVER_US - 1, true) == NETWORK_WAIT);
     assert(network_state_tick(&state, NETWORK_CONNECT_US * 3 + NETWORK_HANDOVER_US, true) == NETWORK_CLOSE_AP);

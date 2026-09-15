@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { parseTree } from "jsonc-parser";
 import { WebSocket, WebSocketServer } from "ws";
 
 const usbReady = process.env.PREVIEW_USB_READY !== "0";
@@ -24,6 +25,9 @@ const network = { available: true, ap_active: true, station_online: false, desir
 let pendingProfile = null;
 const networkDelay = Math.max(50, Number(process.env.PREVIEW_NETWORK_DELAY_MS) || 200);
 const scanTtl = Math.max(50, Number(process.env.PREVIEW_SCAN_TTL_MS) || 30000);
+const confirmationTtl = Math.max(100, Number(process.env.PREVIEW_CONFIRM_TTL_MS) || 60000);
+let confirmationUntil = 0;
+let managementUntil = 0;
 
 function ssidDisplay(hex) {
   const bytes = Buffer.from(hex, "hex");
@@ -49,6 +53,7 @@ function finishNetwork(job, error = "") {
   network.error = error;
   network.busy = ["scanning", "testing", "handing_over", "awaiting_confirmation", "awaiting_ap_reconnect", "changing_ap_address"].includes(job);
   network.can_control = !network.busy;
+  if (["awaiting_confirmation", "awaiting_ap_reconnect"].includes(job)) confirmationUntil = performance.now() + confirmationTtl;
 }
 
 async function networkRequest(request, response) {
@@ -181,6 +186,7 @@ function authorized(request, response, mutation = false) {
     sendJson(response, 403, { error: "csrf_denied" });
     return null;
   }
+  if (network.ap_active) managementUntil = performance.now() + confirmationTtl;
   return session;
 }
 
@@ -213,14 +219,26 @@ function releaseController() {
 
 async function jsonBody(request) {
   if (!/^application\/json(?:; charset=utf-8)?$/.test(request.headers["content-type"] ?? "")) return null;
-  let text = "";
+  const chunks = [];
+  let length = 0;
   for await (const chunk of request) {
-    text += chunk.toString();
-    if (Buffer.byteLength(text) > 1024) return null;
+    length += chunk.length;
+    if (length > 1024) return null;
+    chunks.push(chunk);
   }
-  if (text.includes("\\u0000") || text.includes("\0")) return null;
-  let value;
-  try { value = JSON.parse(text); } catch { return null; }
+  let tree;
+  const errors = [];
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+    tree = parseTree(text, errors, { disallowComments: true, allowTrailingComma: false });
+  } catch { return null; }
+  if (tree?.type !== "object" || errors.length) return null;
+  const value = Object.create(null);
+  for (const property of tree.children ?? []) {
+    const [key, field] = property.children;
+    if (field.type !== "string" || key.value.includes("\0") || field.value.includes("\0") || Object.hasOwn(value, key.value)) return null;
+    value[key.value] = field.value;
+  }
   return value;
 }
 
@@ -435,6 +453,16 @@ server.on("upgrade", (request, socket, head) => {
 setInterval(() => {
   if (pendingControl && (performance.now() >= pendingControl.until || !sessions.has(pendingControl.session.token))) pendingControl = null;
   if (controller !== null && performance.now() - controller.lastSeen >= 1000) controller.terminate();
+  if (performance.now() >= confirmationUntil && performance.now() >= managementUntil) {
+    if (network.job === "awaiting_confirmation") {
+      Object.assign(network, { ap_active: false, ap_ip: "", phase: "station" });
+      finishNetwork("succeeded");
+    } else if (network.job === "awaiting_ap_reconnect") {
+      pendingProfile = null;
+      Object.assign(network, { ap_reconnect_ip: "", phase: "ap" });
+      finishNetwork("failed", "confirmation_timeout");
+    }
+  }
 }, 250).unref();
 
 const port = Number(process.env.PORT || 8080);

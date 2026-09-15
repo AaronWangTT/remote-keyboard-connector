@@ -159,7 +159,8 @@ function renderNetwork() {
     no_saved_network: "No saved Wi-Fi network.", storage_failed: "Settings could not be saved. Restart the keyboard before retrying.",
     unsupported_network: "This network's security mode is not supported.", subnet_overlap: "The AP and router address ranges overlap.",
     saved_configuration_invalid: "Saved settings are invalid. Recovery AP is available.", wifi_unavailable: "Wi-Fi is unavailable.",
-    handover_failed: "Could not switch to Wi-Fi. Recovery AP is available." };
+    handover_failed: "Could not switch to Wi-Fi. Recovery AP is available.",
+    confirmation_timeout: "Confirmation expired. The current AP address is unchanged." };
   const jobs = { idle: "Ready", queued: "Request accepted", testing: "Connecting and checking DHCP", scanning: "Scanning networks",
     succeeded: "Settings ready", failed: "Operation failed", cancelled: "Operation cancelled", handing_over: "Switching to Wi-Fi",
     awaiting_ap_reconnect: "AP address change requires confirmation", changing_ap_address: "Changing AP address",

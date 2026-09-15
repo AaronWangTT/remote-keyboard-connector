@@ -75,6 +75,9 @@ int main(void)
     const char *login = "{\"password\":\"a-new-owner-password\"}";
     assert(access_credentials_parse((const uint8_t *)login, strlen(login), false, &credentials));
     assert(strcmp(credentials.password, "a-new-owner-password") == 0 && credentials.setup_code[0] == '\0');
+    const char *escaped_login = "{\"password\":\"literal\\\\u0000\"}";
+    assert(access_credentials_parse((const uint8_t *)escaped_login, strlen(escaped_login), false, &credentials));
+    assert(strcmp(credentials.password, "literal\\u0000") == 0);
     assert(!access_credentials_parse((const uint8_t *)login, strlen(login), true, &credentials));
     const char *claim = "{\"setup_code\":\"0123456789abcdef01234567\",\"password\":\"a-new-owner-password\"}";
     assert(access_credentials_parse((const uint8_t *)claim, strlen(claim), true, &credentials));
@@ -84,6 +87,7 @@ int main(void)
         "{\"password\":\"a-new-owner-password\",\"password\":\"a-new-owner-password\"}",
         "{\"password\":\"a-new-owner-password\",\"unknown\":1}",
         "{\"password\":\"a-new-owner-password\\u0000ignored\"}",
+        "{\"password\":\"a-new-owner-password\\\\\\u0000ignored\"}",
         "{\"password\":\"a-new-owner-password\"} {}",
     };
     for (size_t index = 0; index < sizeof(invalid_credentials) / sizeof(invalid_credentials[0]); index++) {

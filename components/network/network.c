@@ -46,6 +46,7 @@ static bool scanning;
 static bool testing;
 static bool ap_reconnect_pending;
 static bool ap_reconnect_confirmed;
+static int64_t ap_reconnect_until;
 static bool guarded;
 static bool guard_ap;
 static uint32_t guard_generation;
@@ -88,7 +89,9 @@ void network_status(network_status_t *status)
 void network_management_touch(uint32_t local_address)
 {
     portENTER_CRITICAL(&lock);
-    if (snapshot.ap_active && local_address == ap_address) management_until = esp_timer_get_time() + INT64_C(60000000);
+    if (snapshot.ap_active && local_address != 0 && (local_address == ap_address || local_address == station_address)) {
+        management_until = esp_timer_get_time() + NETWORK_CONFIRM_US;
+    }
     portEXIT_CRITICAL(&lock);
 }
 
@@ -99,6 +102,7 @@ bool network_control_begin(uint32_t local_address, uint32_t generation)
                  local_address != 0 && (local_address == ap_address || local_address == station_address);
     if (valid) {
         guarded = true;
+        snapshot.can_control = false;
         guard_ap = local_address == ap_address;
         guard_generation = generation;
     }
@@ -218,7 +222,7 @@ static void wifi_event(void *argument, esp_event_base_t base, int32_t event_id, 
         portENTER_CRITICAL(&lock);
         connecting = false;
         lease_address = 0;
-        snapshot.can_control = snapshot.ap_active && !snapshot.busy && !(guarded && !guard_ap);
+        snapshot.can_control = snapshot.ap_active && !snapshot.busy && !guarded;
         snprintf(last_failure, sizeof(last_failure), "%s", failure);
         portEXIT_CRITICAL(&lock);
     }
@@ -290,7 +294,7 @@ static void refresh_snapshot(void)
     snapshot.station_online = driver_started && state.online;
     snapshot.desired_station = saved.station != 0;
     snapshot.has_profile = saved.ssid[0] != '\0';
-    snapshot.can_control = !snapshot.busy && !command_pending && !scanning && !testing && driver_started &&
+    snapshot.can_control = !guarded && !snapshot.busy && !command_pending && !scanning && !testing && driver_started &&
                            !(state.phase == NETWORK_RECOVERY && connecting) &&
                            (state.phase == NETWORK_AP || state.phase == NETWORK_RECOVERY || state.phase == NETWORK_STATION);
     snprintf(snapshot.phase, sizeof(snapshot.phase), "%s", network_phase_name(state.phase));
@@ -311,6 +315,7 @@ static void clear_ap_reconnect(void)
 {
     ap_reconnect_pending = false;
     ap_reconnect_confirmed = false;
+    ap_reconnect_until = 0;
     portENTER_CRITICAL(&lock);
     snapshot.ap_reconnect_ip[0] = '\0';
     portEXIT_CRITICAL(&lock);
@@ -326,7 +331,7 @@ static bool non_overlapping_ap(const esp_netif_ip_info_t *station_info)
     if ((current.ip.addr & station_info->netmask.addr) != (station_info->ip.addr & station_info->netmask.addr) &&
         (current.ip.addr & current.netmask.addr) != (station_info->ip.addr & current.netmask.addr)) {
         if (ap_reconnect_pending && state.online) {
-            bool confirming = state.phase == NETWORK_CONFIRMING;
+            bool confirming = state.online && state.ap;
             job_result(confirming ? "awaiting_confirmation" : "succeeded", "", confirming);
         }
         clear_ap_reconnect();
@@ -343,6 +348,9 @@ static bool non_overlapping_ap(const esp_netif_ip_info_t *station_info)
         char reconnect_ip[16];
         snprintf(reconnect_ip, sizeof(reconnect_ip), IPSTR, IP2STR(&alternative.ip));
         if (!ap_reconnect_confirmed || strcmp(snapshot.ap_reconnect_ip, reconnect_ip) != 0) {
+            if (!ap_reconnect_pending || strcmp(snapshot.ap_reconnect_ip, reconnect_ip) != 0) {
+                ap_reconnect_until = esp_timer_get_time() + NETWORK_CONFIRM_US;
+            }
             ap_reconnect_pending = true;
             ap_reconnect_confirmed = false;
             portENTER_CRITICAL(&lock);
@@ -364,7 +372,7 @@ static bool non_overlapping_ap(const esp_netif_ip_info_t *station_info)
         mdns_netif_action(ap_interface, MDNS_EVENT_ENABLE_IP4);
         clear_ap_reconnect();
         if (result == ESP_OK && state.online) {
-            bool confirming = state.phase == NETWORK_CONFIRMING;
+            bool confirming = state.online && state.ap;
             job_result(confirming ? "awaiting_confirmation" : "succeeded", "", confirming);
         }
         return result == ESP_OK;
@@ -526,6 +534,11 @@ static void network_worker(void *argument)
             portEXIT_CRITICAL(&lock);
         }
         int64_t now = esp_timer_get_time();
+        if (ap_reconnect_pending && now >= ap_reconnect_until && !recovery_held()) {
+            recovery("confirmation_timeout", false);
+            refresh_snapshot();
+            continue;
+        }
         if (scanning) {
             portENTER_CRITICAL(&lock);
             bool done = scan_done;
@@ -564,10 +577,10 @@ static void network_worker(void *argument)
             } else if (testing && save_configuration(&candidate) != ESP_OK) {
                 recovery("storage_failed", false);
             } else {
-                network_state_online(&state);
+                network_state_online(&state, now);
                 testing = false;
                 mbedtls_platform_zeroize(&candidate, sizeof(candidate));
-                job_result(state.phase == NETWORK_CONFIRMING ? "awaiting_confirmation" : "succeeded", "", state.phase == NETWORK_CONFIRMING);
+                job_result(state.ap ? "awaiting_confirmation" : "succeeded", "", state.ap);
             }
         } else if (!online && state.online) {
             disarm(false, true);

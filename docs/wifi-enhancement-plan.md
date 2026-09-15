@@ -111,6 +111,13 @@ if the owner has not received the result. Session expiry must eventually allow
 an abandoned recovery session to become idle. Final timer values are tunable
 after hardware testing, not promises about uninterrupted connectivity.
 
+The implementation grants a 60-second candidate-confirmation grace period and
+keeps AP handover deferred while authenticated management remains active. Once
+the grace period and management activity expire, a successful saved candidate
+becomes idle STA without another credential submission. An unconfirmed AP-address
+change instead expires without renumbering, retaining the previous profile and
+protected AP. Explicit confirmation still uses the 15-second handover interval.
+
 Retain `192.168.4.1/24` as the default AP subnet and the existing one-associated-
 client AP limit for this increment. If the STA subnet overlaps, select a
 non-overlapping AP subnet and surface the proposed address before requiring
@@ -354,9 +361,9 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | --- | --- |
 | Native C | Four suites passed: access/credential validation, network state/persistence selection, eight USB-state cases, and the full-state JSON parser. Initial Windows validation used Zig 0.15.2 without sanitizers; Linux review follow-up passed ASan/UBSan, including malformed UTF-8 and maximum-length raw SSID cases. |
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
-| Provisioning and browser/API | All 23 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, idle-cancel rejection, confirmed AP-address transitions, handover, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
+| Provisioning and browser/API | All 24 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, idle-cancel rejection, confirmed/abandoned AP-address transitions, abandoned handover expiry, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf35b0` bytes; `0xca50` bytes (51,792 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf36d0` bytes; `0xc930` bytes (51,504 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -398,6 +405,16 @@ activity refresh. Fault-injected AP rollback skips deauthentication when any
 address-transition step fails. Pinned mDNS 1.13.0 initializes already-addressed
 interfaces in `mdns_priv_netif_init()` as well as registering later Wi-Fi/IP
 events; predefined AP/STA and IPv4 are enabled in the generated configuration.
+
+Native confirmation tests cover the grace boundary, active-management deferral,
+and unattended expiry; preview tests recover both successful handovers and pending
+AP-address changes without a duplicate credential submission. An online recovery
+STA with its AP still up exposes confirmation, and an owned network guard is not
+advertised as available for control. C parsers distinguish literal escaped
+backslashes from decoded NUL escapes. The preview uses pinned `jsonc-parser`
+3.3.1 in strict mode to reject duplicate decoded keys and NUL values, and decodes
+UTF-8 after collecting a bounded complete body. These are tooling dependencies,
+not firmware npm dependencies.
 
 The native interrupted-save tests inject failure around the same stage/activate
 selection helper used by the NVS adapter. They verify old-or-new complete-record

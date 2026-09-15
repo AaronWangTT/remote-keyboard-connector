@@ -130,7 +130,7 @@ On Linux, the runner selects `/usr/bin/` binutils explicitly so an activated
 ESP-IDF toolchain cannot substitute a cross-assembler or linker.
 
 Four native suites (including eight USB-state cases), twelve keyboard-model
-tests, and 23 provisioning/API/Chromium/WebKit tests pass in the Linux review
+tests, and 24 provisioning/API/Chromium/WebKit tests pass in the Linux review
 validation. Native Windows tests ran without sanitizers; the Linux runner
 enables ASan/UBSan.
 Browser tests verify receipt at a mock backend, not real USB delivery, mDNS,
@@ -219,8 +219,8 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-The Wi-Fi enhancement image is `0xf35b0` bytes (996,784 bytes), leaving
-`0xca50` bytes (51,792 bytes, about 5%) in the existing 1 MiB application partition.
+The Wi-Fi enhancement image is `0xf36d0` bytes (997,072 bytes), leaving
+`0xc930` bytes (51,504 bytes, about 5%) in the existing 1 MiB application partition.
 Flash layout and PSRAM settings are unchanged. This is below the broader 20%
 headroom goal; physical flash capacity and runtime heap/stack/power behavior
 remain unverified.

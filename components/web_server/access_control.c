@@ -195,7 +195,11 @@ bool access_credentials_parse(const uint8_t *payload, size_t length, bool claim,
     char buffer[ACCESS_CREDENTIAL_BODY_MAX + 1];
     memcpy(buffer, payload, length);
     buffer[length] = '\0';
-    if (strstr(buffer, "\\u0000") != NULL) return false;
+    for (size_t index = 0; index < length; index++) {
+        if (buffer[index] != '\\') continue;
+        if (index + 6 <= length && memcmp(buffer + index, "\\u0000", 6) == 0) return false;
+        index++;
+    }
     cJSON *root = cJSON_ParseWithLengthOpts(buffer, length + 1, NULL, true);
     bool valid = false;
     if (!cJSON_IsObject(root)) goto done;

@@ -12,7 +12,7 @@ void app_main(void)
     ESP_LOGI(TAG, "USB keyboard started; input is released");
     esp_err_t result = network_start();
     if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Network unavailable (%s); keyboard remains disarmed. Check private device provisioning.", esp_err_to_name(result));
+        ESP_LOGE(TAG, "Network unavailable (%s); keyboard remains disarmed. Check the preceding startup diagnostics.", esp_err_to_name(result));
         return;
     }
     result = web_server_start();

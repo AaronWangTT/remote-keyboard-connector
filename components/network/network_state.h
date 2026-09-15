@@ -10,6 +10,7 @@
 #define NETWORK_SSID_DISPLAY_MAX (NETWORK_SSID_MAX * 4)
 #define NETWORK_CONNECT_US INT64_C(30000000)
 #define NETWORK_HANDOVER_US INT64_C(15000000)
+#define NETWORK_CONFIRM_US INT64_C(60000000)
 
 typedef struct {
     uint32_t version;
@@ -59,7 +60,7 @@ bool network_config_store(const network_config_t *configuration, uint8_t *active
 bool network_request_parse(const uint8_t *payload, size_t length, network_request_t *request);
 void network_state_init(network_state_t *state, bool station, int64_t now);
 void network_state_test(network_state_t *state, int64_t now);
-void network_state_online(network_state_t *state);
+void network_state_online(network_state_t *state, int64_t now);
 void network_state_lost(network_state_t *state, int64_t now);
 void network_state_recover(network_state_t *state, int64_t now);
 bool network_state_confirm(network_state_t *state, int64_t now);
