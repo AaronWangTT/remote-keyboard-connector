@@ -45,7 +45,7 @@ identification session, not necessarily the firmware currently on `main`:
 | --- | --- |
 | Physical flash | esptool 5.4.0 reported `16MB` on 2026-09-15: 16,777,216 bytes, or 16 MiB. This is chip-ID detection, not a full-range write/read test. |
 | PSRAM | The chip information reported 8 MB embedded PSRAM. Initialization, interface settings, and memory tests remain unverified; OTA must not require it. |
-| Current build | Configured for 2 MiB flash and one 1 MiB factory application; the observed application was 993,408 bytes. |
+| Local build observation | Configured for 2 MiB flash and one 1 MiB factory application. The historical 993,408-byte unsigned image size has unverified provenance: its exact source/configuration pair was not recorded, so it is not a reproducible baseline. |
 | Persistence | Default NVS starts at `0x9000`, size `0x6000`; preserve both its location and contents during migration. |
 | Update support | No OTA slots, OTA metadata, or enabled bootloader rollback in the observed build. |
 | Packaging | The current packager requires an unencrypted bootloader/partition-table/app bundle and rejects hardware secure-boot/flash-encryption builds; it does not yet validate an OTA partition schema or signed-app profile. |
@@ -54,6 +54,13 @@ identification session, not necessarily the firmware currently on `main`:
 Do not infer physical capacity from a build setting, nor flash capacity from
 PSRAM capacity. The proposed partition layout must be tested on the actual
 board before shipping an OTA-capable baseline.
+
+Sizes from different revisions, configurations, and signing profiles are not
+interchangeable. Establish the OTA size baseline with a clean build using the
+exact source commit, pinned SDK/dependencies, and committed board profile.
+Record the effective configuration fingerprint and final signed/padded image
+byte length and SHA-256 in the validation report; headroom uses that image,
+not the historical observation.
 
 ## Proposed Flash Layout
 
@@ -76,6 +83,16 @@ metadata lives after the application slots so NVS does not need to shrink or
 move. There is no separate factory application; initial installation boots
 `ota_0`, and subsequent updates alternate slots.
 
+The committed OTA profile must specify `CONFIG_ESP_PHY_INIT_DATA_IN_PARTITION=n`
+and `CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=y`. PHY initialization data is
+embedded in each signed application; `phy_init` is reserved but unused, retained
+for layout continuity. It needs no separate image and may remain erased on a
+fresh board. RF calibration records are different from PHY initialization data:
+ESP-IDF stores them in default NVS and performs calibration when they are absent.
+Existing calibration records are included in migration's full-NVS preservation
+check. A partition-backed PHY profile needs a separately specified artifact and
+installation contract; it must not silently reuse this embedded-data profile.
+
 Require the final signed and padded image to fit both slots with at least 20%
 free space. Check bootloader size against the space before `0x8000`; if it no
 longer fits, stop and revise the layout instead of moving into NVS implicitly.
@@ -94,7 +111,7 @@ Publish two clearly distinguished firmware deliverables:
 
 | Artifact | Contents and permitted use |
 | --- | --- |
-| Wired bootstrap/install bundle | OTA-capable bootloader, partition table, signed application for `ota_0`, explicit OTA-data initialization, flash metadata, and a versioned install manifest. A separate local provisioning operation supplies private NVS only for initial ownership setup. |
+| Wired bootstrap/install bundle | OTA-capable bootloader, partition table, signed application for `ota_0` with embedded PHY initialization data, explicit OTA-data initialization, flash metadata, and a versioned install manifest. No separate PHY image. A separate local provisioning operation supplies private NVS only for initial ownership setup. |
 | Routine OTA release | One signed ESP-IDF application `.bin`, plus a public release manifest for distribution and offline inspection. The browser uploads only the binary; the device selects the inactive slot. |
 
 The OTA artifact must not contain bootloader, partition-table, OTA-data, NVS,
@@ -262,14 +279,17 @@ For migration of an already provisioned board:
 2. Save and independently verify a complete private flash backup before any
    write. Treat backups as credential-bearing artifacts outside the repository.
 3. Verify trusted destination binaries, signatures, layout, bootstrap version,
-   and NVS-preservation ranges. Refuse unknown source layouts or overlapping
-   writes; do not make `--replace-nvs` a migration shortcut.
+   and preservation ranges for NVS and the unused `phy_init` partition. Refuse
+   unknown source layouts or overlapping writes; do not make `--replace-nvs`
+   a migration shortcut.
 4. Write only the reviewed bootstrap/partition/application/OTA-data ranges,
    using sparse writes with sector-erase boundaries accounted for. Do not write
    a merged image, regenerate ownership, erase the whole chip, or burn eFuses.
-5. Verify all changed ranges and the preserved NVS bytes before normal boot.
-   Confirm owner login, private AP identity, saved network behavior, USB typing,
-   and rollback readiness afterward.
+5. Verify all changed ranges and the preserved NVS and unused `phy_init` bytes
+   before normal boot. This includes existing NVS calibration records; normal
+   radio startup may subsequently update calibration, so do not require NVS
+   byte equality after boot. Confirm owner login, private AP identity, saved
+   network behavior, USB typing, and rollback readiness afterward.
 
 The wired migration is not an atomic or power-failure-safe transaction. Record
 the write plan and recovery procedure; interrupted writes require reviewed
@@ -283,6 +303,9 @@ proposal. Future implementation should:
 
 - Build the committed OTA profile from a clean checkout and validate the exact
   final signed image against both slots, headroom, and compatibility metadata.
+- Validate the effective PHY settings against the embedded-data profile above;
+   reject partition-backed PHY builds or unexpected PHY image roles instead of
+   distributing an incomplete bootstrap bundle.
 - Reuse the existing Node/SDK installer validation patterns, with tests for new
   roles, malformed tables, signed images, private snapshots, and preserved NVS.
   Use the ESP-IDF parsers and signature tools instead of custom cryptography.
@@ -311,6 +334,7 @@ substitutes for the device checks.
 | Gate | Required evidence |
 | --- | --- |
 | Artifact isolation | OTA output contains only the signed app and public metadata; no install images, NVS, secrets, or address-selection instructions. |
+| PHY initialization | Verify embedded-data build settings and reject mismatched profiles; fresh installation starts radio with erased unused `phy_init`, and migration preserves NVS calibration records plus unused PHY bytes before boot. |
 | Compatibility and bounds | Reject malformed, oversized, truncated, wrong-chip/product/layout/bootstrap/schema images and disallowed versions. Check final signed size against both slots. |
 | Authenticity | Reject unsigned, corrupted, wrong-key, and altered signed-descriptor images even if the unsigned manifest is changed to match. |
 | Admission and concurrency | Reject active/pending keyboard control, concurrent uploads and network jobs; AP hold, expiry, cancellation, and status remain bounded and race-free. |
@@ -343,4 +367,5 @@ defaults, not authorization to change the board or existing workflows.
 
 - [ESP-IDF v6.1 OTA and rollback](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/api-reference/system/ota.html)
 - [ESP-IDF v6.1 partition tables](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/api-guides/partition-tables.html)
+- [ESP-IDF v6.1 PHY configuration](https://github.com/espressif/esp-idf/blob/v6.1/components/esp_phy/Kconfig)
 - [Signed apps without hardware Secure Boot](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/security/secure-boot-v2.html#signed-app-verification-without-hardware-secure-boot)
