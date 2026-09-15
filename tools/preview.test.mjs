@@ -977,6 +977,21 @@ test("Globe and Cancel preserve profiles and send isolated report sequences", { 
   assert.equal(await page.evaluate(() => localStorage.getItem("keyboard.host-profile.v1")), null);
   await signIn(page);
 
+  const hostProfile = page.locator("#host-profile");
+  await page.evaluate(() => {
+    window.hostProfileClickDefaults = [];
+    document.addEventListener("click", event => {
+      if (event.target.id === "host-profile") window.hostProfileClickDefaults.push(event.defaultPrevented);
+    });
+  });
+  await hostProfile.click();
+  await page.keyboard.press("Escape");
+  const hostProfileBox = await hostProfile.boundingBox();
+  await page.touchscreen.tap(hostProfileBox.x + hostProfileBox.width / 2,
+                             hostProfileBox.y + hostProfileBox.height / 2);
+  await page.keyboard.press("Escape");
+  assert.deepEqual(await page.evaluate(() => window.hostProfileClickDefaults), [false, false]);
+
   await page.locator("#keyboard").focus();
   await page.keyboard.down("Shift");
   await page.keyboard.down("a");
@@ -989,7 +1004,7 @@ test("Globe and Cancel preserve profiles and send isolated report sequences", { 
   await page.keyboard.up("Shift");
 
   const beforeProfileChange = states.length;
-  await page.locator("#host-profile").selectOption("windows");
+  await hostProfile.selectOption("windows");
   assert.equal(states.length, beforeProfileChange);
   assert.equal(await page.evaluate(() => localStorage.getItem("keyboard.host-profile.v1")), "windows");
   await expectCommand(globe, { modifiers: 8, keys: [44] });

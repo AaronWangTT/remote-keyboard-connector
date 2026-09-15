@@ -496,6 +496,7 @@ surface.addEventListener("lostpointercapture", event => {
 surface.addEventListener("pointercancel", disconnect);
 surface.addEventListener("contextmenu", event => event.preventDefault());
 surface.addEventListener("click", event => {
+  if (event.target.closest("input, textarea, select, [contenteditable]")) return;
   event.preventDefault();
   const button = event.target.closest("button[data-key]");
   if (!button || button.disabled || event.detail !== 0) return;

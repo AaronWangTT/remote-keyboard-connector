@@ -189,7 +189,7 @@ The firmware has no npm runtime dependencies; the Lucide icons are embedded.
 
 The Globe/Cancel software increment passes all ten sanitized native suites,
 15 keyboard-model tests, and 34 API/Chromium/WebKit tests. Its ESP-IDF v6.1
-build is `0xF6390` bytes, leaving `0x9C70` bytes (about 4%) in the unchanged
+build is `0xF63E0` bytes, leaving `0x9C20` bytes (about 4%) in the unchanged
 1 MiB application partition. Real iPhone/iPad input-source switching and
 Escape behavior with pending, applied, and absent autocorrection suggestions
 remain hardware acceptance checks, not conclusions from the browser mock.
@@ -286,13 +286,14 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-The current default image is `0xf4ba0` bytes (1,002,400 bytes), leaving
-`0xb460` bytes (46,176 bytes) in the existing 1 MiB application partition. The
-opt-in status-LED image leaves `0x9c00` bytes (39,936 bytes); both have about 4%
-headroom. See the LED implementation record for the checked configurations.
-Flash layout and PSRAM settings are unchanged. This is below the broader 20%
-headroom goal; physical flash capacity and runtime heap/stack/power behavior
-remain unverified.
+Before the Globe/Cancel increment, board-status validation measured the generic
+LED-disabled image at `0xf4ba0` bytes with `0xb460` bytes free, and the opt-in
+status-LED image with `0x9c00` bytes free. Those historical builds also had about
+4% headroom; the current generic image is recorded under Host Validation above.
+See the LED implementation record for its checked configurations. Flash layout
+and PSRAM settings are unchanged. Current headroom remains below the broader 20%
+goal; physical flash capacity and runtime heap/stack/power behavior remain
+unverified.
 
 Do not commit credentials or machine-specific SDK paths. Generated build
 outputs and local configuration are excluded by the Git ignore rules. Project
