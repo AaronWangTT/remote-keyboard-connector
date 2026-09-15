@@ -481,10 +481,49 @@ class InstallerTests(unittest.TestCase):
             install(self.request, self.connected_sdk)
         self.assertEqual(self.transport.events, ["connect"])
 
+    def test_real_esptool_secure_boot_bitmask_allows_unsecured_board(self):
+        loader_type = self.sdk.images.ESP32S3FirmwareImage.ROM_LOADER
+        registers = SimpleNamespace(
+            read_reg=Mock(return_value=0),
+            EFUSE_SECURE_BOOT_EN_REG=loader_type.EFUSE_SECURE_BOOT_EN_REG,
+            EFUSE_SECURE_BOOT_EN_MASK=loader_type.EFUSE_SECURE_BOOT_EN_MASK)
+        with patch.object(self.device, "get_secure_boot_enabled",
+                          side_effect=lambda: loader_type.get_secure_boot_enabled(registers)):
+            result = install(self.request, self.connected_sdk)
+        self.assertTrue(result["verified"])
+        registers.read_reg.assert_called_once_with(loader_type.EFUSE_SECURE_BOOT_EN_REG)
+        self.assertEqual(self.transport.events, ["connect", "backup", "write", "verify", "reset"])
+
+    def test_real_esptool_secure_boot_bitmask_rejects_secured_board(self):
+        loader_type = self.sdk.images.ESP32S3FirmwareImage.ROM_LOADER
+        registers = SimpleNamespace(
+            read_reg=Mock(return_value=loader_type.EFUSE_SECURE_BOOT_EN_MASK),
+            EFUSE_SECURE_BOOT_EN_REG=loader_type.EFUSE_SECURE_BOOT_EN_REG,
+            EFUSE_SECURE_BOOT_EN_MASK=loader_type.EFUSE_SECURE_BOOT_EN_MASK)
+        with patch.object(self.device, "get_secure_boot_enabled",
+                          side_effect=lambda: loader_type.get_secure_boot_enabled(registers)):
+            with self.assertRaisesRegex(ValueError, "separate installation"):
+                install(self.request, self.connected_sdk)
+        registers.read_reg.assert_called_once_with(loader_type.EFUSE_SECURE_BOOT_EN_REG)
+        self.assertEqual(self.transport.events, ["connect"])
+
+    def test_invalid_secure_boot_values_never_read_or_write_flash(self):
+        for index, value in enumerate((None, 0.0, "0", "", [], -1)):
+            with self.subTest(value=value):
+                self.request["directory"] = str(self.root / f"security-{index}")
+                self.transport.events.clear()
+                with patch.object(self.device, "get_secure_boot_enabled", return_value=value):
+                    with self.assertRaisesRegex(ValueError, "separate installation"):
+                        install(self.request, self.connected_sdk)
+                self.assertEqual(self.transport.events, ["connect"])
+                self.assertEqual(self.transport.writes, [])
+
     def test_secure_download_mode_never_reads_or_writes_flash(self):
         self.device.secure_download_mode = True
-        with self.assertRaisesRegex(ValueError, "separate installation"):
-            install(self.request, self.connected_sdk)
+        with patch.object(self.device, "get_secure_boot_enabled") as read_secure_boot:
+            with self.assertRaisesRegex(ValueError, "separate installation"):
+                install(self.request, self.connected_sdk)
+        read_secure_boot.assert_not_called()
         self.assertEqual(self.transport.events, ["connect"])
 
     def test_wrong_board_type_never_reads_or_writes_flash(self):

@@ -208,9 +208,12 @@ def install(request, sdk):
               "keep the host and backup storage powered.", file=sys.stderr)
     with sdk.esptool.detect_chip(port=request["port"]) as connection:
         require(connection.CHIP_NAME == "ESP32-S3", "Connected board is not an ESP32-S3")
-        require(connection.secure_download_mode is False and connection.get_secure_boot_enabled() is False and
+        require(connection.secure_download_mode is False,
+            "Secure download mode requires a separate installation workflow")
+        secure_boot_enabled = connection.get_secure_boot_enabled()
+        require(type(secure_boot_enabled) in (bool, int) and secure_boot_enabled == 0 and
             connection.get_flash_encryption_enabled() is False,
-            "Secure download, secure boot, or flash encryption requires a separate installation workflow")
+            "Secure boot or flash encryption requires a separate installation workflow")
         require(bytes(connection.read_mac(mac_type="BASE_MAC")).hex() == device_id,
             "Connected board factory base MAC does not match --device-id")
         device = sdk.esptool.run_stub(connection)
