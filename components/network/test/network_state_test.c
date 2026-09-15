@@ -162,8 +162,11 @@ int main(void)
     assert(network_state_tick(&state, NETWORK_CONNECT_US * 2, true) == NETWORK_WAIT);
     assert(network_state_tick(&state, NETWORK_CONNECT_US * 2, false) == NETWORK_TRY_CONNECT);
     network_state_online(&state, NETWORK_CONNECT_US * 2);
+    assert(state.phase == NETWORK_CONFIRMING);
     assert(network_state_tick(&state, NETWORK_CONNECT_US * 2, true) == NETWORK_WAIT);
-    assert(network_state_tick(&state, NETWORK_CONNECT_US * 2, false) == NETWORK_CLOSE_AP);
+    assert(network_state_tick(&state, NETWORK_CONNECT_US * 2 + NETWORK_CONFIRM_US - 1, false) == NETWORK_WAIT);
+    assert(network_state_tick(&state, NETWORK_CONNECT_US * 2 + NETWORK_CONFIRM_US, true) == NETWORK_WAIT);
+    assert(network_state_tick(&state, NETWORK_CONNECT_US * 2 + NETWORK_CONFIRM_US, false) == NETWORK_CLOSE_AP);
     assert(!state.ap && state.phase == NETWORK_STATION);
     network_state_lost(&state, INT64_C(90000000));
     assert(!state.online && state.phase == NETWORK_CONNECTING);

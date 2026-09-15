@@ -37,6 +37,8 @@ static network_config_t candidate;
 static network_state_t state;
 static uint8_t active_slot;
 static bool driver_started;
+static bool driver_retry_pending;
+static int64_t driver_retry_at;
 static bool connecting;
 static bool command_pending;
 static bool storage_fault;
@@ -51,6 +53,7 @@ static bool ap_restore_pending;
 static esp_netif_ip_info_t ap_restore_address;
 static int64_t ap_restore_retry_at;
 static bool guarded;
+static bool control_ready;
 static bool guard_ap;
 static uint32_t guard_generation;
 static uint32_t ap_address;
@@ -59,6 +62,8 @@ static int64_t management_until;
 static int64_t scan_deadline;
 static int64_t scan_expires;
 static int64_t hostname_transition_until;
+static bool hostname_restore_pending;
+static int64_t hostname_restore_retry_at;
 static char last_failure[40];
 
 static void disarm(bool only_ap, bool only_station)
@@ -116,7 +121,10 @@ bool network_control_begin(uint32_t local_address, uint32_t generation)
 void network_control_end(uint32_t generation)
 {
     portENTER_CRITICAL(&lock);
-    if (guarded && generation == guard_generation) guarded = false;
+    if (guarded && generation == guard_generation) {
+        guarded = false;
+        snapshot.can_control = control_ready && snapshot.available && !snapshot.busy && !command_pending;
+    }
     portEXIT_CRITICAL(&lock);
 }
 
@@ -245,6 +253,28 @@ static void hostname_changed(const char *hostname, void *argument)
     disarm(false, false);
 }
 
+static esp_err_t apply_runtime_hostname(const char *hostname)
+{
+    esp_err_t ap_result = esp_netif_set_hostname(ap_interface, hostname);
+    esp_err_t station_result = esp_netif_set_hostname(station_interface, hostname);
+    esp_err_t mdns_result = mdns_hostname_set(hostname);
+    if (ap_result != ESP_OK) return ap_result;
+    if (station_result != ESP_OK) return station_result;
+    return mdns_result;
+}
+
+static esp_err_t rename_configuration(const network_config_t *configuration)
+{
+    if (!snapshot.mdns) return ESP_ERR_INVALID_STATE;
+    esp_err_t result = apply_runtime_hostname(configuration->hostname);
+    if (result == ESP_OK) result = save_configuration(configuration);
+    if (result != ESP_OK) {
+        hostname_restore_pending = apply_runtime_hostname(saved.hostname) != ESP_OK;
+        hostname_restore_retry_at = hostname_restore_pending ? esp_timer_get_time() + NETWORK_CONNECT_US : 0;
+    }
+    return result;
+}
+
 static esp_err_t configure_driver(bool ap, bool station, const network_config_t *configuration)
 {
     disarm(false, false);
@@ -292,14 +322,15 @@ static void refresh_snapshot(void)
     esp_netif_get_ip_info(ap_interface, &ap_info);
     esp_netif_get_ip_info(station_interface, &station_info);
     portENTER_CRITICAL(&lock);
-    snapshot.available = driver_started && !ap_restore_pending;
+    snapshot.available = driver_started && !ap_restore_pending && !driver_retry_pending && !hostname_restore_pending;
     snapshot.ap_active = driver_started && state.ap;
     snapshot.station_online = driver_started && state.online;
     snapshot.desired_station = saved.station != 0;
     snapshot.has_profile = saved.ssid[0] != '\0';
-    snapshot.can_control = !guarded && !ap_restore_pending && !snapshot.busy && !command_pending && !scanning && !testing && driver_started &&
-                           !(state.phase == NETWORK_RECOVERY && connecting) &&
-                           (state.phase == NETWORK_AP || state.phase == NETWORK_RECOVERY || state.phase == NETWORK_STATION);
+    control_ready = snapshot.available && !snapshot.busy && !command_pending && !scanning && !testing &&
+                    !(state.phase == NETWORK_RECOVERY && connecting) &&
+                    (state.phase == NETWORK_AP || state.phase == NETWORK_RECOVERY || state.phase == NETWORK_STATION);
+    snapshot.can_control = control_ready && !guarded;
     snprintf(snapshot.phase, sizeof(snapshot.phase), "%s", network_phase_name(state.phase));
     snprintf(snapshot.requested_hostname, sizeof(snapshot.requested_hostname), "%s", saved.hostname);
     network_ssid_display((const uint8_t *)saved.ssid, strnlen(saved.ssid, NETWORK_SSID_MAX), snapshot.saved_ssid);
@@ -410,16 +441,32 @@ static esp_err_t recovery(const char *error, bool retry_saved)
     network_state_recover(&state, esp_timer_get_time());
     bool station = retry_saved && saved.station && saved.ssid[0] != '\0';
     esp_err_t result = ap_restore_pending ? restore_ap_address() : ESP_OK;
-    if (result == ESP_OK) result = configure_driver(true, station, &saved);
+    if (result == ESP_OK) {
+        result = configure_driver(true, station, &saved);
+        if (result != ESP_OK && station) {
+            station = false;
+            result = configure_driver(true, false, &saved);
+        }
+    }
     if (!station) network_state_init(&state, false, esp_timer_get_time());
+    driver_retry_pending = result != ESP_OK && !ap_restore_pending;
+    driver_retry_at = driver_retry_pending ? esp_timer_get_time() + NETWORK_CONNECT_US : 0;
     job_result("failed", result == ESP_OK ? error : "wifi_unavailable", false);
     return result;
 }
 
 static bool retry_ap_restoration(int64_t now)
 {
-    if (!ap_restore_pending) return false;
-    if (now >= ap_restore_retry_at) recovery("subnet_overlap", false);
+    if (hostname_restore_pending) {
+        if (now >= hostname_restore_retry_at) {
+            hostname_restore_pending = apply_runtime_hostname(saved.hostname) != ESP_OK;
+            hostname_restore_retry_at = hostname_restore_pending ? now + NETWORK_CONNECT_US : 0;
+        }
+        return true;
+    }
+    if (!ap_restore_pending && !driver_retry_pending) return false;
+    int64_t retry_at = ap_restore_pending ? ap_restore_retry_at : driver_retry_at;
+    if (now >= retry_at) recovery(ap_restore_pending ? "subnet_overlap" : "wifi_unavailable", false);
     return true;
 }
 
@@ -527,17 +574,13 @@ static void run_command(const network_command_t *command)
         mbedtls_platform_zeroize(updated.password, sizeof(updated.password));
     }
     if (request->action == NETWORK_ACTION_RENAME) memcpy(updated.hostname, request->hostname, sizeof(updated.hostname));
-    esp_err_t result = save_configuration(&updated);
+    esp_err_t result = request->action == NETWORK_ACTION_RENAME ? rename_configuration(&updated) : save_configuration(&updated);
     mbedtls_platform_zeroize(&updated, sizeof(updated));
     if (result != ESP_OK) {
-        job_result("failed", "storage_failed", false);
+        job_result("failed", request->action == NETWORK_ACTION_RENAME && !storage_fault ? "configuration_failed" : "storage_failed", false);
         return;
     }
-    if (request->action == NETWORK_ACTION_RENAME) {
-        result = mdns_hostname_set(saved.hostname);
-        if (result == ESP_OK) result = esp_netif_set_hostname(station_interface, saved.hostname);
-        if (result == ESP_OK) result = esp_netif_set_hostname(ap_interface, saved.hostname);
-    } else {
+    if (request->action != NETWORK_ACTION_RENAME) {
         network_state_init(&state, false, now);
         result = configure_driver(true, false, &saved);
         if (result != ESP_OK) {

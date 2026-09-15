@@ -210,7 +210,7 @@ void network_state_test(network_state_t *state, int64_t now)
 void network_state_online(network_state_t *state, int64_t now)
 {
     state->online = true;
-    state->phase = state->phase == NETWORK_TESTING ? NETWORK_CONFIRMING : NETWORK_STATION;
+    state->phase = state->ap ? NETWORK_CONFIRMING : NETWORK_STATION;
     state->deadline = now + NETWORK_CONFIRM_US;
     state->handover_at = 0;
 }

@@ -368,7 +368,7 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
 | Provisioning and browser/API | All 24 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, idle-cancel rejection, confirmed/abandoned AP-address transitions, abandoned handover expiry, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf3ec0` bytes; `0xc140` bytes (49,472 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf4080` bytes; `0xbf80` bytes (49,024 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -473,6 +473,18 @@ failures before and after every write/commit, with immediate and commit-delayed
 durability, and verifies reboot behavior, lost-owner rejection, legacy marker
 migration, invalid records, and storage errors. Startup also propagates either
 AP or STA hostname initialization failure before Wi-Fi is started.
+
+Saved-profile recovery honors the same confirmation grace whenever its AP is
+still active. Failed AP+STA driver startup falls back to protected AP-only mode
+without changing the saved STA preference; repeated driver failures retry every
+30 seconds. Guard release restores control availability synchronously from
+network readiness, independently of ownership. Rename applies all runtime names
+before persistence and restores the previous requested name on failure; failed
+rollback retries with new control disabled. Existing ambiguous NVS-write failures
+still require restart to establish the durable selected record. Fault injection
+checks the fallback, reacquisition, runtime/persistence ordering, and rollback
+retry. The existing pending-overlap early continuation was also exercised beyond
+the connection deadline and retains the candidate without premature recovery.
 
 Both firmware JSON parsers validate complete request text as UTF-8 before cJSON
 parsing. Malformed raw UTF-8 and unpaired JSON surrogate escapes are rejected in
