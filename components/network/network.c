@@ -615,7 +615,7 @@ static void network_worker(void *argument)
             portEXIT_CRITICAL(&lock);
             recovery(error, !was_testing);
         } else if (effect == NETWORK_CLOSE_AP) {
-            disarm(true, false);
+            disarm(false, false);
             if (esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK) job_result("succeeded", "", false);
             else recovery("handover_failed", true);
         } else if (effect == NETWORK_TRY_CONNECT && !associated) {

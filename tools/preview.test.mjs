@@ -106,6 +106,28 @@ test("network jobs are owner-only, bounded and preserve the last working profile
     for await (const chunk of next) chunks.push(chunk);
     assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), beforeScan);
   }
+  for (const [rejectionHeaders, expectedStatus] of [
+    [{ ...headers, Origin: "http://untrusted.invalid" }, 403],
+    [{ ...headers, Cookie: "" }, 401],
+    [{ ...headers, "X-CSRF-Token": "invalid" }, 403],
+  ]) {
+    const earlyRequest = httpRequest(endpoint, { method: "POST", agent,
+      headers: { ...rejectionHeaders, "Content-Length": "8192" } });
+    const earlyResponse = once(earlyRequest, "response");
+    const closed = once(earlyRequest, "close");
+    earlyRequest.flushHeaders();
+    const [rejection] = await earlyResponse;
+    assert.equal(rejection.statusCode, expectedStatus);
+    assert.equal(rejection.headers.connection, "close");
+    for await (const chunk of rejection) assert.ok(chunk.length > 0);
+    await closed;
+    const nextRequest = httpRequest(new URL("/api/v1/network/job", url), { agent, headers: { Cookie: session.cookie } });
+    const nextResponse = once(nextRequest, "response");
+    nextRequest.end();
+    const [next] = await nextResponse;
+    assert.equal(next.statusCode, 200);
+    for await (const chunk of next) assert.ok(chunk.length > 0);
+  }
   assert.deepEqual(await status(), beforeScan);
   assert.equal((await fetch(new URL("/api/v1/network/scan", url), { method: "POST", headers })).status, 202);
   await expect.poll(async () => (await status()).scan.length).toBe(5);

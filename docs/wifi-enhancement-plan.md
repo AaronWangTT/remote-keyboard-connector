@@ -257,9 +257,12 @@ the [design specification](remote-keyboard-design.md#5-security-and-controller-o
 - Provision separate random per-device AP and owner secrets privately. Never
   store real credentials in Git, build defaults, URLs, logs, or chat prompts.
 - Use owner login, a standard salted password verifier, rate limits, bounded
-  requests, and opaque sessions in HttpOnly/SameSite cookies. Require Secure
-  cookies with TLS; protect administrative operations against CSRF and validate
-  exact allowed Host/Origin values before WebSocket upgrade and mutations.
+  requests, and opaque sessions in HttpOnly/SameSite cookies. The future TLS
+  profile must also set Secure. The current HTTP/WS development profile omits
+  Secure so cookies work over HTTP; this exception provides no transport
+  confidentiality or integrity. Protect administrative operations against CSRF
+  and validate exact allowed Host/Origin values before WebSocket upgrade and
+  mutations.
 - Require explicit Take Control and permit only one input lease across AP and
   STA combined. Another connection must receive busy status, not silently take
   ownership. Keep all management-field input local to the browser.

@@ -15,6 +15,7 @@ const passwordHash = password => pbkdf2Sync(password, ownerSalt, 100000, 32, "sh
 let ownerHash = passwordHash(process.env.PREVIEW_OWNER_PASSWORD ?? "preview-owner-password");
 const setupCode = "0123456789abcdef01234567";
 const sessions = new Map();
+const drainingRequests = new WeakSet();
 let pendingControl = null;
 let loginWindow = 0;
 let loginAttempts = 0;
@@ -65,7 +66,7 @@ async function networkRequest(request, response) {
   if (scan) {
     for await (const chunk of request.iterator({ destroyOnReturn: false })) {
       if (chunk.length !== 0) {
-        request.resume();
+        drainRequest(request);
         return sendJson(response, 413, { error: "invalid_network_request" });
       }
     }
@@ -156,7 +157,16 @@ async function networkRequest(request, response) {
   }, networkDelay).unref();
 }
 
+function drainRequest(request) {
+  drainingRequests.add(request);
+  request.resume();
+}
+
 function sendJson(response, status, value) {
+  if (status >= 400 && !response.req.readableEnded && !drainingRequests.has(response.req)) {
+    response.setHeader("Connection", "close");
+    response.once("finish", () => response.req.destroy());
+  }
   response.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(value));
 }
 
@@ -229,7 +239,7 @@ function releaseController() {
 
 async function jsonBody(request) {
   if (!/^application\/json(?:; charset=utf-8)?$/.test(request.headers["content-type"] ?? "")) {
-    request.resume();
+    drainRequest(request);
     return null;
   }
   const chunks = [];
@@ -237,7 +247,7 @@ async function jsonBody(request) {
   for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     length += chunk.length;
     if (length > 1024) {
-      request.resume();
+      drainRequest(request);
       return null;
     }
     chunks.push(chunk);
