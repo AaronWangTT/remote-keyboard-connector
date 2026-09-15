@@ -183,9 +183,15 @@ Record physical checks separately, after an explicitly approved firmware write:
 
 Completion requires both software checks and recorded real-board results.
 A successful build or simulated timing test is not physical LED validation.
-The software checks below do not complete the physical acceptance gate. No
-firmware write, GPIO test, or hardware modification has been performed for this
-increment.
+The software checks below do not complete the physical acceptance gate. A
+separately approved routine update on 2026-09-15 flashed a later `0xf6920`
+(1,009,952-byte) debug-optimized XinluCity-profile image without changing NVS.
+Full readback matched the authorized image. The user observed one short G48
+pulse about every two seconds while ready/idle, steady ON with a valid
+controller, and return to the idle pulse after Release with no stuck key. This
+physically validates those visible states only; startup/not-ready, AP-only,
+reconnect, USB unplug/suspend, focus/network loss, instrumented timing/load,
+and endurance remain pending. The later size-optimized image was not flashed.
 
 ## Software Implementation Record
 
@@ -242,16 +248,18 @@ Software validation on 2026-09-15 with ESP-IDF v6.1:
   selected-board image is `0xf6400` bytes (1,008,640), leaving `0x9c00` bytes
   (39,936) in the existing 1 MiB app partition. The disabled image is `0xf4ba0`
   bytes (1,002,400), leaving `0xb460` bytes (46,176). Both are below the broader
-  20% headroom goal; the partition layout is unchanged.
+  20% headroom goal; the partition layout is unchanged. These isolated builds
+  preceded the later `0xf6920` image used for physical validation.
 
 Follow-up capacity work on 2026-09-15 selected
 `CONFIG_COMPILER_OPTIMIZATION_SIZE=y` in the tracked defaults. The XinluCity
 profile then built at `0xe17c0` bytes (923,584), leaving `0x1e840` bytes
-(124,992, about 12%) and removing ESP-IDF's nearly-full warning. The four
-focused board suites and offline firmware validation passed. This did not
-change the partition table, NVS offsets, flash-size setting, or the remaining
-20% product-headroom goal; a larger live partition remains a separately
-reviewed migration.
+(124,992, about 12%) and removing ESP-IDF's nearly-full warning. This is 86,368
+bytes smaller than the physically validated `0xf6920` debug image. Six focused
+board/USB suites and offline firmware validation passed. The optimized image
+was not flashed. This did not change the partition table, NVS offsets,
+flash-size setting, or the remaining 20% product-headroom goal; a larger live
+partition remains a separately reviewed migration.
 
 Native mocks do not validate concurrent FreeRTOS scheduling, radio behavior,
 electrical polarity, visible light, or real USB timing. Record those results in

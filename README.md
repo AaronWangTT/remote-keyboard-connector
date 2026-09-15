@@ -50,7 +50,7 @@ apply that setting after a fresh clone.
 
 Tracked defaults select compiler size optimization for deployable firmware.
 An existing generated `sdkconfig` retains its previous optimization choice;
-before evaluating capacity, verify that generated `config/sdkconfig.json`
+before evaluating capacity, verify that generated `build/config/sdkconfig.json`
 reports `COMPILER_OPTIMIZATION_SIZE=true`. A deliberate debug build can select
 the debug optimization profile through menuconfig, but its larger image may
 have substantially less partition headroom.
@@ -82,9 +82,11 @@ two short pulses for not ready. PWR remains independent. No brightness setting
 or web UI change is included.
 
 See the [profile build commands and validation record](docs/board-status-led-proposal.md#software-implementation-record).
-Focused software checks and a 2026-09-15 physical check passed for G48 polarity,
-ready/idle, active control, and release back to idle. Startup/not-ready timing,
-suspend, failure handling, USB/load effects, and endurance remain pending.
+Focused software checks and a 2026-09-15 physical check of the previously
+flashed debug-optimized LED image passed for visible G48 ready/idle, active
+control, and release back to idle. The optimized image described below was not
+flashed. Startup/not-ready timing, suspend, failure handling, USB/load effects,
+and endurance remain pending.
 
 ## Sender Provisioning
 
@@ -295,11 +297,13 @@ With compiler size optimization and the XinluCity status-LED profile, the
 verified image is `0xe17c0` bytes (923,584 bytes), leaving `0x1e840` bytes
 (124,992 bytes, about 12%) in the existing 1 MiB application partition. This
 removes ESP-IDF's nearly-full warning and saves 86,368 bytes compared with the
-same LED profile's debug-optimized build. Flash layout, NVS offsets, and PSRAM
-settings are unchanged. The result remains below the broader 20% product
-headroom goal. Enlarging or replacing the live partition table is a separate
-migration, not a routine firmware update; runtime heap/stack/power behavior also
-remains to be fully characterized.
+later `0xf6920`-byte (1,009,952-byte) debug-optimized LED image that was
+physically flashed during hardware validation. The earlier isolated profile
+build recorded `0xf6400`; it was not the comparison baseline. Flash layout,
+NVS offsets, and PSRAM settings are unchanged. The result remains below the
+broader 20% product headroom goal. Enlarging or replacing the live partition
+table is a separate migration, not a routine firmware update; runtime
+heap/stack/power behavior also remains to be fully characterized.
 
 Do not commit credentials or machine-specific SDK paths. Generated build
 outputs and local configuration are excluded by the Git ignore rules. Project
