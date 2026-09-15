@@ -43,8 +43,14 @@ typedef struct {
 	network_scan_item_t scan[NETWORK_SCAN_LIMIT];
 } network_status_t;
 
+typedef struct {
+	bool ready;
+	bool controller_path_ready;
+} network_control_status_t;
+
 esp_err_t network_start(void);
 void network_status(network_status_t *status);
+network_control_status_t network_control_status(uint32_t generation);
 esp_err_t network_submit(const uint8_t *payload, size_t length, bool scan, uint32_t *job_id);
 void network_management_touch(uint32_t local_address);
 bool network_control_begin(uint32_t local_address, uint32_t generation);

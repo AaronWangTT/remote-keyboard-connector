@@ -94,6 +94,21 @@ void network_status(network_status_t *status)
     portEXIT_CRITICAL(&lock);
 }
 
+network_control_status_t network_control_status(uint32_t generation)
+{
+    portENTER_CRITICAL(&lock);
+    bool ap_ready = snapshot.ap_active && ap_address != 0;
+    bool station_ready = snapshot.station_online && station_address != 0 && station_address == lease_address;
+    network_control_status_t status = {
+        .ready = control_ready && snapshot.available && !snapshot.busy && !command_pending &&
+                 (snapshot.can_control || guarded) && (ap_ready || station_ready),
+    };
+    status.controller_path_ready = status.ready && guarded && generation != 0 && generation == guard_generation &&
+                                   (guard_ap ? ap_ready : station_ready);
+    portEXIT_CRITICAL(&lock);
+    return status;
+}
+
 void network_management_touch(uint32_t local_address)
 {
     portENTER_CRITICAL(&lock);

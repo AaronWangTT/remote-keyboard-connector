@@ -6,9 +6,12 @@
 #include <inttypes.h>
 
 #include "esp_http_server.h"
+#include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "access_control.h"
 #include "cJSON.h"
 #include "device_identity.h"
@@ -91,9 +94,89 @@ static uint32_t pending_generation;
 static uint32_t pending_usb_generation;
 static int64_t pending_until;
 static esp_timer_handle_t control_timer;
+static bool server_started;
+static TaskHandle_t status_task;
+static portMUX_TYPE status_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool status_pending;
+static web_server_status_t status_snapshot;
 
 static void response_headers(httpd_req_t *request);
 static cJSON *network_json(void);
+
+web_server_status_t web_server_status(void)
+{
+    portENTER_CRITICAL(&status_lock);
+    web_server_status_t status = status_snapshot;
+    portEXIT_CRITICAL(&status_lock);
+    return status;
+}
+
+static void publish_status(void *argument)
+{
+    (void)argument;
+    int64_t now = esp_timer_get_time();
+    usb_keyboard_status_t usb = usb_keyboard_status();
+    network_control_status_t network = network_control_status(active_client != NULL ? active_client->generation : 0);
+    access_status_facts_t facts = {
+        .web_started = server_started,
+        .identity_ready = device_identity_ready(),
+        .owner_claimed = device_identity_claimed(),
+        .network_ready = network.ready,
+        .usb_ready = usb.ready,
+        .usb_generation = usb.generation,
+        .controller_network_ready = network.controller_path_ready,
+    };
+    if (active_client != NULL) {
+        facts.controller_connected = httpd_ws_get_fd_info(server, active_client->socket) == HTTPD_WS_CLIENT_WEBSOCKET;
+        facts.controller_generation = active_client->generation;
+        facts.controller_last_seen = active_client->last_seen;
+        facts.owner = active_client->owner;
+        facts.owner_generation = active_client->owner_generation;
+    }
+    access_status_t observed = access_control_observe(&facts, now);
+    usb_keyboard_status_t current_usb = usb_keyboard_status();
+    web_server_status_t status = {
+        .valid = current_usb.generation == usb.generation && current_usb.ready == usb.ready,
+        .ready = observed.ready,
+        .controller_active = observed.controller_active,
+        .sampled_at_ms = (uint64_t)(now / 1000),
+    };
+    portENTER_CRITICAL(&status_lock);
+    status_snapshot = status;
+    status_pending = false;
+    portEXIT_CRITICAL(&status_lock);
+}
+
+static void status_worker(void *argument)
+{
+    httpd_handle_t owner = argument;
+    bool queue_failed = false;
+    for (;;) {
+        portENTER_CRITICAL(&status_lock);
+        bool queue = !status_pending;
+        status_pending = true;
+        portEXIT_CRITICAL(&status_lock);
+        if (queue) {
+            esp_err_t result = httpd_queue_work(owner, publish_status, NULL);
+            if (result != ESP_OK) {
+                portENTER_CRITICAL(&status_lock);
+                status_snapshot.valid = false;
+                status_pending = false;
+                portEXIT_CRITICAL(&status_lock);
+                if (!queue_failed) ESP_LOGW("web_status", "Status publication failed (%s)", esp_err_to_name(result));
+            }
+            queue_failed = result != ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(25) > 0 ? pdMS_TO_TICKS(25) : 1);
+    }
+}
+
+esp_err_t web_server_status_start(void)
+{
+    if (!server_started || status_task != NULL) return ESP_ERR_INVALID_STATE;
+    return xTaskCreate(status_worker, "web_status", 2048, server, tskIDLE_PRIORITY + 1, &status_task) == pdPASS ?
+        ESP_OK : ESP_ERR_NO_MEM;
+}
 
 static esp_err_t problem(httpd_req_t *request, const char *status, const char *code)
 {
@@ -195,7 +278,7 @@ static void expire_control(void *argument)
         network_control_end(pending_usb_generation);
         pending_owner = NULL;
     }
-    if (active_client != NULL && (now - active_client->last_seen >= INT64_C(1000000) ||
+    if (active_client != NULL && (now - active_client->last_seen >= ACCESS_CONTROL_LEASE_US ||
         active_client->generation != usb_keyboard_status().generation ||
         !access_session_valid(active_client->owner, active_client->owner_generation, now, false))) release_control();
 }
@@ -292,7 +375,7 @@ static esp_err_t input_handler(httpd_req_t *request)
     int64_t now = esp_timer_get_time();
     usb_keyboard_status_t status = usb_keyboard_status();
     if (client == NULL || client != active_client || client->generation != status.generation ||
-        now - client->last_seen >= INT64_C(1000000) ||
+        now - client->last_seen >= ACCESS_CONTROL_LEASE_US ||
         !access_session_valid(client->owner, client->owner_generation, now, false)) {
         return input_fault(client);
     }
@@ -670,5 +753,6 @@ esp_err_t web_server_start(void)
         httpd_stop(server);
         server = NULL;
     }
+    server_started = result == ESP_OK;
     return result;
 }

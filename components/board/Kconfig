@@ -1,0 +1,20 @@
+menu "Board status LED"
+
+choice BOARD_STATUS_PROFILE
+    prompt "Board profile"
+    default BOARD_STATUS_LED_DISABLED
+
+config BOARD_STATUS_LED_DISABLED
+    bool "Disabled / unspecified board (leave GPIO untouched)"
+
+config BOARD_XINLUCITY_ESP32S3_NANO
+    bool "XinluCity ESP32S3 NANO / ESP32-S3-N16R8 (G48 active-low)"
+    depends on IDF_TARGET_ESP32S3
+    help
+        Select only for the documented single-color G48 circuit on this
+        board. GPIO48 LOW illuminates the LED; HIGH turns it off.
+        This does not control PWR or configure flash/PSRAM capacity.
+
+endchoice
+
+endmenu

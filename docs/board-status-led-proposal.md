@@ -1,11 +1,11 @@
 # Board Status LED Proposal
 
 Date: 2026-09-15
-Status: draft for discussion; not implemented or approved for device installation.
+Status: opt-in software implementation validated; physical acceptance and device installation approval pending.
 
-This proposal is on a separate documentation branch based on `origin/main`.
-It does not change firmware, GPIO configuration, the web UI, settings, or
-packaging, and does not authorize flashing or hardware modification.
+The first increment is implemented behind an explicit board profile, disabled
+by default. The web UI, stored settings, and firmware packaging are unchanged.
+This document does not authorize flashing or hardware modification.
 
 ## Goal And Scope
 
@@ -41,9 +41,9 @@ G48 is a discrete single-color LED, not an addressable RGB/WS2812 device.
 
 These wiring facts were checked against vendor documentation on 2026-09-15.
 They are not a physical GPIO test. Confirm polarity and visible behavior on
-the actual board before accepting an implementation. Older
-[hardware notes](../hardware/README.md) still contain unconfirmed fields;
-reconcile those records when the implementation and hardware check land.
+the actual board before accepting the hardware behavior. The
+[hardware notes](../hardware/README.md) now distinguish vendor wiring facts
+from user-reported physical observations and remaining checks.
 
 ## Proposed Status Patterns
 
@@ -108,7 +108,8 @@ and [network status](../components/network/include/network.h).
 The [web server](../components/web_server/web_server.c) owns active and pending
 controllers and expires their leases. The
 [application entry point](../main/app_main.c) observes startup failures.
-No onboard status-LED driver is currently initialized.
+The [board driver](../components/board/board_status.c) is opt-in; the generic
+profile leaves GPIO48 untouched.
 
 Add a board component as the home for GPIO ownership and a small pattern
 renderer. Keep application-state selection separate from electrical polarity
@@ -182,7 +183,70 @@ Record physical checks separately, after an explicitly approved firmware write:
 
 Completion requires both software checks and recorded real-board results.
 A successful build or simulated timing test is not physical LED validation.
-This proposal records no implementation, firmware build, flash, or GPIO test.
+The software checks below do not complete the physical acceptance gate. No
+firmware write, GPIO test, or hardware modification has been performed for this
+increment.
+
+## Software Implementation Record
+
+The [board profile choice](../components/board/Kconfig) defaults to disabled.
+Only `CONFIG_BOARD_XINLUCITY_ESP32S3_NANO=y` on ESP32-S3 enables G48. The
+[explicit overlay](../sdkconfig.board-xinlucity) selects that circuit without
+changing flash size, PSRAM, partitions, or any other pin. Generic CI artifacts
+remain LED-disabled; CI separately compiles the selected-board profile.
+
+The renderer starts before USB/network startup and remains `NOT_READY` until
+successful service startup and current readiness are published. Its GPIO latch
+is set HIGH before output is enabled. Initialization errors do not abort
+keyboard startup; an output error stops rendering after a best-effort HIGH.
+
+A low-priority publisher requests HTTP-owner work every 25 ms, with at most one
+request outstanding. Only that owner reads WebSocket/session pointers. It uses
+the network's locked capability/reservation snapshot and read-only session
+validity checks, then publishes a compact snapshot under a separate short lock.
+The LED task only copies that snapshot and renders GPIO levels; it performs no
+network I/O, owner-pointer access, authentication changes, or input releases.
+The original 250 ms expiry timer and one-second control deadline are unchanged.
+
+Snapshots become invalid at an age of 75 ms; invalid/future-dated snapshots
+select `NOT_READY`. Rendering runs every 25 ms, preserves phase across unchanged
+states, and computes the current phase after scheduling delays. These intervals
+target state visibility within 100 ms while tasks can run, including publisher
+stalls; they are not a hard real-time or crash-detection guarantee. Physical
+timing and runtime heap/stack/load checks remain pending.
+
+Use a fresh build/config directory for each initial profile selection;
+`SDKCONFIG_DEFAULTS` does not override an existing generated configuration:
+
+```bash
+idf.py -B .cache/board-led-enabled \
+  -D SDKCONFIG=.cache/board-led-enabled/sdkconfig \
+  -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.board-xinlucity' build
+idf.py -B .cache/board-led-disabled \
+  -D SDKCONFIG=.cache/board-led-disabled/sdkconfig \
+  -D SDKCONFIG_DEFAULTS=sdkconfig.defaults build
+bash tools/test-host.sh
+```
+
+Software validation on 2026-09-15 with ESP-IDF v6.1:
+
+- Ten native suites passed with ASan/UBSan, including state selection,
+  freshness/pulse boundaries, the production GPIO driver with SDK mocks, and
+  anchored production network/HTTP observation functions. Coverage includes
+  AP-only service without mDNS, historical request failures, held reservations,
+  pending takeover, logout/expiry, USB changes, bounded queuing, and failure paths.
+- All twelve keyboard-model tests, 32 provisioning/API/Chromium/WebKit tests,
+  and 43 SDK-backed fake-device installer tests passed. Offline default-firmware
+  validation and Actionlint 1.7.12 passed. No real device was used by these tests.
+- Both ESP32-S3 profiles built successfully in separate directories. The
+  selected-board image is `0xf6400` bytes (1,008,640), leaving `0x9c00` bytes
+  (39,936) in the existing 1 MiB app partition. The disabled image is `0xf4ba0`
+  bytes (1,002,400), leaving `0xb460` bytes (46,176). Both are below the broader
+  20% headroom goal; the partition layout is unchanged.
+
+Native mocks do not validate concurrent FreeRTOS scheduling, radio behavior,
+electrical polarity, visible light, or real USB timing. Record those results in
+the hardware checklist only after a separately approved firmware write.
 
 [vendor]: https://www.xinlucity.com/?s=resourcedetail/index/id/114.html
 [layout]: https://testxinlu.oss-cn-beijing.aliyuncs.com/static/upload/images/warehouse/2026/06/24/1782294571210690.jpg
