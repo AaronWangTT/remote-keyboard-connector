@@ -160,7 +160,7 @@ test("unsupported Globe profiles emit nothing and preserve current input", () =>
   keyboard.press("a", characterKey("a"), 0);
   assert.equal(validHostProfile("ios"), true);
   assert.equal(validHostProfile("windows"), true);
-  for (const profile of ["", "macos", "linux", null, undefined]) {
+  for (const profile of ["", "macos", "linux", "constructor", "toString", "__proto__", null, undefined]) {
     assert.equal(validHostProfile(profile), false);
     assert.deepEqual(keyboard.activateCommand("globe", profile), []);
     assert.deepEqual(keyboard.report, { modifiers: 0, keys: [4] });

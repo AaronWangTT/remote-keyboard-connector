@@ -127,7 +127,7 @@ export class KeyboardInput {
   }
 
   activateCommand(action, hostProfile) {
-    const command = action === "globe" ? hostCommands[hostProfile] :
+    const command = action === "globe" && validHostProfile(hostProfile) ? hostCommands[hostProfile] :
       action === "cancel" ? cancelCommand : undefined;
     if (!command) return [];
     this.clear();
