@@ -16,7 +16,7 @@ export function firmwareSecurity(configuration) {
   assert.equal(configuration.SECURE_BOOT, false, "Secure-boot provisioning requires a separate installer");
   assert.equal(configuration.SECURE_FLASH_ENC_ENABLED, false, "Flash-encryption provisioning requires a separate installer");
   for (const setting of ["SECURE_BOOT_V2_ENABLED", "SECURE_BOOT_BUILD_SIGNED_BINARIES",
-    "SECURE_SIGNED_APPS_NO_SECURE_BOOT", "BOOTLOADER_APP_ANTI_ROLLBACK"]) {
+    "SECURE_SIGNED_APPS_NO_SECURE_BOOT", "SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT", "BOOTLOADER_APP_ANTI_ROLLBACK"]) {
     assert.ok(configuration[setting] === undefined || configuration[setting] === false,
       `Unsupported security build configuration: ${setting}`);
   }

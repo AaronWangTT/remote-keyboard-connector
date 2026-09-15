@@ -93,6 +93,11 @@ test("installer rejects bootloaders configured to provision security or burn rol
     "SECURE_BOOT_BUILD_SIGNED_BINARIES", "SECURE_SIGNED_APPS_NO_SECURE_BOOT", "BOOTLOADER_APP_ANTI_ROLLBACK"]) {
     assert.throws(() => firmwareSecurity({ ...configurationFixture, [setting]: true }));
   }
+  const unsignedConfiguration = { ...configurationFixture, SECURE_SIGNED_APPS_NO_SECURE_BOOT: false,
+    SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT: false };
+  assert.equal(firmwareSecurity(unsignedConfiguration).signedApps, false);
+  assert.throws(() => firmwareSecurity({ ...unsignedConfiguration, SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT: true }),
+    /Unsupported security build configuration: SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT/);
   assert.throws(() => firmwareSecurity({ IDF_TARGET: "esp32s3" }));
 });
 
