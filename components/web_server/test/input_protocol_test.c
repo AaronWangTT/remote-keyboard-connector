@@ -1,4 +1,5 @@
 #include "input_protocol.h"
+#include "class/hid/hid.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -25,6 +26,12 @@ int main(void)
     assert(message.report.keys[0] == 4 && message.report.keys[5] == 56);
     assert(parse("{\"v\":1,\"type\":\"state\",\"seq\":2,\"modifiers\":0,\"keys\":[]}", &message));
     assert(keyboard_report_empty(&message.report));
+    assert(parse("{\"v\":1,\"type\":\"state\",\"seq\":3,\"modifiers\":1,\"keys\":[44]}", &message));
+    assert(message.report.modifiers == KEYBOARD_MODIFIER_LEFTCTRL && message.report.keys[0] == HID_KEY_SPACE);
+    assert(parse("{\"v\":1,\"type\":\"state\",\"seq\":4,\"modifiers\":8,\"keys\":[44]}", &message));
+    assert(message.report.modifiers == KEYBOARD_MODIFIER_LEFTGUI && message.report.keys[0] == HID_KEY_SPACE);
+    assert(parse("{\"v\":1,\"type\":\"state\",\"seq\":5,\"modifiers\":0,\"keys\":[41]}", &message));
+    assert(message.report.modifiers == 0 && message.report.keys[0] == HID_KEY_ESCAPE);
     const char *invalid[] = {
         "", "down", "null", "{}", "[]", "{\"v\":2,\"type\":\"ping\"}",
         "{\"v\":1,\"v\":1,\"type\":\"ping\"}", "{\"v\":1,\"type\":\"ping\",\"keys\":[]}",
@@ -32,7 +39,13 @@ int main(void)
         "{\"v\":1,\"type\":\"state\",\"seq\":0,\"modifiers\":0,\"keys\":[4]}",
         "{\"v\":1,\"type\":\"state\",\"seq\":1.5,\"modifiers\":0,\"keys\":[4]}",
         "{\"v\":1,\"type\":\"state\",\"seq\":2147483648,\"modifiers\":0,\"keys\":[4]}",
+        "{\"v\":1,\"type\":\"state\",\"seq\":1,\"modifiers\":4,\"keys\":[4]}",
         "{\"v\":1,\"type\":\"state\",\"seq\":1,\"modifiers\":1,\"keys\":[4]}",
+        "{\"v\":1,\"type\":\"state\",\"seq\":1,\"modifiers\":3,\"keys\":[44]}",
+        "{\"v\":1,\"type\":\"state\",\"seq\":1,\"modifiers\":9,\"keys\":[44]}",
+        "{\"v\":1,\"type\":\"state\",\"seq\":1,\"modifiers\":1,\"keys\":[44,45]}",
+        "{\"v\":1,\"type\":\"state\",\"seq\":1,\"modifiers\":2,\"keys\":[41]}",
+        "{\"v\":1,\"type\":\"state\",\"seq\":1,\"modifiers\":0,\"keys\":[4,41]}",
         "{\"v\":1,\"type\":\"state\",\"seq\":1,\"modifiers\":0,\"keys\":[4,4]}",
         "{\"v\":1,\"type\":\"state\",\"seq\":1,\"modifiers\":0,\"keys\":[4,5,6,7,8,9,10]}",
         "{\"v\":1,\"type\":\"state\",\"seq\":1,\"modifiers\":0,\"keys\":[0]}",

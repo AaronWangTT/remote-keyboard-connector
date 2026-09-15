@@ -455,8 +455,9 @@ credential writes, Wi-Fi scans, or unbounded allocations.
 
 ### Input-Source And Cancel Layout
 
-Decision recorded 2026-09-14 (not yet implemented): place Globe at the left and
-Cancel at the right, adapting their row to the controller viewport:
+Decision recorded 2026-09-14 and implemented in software 2026-09-15: place
+Globe at the left and Cancel at the right, adapting their row to the controller
+viewport:
 
 | Controller layout | Control placement |
 | --- | --- |
@@ -506,7 +507,9 @@ Both chords contain only `HID_KEY_SPACE` (`0x2C`); the following all-keys-up
 report has zero modifiers and no keys. Use these exact states in report tests.
 
 On first use with no saved preference, preselect iOS without a mandatory host
-selection dialog. A Globe tap sends its preset when the normal control and USB
+selection dialog. An iOS/Win segmented toggle exposes the configured profile;
+unsupported saved values leave both segments unselected until the user chooses one.
+A Globe tap sends its preset when the normal control and USB
 readiness gates permit input. Keep the host-type setting editable and retain a
 saved selection across reloads and reconnects rather than resetting it to iOS.
 Loading the page or changing the host setting must never send a chord. An invalid
@@ -573,11 +576,11 @@ Do not carry Shift or the globe's Control/GUI modifiers into Escape, repeat it
 while held, or replay it after reconnection. Existing disconnect, timeout, and
 priority-release behavior still applies.
 
-The implemented typing allowlist currently excludes Escape. Implementation must
-add that usage to the on-screen mapping, firmware validation, and preview mock
-with focused model/parser/report tests; the full-state protocol shape and USB
-descriptor need not change. Adding this on-screen action does not implicitly
-authorize forwarding physical browser shortcuts or add a computer-key panel.
+The pre-increment typing allowlist excluded Escape. The implementation adds only
+solitary unmodified Escape to the on-screen command path, firmware validation,
+and preview mock, with focused model/parser/report tests; the full-state protocol
+shape and USB descriptor do not change. This on-screen action does not authorize
+forwarding physical browser shortcuts or add a computer-key panel.
 
 Gate: check single activation, modifier isolation, release ordering, cancellation,
 and reconnect behavior in the existing tests, then validate the controls' separate
@@ -591,6 +594,22 @@ On named real iPhone/iPad hosts, separately test a pending suggestion, an applie
 correction, and no suggestion in Notes and a Safari text field. Record OS version,
 input language, and hardware-keyboard autocorrection settings. These checks are
 pending; a browser mock or firmware build cannot establish autocorrection support.
+
+Software gate recorded 2026-09-15: all ten ASan/UBSan native suites and 15
+keyboard-model tests pass. All 34 API/browser tests pass across Chromium and
+WebKit. Chromium covers invalid-profile blocking, keyboard accessibility,
+persistence/reconnect silence, every-page rotation cleanup, responsive placement,
+and safe areas, with exact commands exercised through touch, mouse, and keyboard.
+WebKit delivers the exact iOS/Windows Globe and isolated Escape reports through
+touch. Both engines load the local icons, and physical shortcuts remain excluded.
+After integrating compiler size optimization from main, fresh ESP-IDF v6.1
+builds pass at `0xe19d0` bytes with `0x1e630` bytes free (about 12%) for the
+generic LED-disabled profile, and `0xe2ea0` bytes with `0x1d160` bytes free
+(about 11%) for the XinluCity status-LED profile. Both retain the unchanged
+1 MiB application partition and explicitly verify `COMPILER_OPTIMIZATION_SIZE`.
+The earlier `0xF63E0`/`0x9C20` measurement was a debug-optimized generic build.
+The real-host checks above remain pending, and headroom below the 20% product
+goal is not an operational-release signoff.
 
 ## 10. Storage and Resource Budgets
 

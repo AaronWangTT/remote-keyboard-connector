@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { KeyboardInput, characterKey, physicalKeys, layouts, bottomRow,
-  SHIFT_LEFT, SHIFT_RIGHT, CAPS_LOCK } from "../www/keyboard.mjs";
+  SHIFT_LEFT, SHIFT_RIGHT, CAPS_LOCK, DEFAULT_HOST_PROFILE, validHostProfile,
+  utilityKeys } from "../www/keyboard.mjs";
 
 const neutral = { modifiers: 0, keys: [] };
 const shift = layouts.letters[2][0];
@@ -135,6 +136,51 @@ test("clear cancels held keys, latches, and requests without replay", () => {
   assert.deepEqual(keyboard.report, neutral);
   assert.equal(keyboard.shiftLatched, false);
   assert.deepEqual(keyboard.release("a", 30), []);
+});
+
+test("Globe commands clear input and use exact configured host chords", () => {
+  const keyboard = new KeyboardInput();
+  keyboard.press("shift", shift, 0);
+  keyboard.release("shift", 10);
+  keyboard.press("a", characterKey("a"), 20);
+  assert.equal(DEFAULT_HOST_PROFILE, "ios");
+  assert.deepEqual(keyboard.activateCommand("globe", "ios"), [
+    neutral, { modifiers: 1, keys: [44] }, neutral,
+  ]);
+  assert.deepEqual(keyboard.report, neutral);
+  assert.equal(keyboard.shiftLatched, false);
+  assert.deepEqual(keyboard.release("a", 30), []);
+  assert.deepEqual(keyboard.activateCommand("globe", "windows"), [
+    neutral, { modifiers: 8, keys: [44] }, neutral,
+  ]);
+});
+
+test("unsupported Globe profiles emit nothing and preserve current input", () => {
+  const keyboard = new KeyboardInput();
+  keyboard.press("a", characterKey("a"), 0);
+  assert.equal(validHostProfile("ios"), true);
+  assert.equal(validHostProfile("windows"), true);
+  for (const profile of ["", "macos", "linux", "constructor", "toString", "__proto__", null, undefined]) {
+    assert.equal(validHostProfile(profile), false);
+    assert.deepEqual(keyboard.activateCommand("globe", profile), []);
+    assert.deepEqual(keyboard.report, { modifiers: 0, keys: [4] });
+  }
+});
+
+test("Cancel is one isolated Escape tap and never becomes a physical key", () => {
+  const keyboard = new KeyboardInput();
+  keyboard.press("shift", shift, 0);
+  keyboard.press("a", characterKey("a"), 1);
+  assert.deepEqual(keyboard.activateCommand("cancel", "windows"), [
+    neutral, { modifiers: 0, keys: [41] }, neutral,
+  ]);
+  assert.deepEqual(keyboard.activateCommand("unknown", "ios"), []);
+  assert.deepEqual(utilityKeys.map(key => [key.action, key.label]), [
+    ["globe", "Switch input source"], ["cancel", "Cancel (Escape)"],
+  ]);
+  for (const code of ["Escape", "ControlLeft", "ControlRight", "MetaLeft", "MetaRight"]) {
+    assert.equal(physicalKeys.has(code), false);
+  }
 });
 
 test("1000 letter and symbol taps preserve report pairs", () => {

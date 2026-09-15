@@ -108,7 +108,17 @@
         <div class="network-footer"><button id="forget-network" class="command-button danger" type="button" hidden>Forget network</button></div>
       </section>
     <section id="keyboard" class="keyboard-surface" aria-label="Remote keyboard" tabindex="0" hidden>
-      <div class="keyboard-meta"><span>English (US)</span><span id="caps-status" role="status">Caps unknown</span></div>
+        <div class="keyboard-meta">
+          <span>Key map: US ANSI</span>
+          <div class="host-profile-field">
+            <span id="host-profile-label">Host</span>
+            <div id="host-profile" class="host-profile-toggle" role="radiogroup" aria-labelledby="host-profile-label" aria-required="true">
+              <label><input type="radio" name="host-profile" value="ios"><span>iOS</span></label>
+              <label><input type="radio" name="host-profile" value="windows"><span>Win</span></label>
+            </div>
+          </div>
+          <span id="caps-status" role="status">Caps unknown</span>
+        </div>
       <div id="key-rows" data-page="letters"></div>
     </section>
     </div>

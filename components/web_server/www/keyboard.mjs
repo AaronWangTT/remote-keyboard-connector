@@ -1,6 +1,17 @@
 export const SHIFT_LEFT = 2;
 export const SHIFT_RIGHT = 32;
 export const CAPS_LOCK = 57;
+export const DEFAULT_HOST_PROFILE = "ios";
+
+const hostCommands = Object.freeze({
+  ios: Object.freeze({ modifiers: 1, keys: Object.freeze([44]) }),
+  windows: Object.freeze({ modifiers: 8, keys: Object.freeze([44]) }),
+});
+const cancelCommand = Object.freeze({ modifiers: 0, keys: Object.freeze([41]) });
+
+export function validHostProfile(profile) {
+  return Object.hasOwn(hostCommands, profile);
+}
 
 export const physicalKeys = new Map();
 const characters = new Map();
@@ -53,6 +64,11 @@ export function bottomRow(page) {
     { ...physicalKeys.get("Space"), label: "space" },
     { ...physicalKeys.get("Enter"), icon: "return" }];
 }
+
+export const utilityKeys = Object.freeze([
+  Object.freeze({ action: "globe", label: "Switch input source", icon: "globe" }),
+  Object.freeze({ action: "cancel", label: "Cancel (Escape)", icon: "x" }),
+]);
 
 export class KeyboardInput {
   constructor() {
@@ -108,6 +124,14 @@ export class KeyboardInput {
     this.capsRequestedAt = now;
     this.capsExpected = this.capsLock === null ? null : !this.capsLock;
     return [{ ...base, keys: [...base.keys, CAPS_LOCK].sort((left, right) => left - right) }, base];
+  }
+
+  activateCommand(action, hostProfile) {
+    const command = action === "globe" && validHostProfile(hostProfile) ? hostCommands[hostProfile] :
+      action === "cancel" ? cancelCommand : undefined;
+    if (!command) return [];
+    this.clear();
+    return [this.report, { modifiers: command.modifiers, keys: [...command.keys] }, this.report];
   }
 
   press(sourceId, key, now) {

@@ -5,7 +5,8 @@
 
 static bool supported_usage(uint8_t usage)
 {
-    return (usage >= HID_KEY_A && usage <= HID_KEY_ENTER) || usage == HID_KEY_BACKSPACE ||
+    return (usage >= HID_KEY_A && usage <= HID_KEY_ENTER) || usage == HID_KEY_ESCAPE ||
+           usage == HID_KEY_BACKSPACE ||
            (usage >= HID_KEY_SPACE && usage <= HID_KEY_CAPS_LOCK && usage != HID_KEY_EUROPE_1);
 }
 
@@ -18,11 +19,13 @@ bool keyboard_report_empty(const keyboard_report_t *report)
 bool keyboard_report_valid(const keyboard_report_t *report)
 {
     if (report == NULL || report->reserved != 0 ||
-        (report->modifiers & ~(KEYBOARD_MODIFIER_LEFTSHIFT | KEYBOARD_MODIFIER_RIGHTSHIFT))) {
+        (report->modifiers & ~(KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTSHIFT |
+                               KEYBOARD_MODIFIER_LEFTGUI | KEYBOARD_MODIFIER_RIGHTSHIFT))) {
         return false;
     }
     uint8_t previous = 0;
     bool ended = false;
+    bool escape = false;
     for (size_t index = 0; index < KEYBOARD_KEY_CAPACITY; index++) {
         uint8_t usage = report->keys[index];
         if (usage == 0) {
@@ -32,7 +35,16 @@ bool keyboard_report_valid(const keyboard_report_t *report)
                 return false;
             }
             previous = usage;
+            escape = escape || usage == HID_KEY_ESCAPE;
         }
+    }
+    if (report->modifiers & (KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTGUI)) {
+        return (report->modifiers == KEYBOARD_MODIFIER_LEFTCTRL ||
+                report->modifiers == KEYBOARD_MODIFIER_LEFTGUI) &&
+               report->keys[0] == HID_KEY_SPACE && report->keys[1] == 0;
+    }
+    if (escape) {
+        return report->modifiers == 0 && report->keys[0] == HID_KEY_ESCAPE && report->keys[1] == 0;
     }
     return true;
 }
