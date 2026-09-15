@@ -61,7 +61,7 @@ esp_err_t device_identity_init(void)
     if (result != ESP_OK) return result;
     snprintf(device_id, sizeof(device_id), "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     nvs_handle_t handle;
-    result = nvs_open("kb_identity", NVS_READONLY, &handle);
+    result = nvs_open("kb_identity", NVS_READWRITE, &handle);
     if (result != ESP_OK) return result;
     uint32_t version = 0;
     uint32_t iterations = 0;
@@ -92,6 +92,20 @@ esp_err_t device_identity_init(void)
             result = ESP_ERR_INVALID_VERSION;
         }
     }
+    if (result == ESP_OK) {
+        uint8_t consumed = 0;
+        esp_err_t marker = nvs_get_u8(handle, "claim_used", &consumed);
+        if (marker == ESP_ERR_NVS_NOT_FOUND) {
+            if (owner.version == 1) {
+                result = nvs_set_u8(handle, "claim_used", 1);
+                if (result == ESP_OK) result = nvs_commit(handle);
+            }
+        } else if (marker != ESP_OK) {
+            result = marker;
+        } else if (consumed != 1 || owner.version != 1) {
+            result = ESP_ERR_INVALID_STATE;
+        }
+    }
     nvs_close(handle);
     if (result == ESP_OK && psa_crypto_init() != PSA_SUCCESS) result = ESP_FAIL;
     initialized = result == ESP_OK;
@@ -99,6 +113,9 @@ esp_err_t device_identity_init(void)
         mbedtls_platform_zeroize(ap_password, sizeof(ap_password));
         mbedtls_platform_zeroize(claim_digest, sizeof(claim_digest));
         mbedtls_platform_zeroize(&owner, sizeof(owner));
+    } else if (owner.version == 1) {
+        mbedtls_platform_zeroize(claim_salt, sizeof(claim_salt));
+        mbedtls_platform_zeroize(claim_digest, sizeof(claim_digest));
     }
     return result;
 }
@@ -144,12 +161,15 @@ esp_err_t device_identity_claim(const char *setup_code, const char *password)
     nvs_handle_t handle;
     esp_err_t result = nvs_open("kb_identity", NVS_READWRITE, &handle);
     if (result == ESP_OK) {
-        result = nvs_set_blob(handle, "owner", &candidate, sizeof(candidate));
+        result = nvs_set_u8(handle, "claim_used", 1);
+        if (result == ESP_OK) result = nvs_commit(handle);
+        if (result == ESP_OK) result = nvs_set_blob(handle, "owner", &candidate, sizeof(candidate));
         if (result == ESP_OK) result = nvs_commit(handle);
         nvs_close(handle);
     }
     if (result == ESP_OK) {
         owner = candidate;
+        mbedtls_platform_zeroize(claim_salt, sizeof(claim_salt));
         mbedtls_platform_zeroize(claim_digest, sizeof(claim_digest));
     } else {
         initialized = false;

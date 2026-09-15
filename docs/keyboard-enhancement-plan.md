@@ -2,6 +2,12 @@
 
 Date: 2026-09-14
 
+Historical keyboard-only increment: networking, authentication, provisioning,
+and firmware-distribution statements below describe the implementation at that
+time. They are superseded by the [Wi-Fi enhancement plan](wifi-enhancement-plan.md)
+and [current README](../README.md). The typing layout and input-safety design
+remain relevant; the old unauthenticated AP is not the current firmware default.
+
 This increment expands the [single-key prototype](minimal-implementation-plan.md).
 The user selected English (US) iPhone-style typing keys without a computer-key
 panel. Default AP mode, unauthenticated HTTP/WebSocket access, and one controller

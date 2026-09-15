@@ -49,6 +49,7 @@ static bool ap_reconnect_confirmed;
 static int64_t ap_reconnect_until;
 static bool ap_restore_pending;
 static esp_netif_ip_info_t ap_restore_address;
+static int64_t ap_restore_retry_at;
 static bool guarded;
 static bool guard_ap;
 static uint32_t guard_generation;
@@ -334,6 +335,7 @@ static esp_err_t restore_ap_address(void)
     if (result == ESP_OK) result = esp_netif_dhcps_get_status(ap_interface, &status);
     if (result == ESP_OK && status != ESP_NETIF_DHCP_STARTED) result = ESP_FAIL;
     if (result == ESP_OK) ap_restore_pending = false;
+    ap_restore_retry_at = result == ESP_OK ? 0 : esp_timer_get_time() + NETWORK_CONNECT_US;
     return result;
 }
 
@@ -412,6 +414,13 @@ static esp_err_t recovery(const char *error, bool retry_saved)
     if (!station) network_state_init(&state, false, esp_timer_get_time());
     job_result("failed", result == ESP_OK ? error : "wifi_unavailable", false);
     return result;
+}
+
+static bool retry_ap_restoration(int64_t now)
+{
+    if (!ap_restore_pending) return false;
+    if (now >= ap_restore_retry_at) recovery("subnet_overlap", false);
+    return true;
 }
 
 static bool supported_auth(wifi_auth_mode_t authentication)
@@ -553,6 +562,10 @@ static void network_worker(void *argument)
             portEXIT_CRITICAL(&lock);
         }
         int64_t now = esp_timer_get_time();
+        if (retry_ap_restoration(now)) {
+            refresh_snapshot();
+            continue;
+        }
         if (ap_reconnect_pending && now >= ap_reconnect_until && !recovery_held()) {
             recovery("confirmation_timeout", false);
             refresh_snapshot();

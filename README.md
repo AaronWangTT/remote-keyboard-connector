@@ -221,8 +221,8 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-The Wi-Fi enhancement image is `0xf3800` bytes (997,376 bytes), leaving
-`0xc800` bytes (51,200 bytes, about 5%) in the existing 1 MiB application partition.
+The Wi-Fi enhancement image is `0xf3920` bytes (997,664 bytes), leaving
+`0xc6e0` bytes (50,912 bytes, about 5%) in the existing 1 MiB application partition.
 Flash layout and PSRAM settings are unchanged. This is below the broader 20%
 headroom goal; physical flash capacity and runtime heap/stack/power behavior
 remain unverified.
