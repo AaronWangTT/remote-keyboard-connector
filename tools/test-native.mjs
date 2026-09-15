@@ -16,6 +16,8 @@ if (process.platform !== "win32") flags.push("-fsanitize=address,undefined");
 const usbIncludes = ["components/usb_keyboard", "components/usb_keyboard/include",
   "components/usb_keyboard/test", "managed_components/espressif__tinyusb/src"];
 const suites = {
+  owner_store: { includes: ["components/device_identity"],
+    sources: ["components/device_identity/owner_store.c", "components/device_identity/test/owner_store_test.c"] },
   network_state: { includes: ["components/network", "components/network/include", "managed_components/espressif__cjson/cJSON"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/network/network_state.c", "components/network/test/network_state_test.c"], flags: ["-DCJSON_NESTING_LIMIT=4", "-lm"] },
   access_control: { includes: ["components/web_server", "components/network/include", "managed_components/espressif__cjson/cJSON"],

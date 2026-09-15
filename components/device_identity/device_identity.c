@@ -1,4 +1,5 @@
 #include "device_identity.h"
+#include "owner_store.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -9,13 +10,6 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "psa/crypto.h"
-
-typedef struct {
-    uint32_t version;
-    uint32_t iterations;
-    uint8_t salt[16];
-    uint8_t digest[32];
-} owner_record_t;
 
 static bool initialized;
 static char device_id[13];
@@ -29,6 +23,61 @@ static esp_err_t read_blob(nvs_handle_t handle, const char *key, void *output, s
     size_t length = expected;
     esp_err_t result = nvs_get_blob(handle, key, output, &length);
     return result == ESP_OK && length != expected ? ESP_ERR_INVALID_SIZE : result;
+}
+
+typedef struct {
+    nvs_handle_t handle;
+    esp_err_t error;
+} nvs_owner_context_t;
+
+static owner_store_result_t storage_result(nvs_owner_context_t *context, esp_err_t result)
+{
+    context->error = result;
+    return result == ESP_OK ? OWNER_STORE_OK : result == ESP_ERR_NVS_NOT_FOUND ? OWNER_STORE_NOT_FOUND : OWNER_STORE_ERROR;
+}
+
+static owner_store_result_t read_owner(void *argument, owner_record_t *record)
+{
+    nvs_owner_context_t *context = argument;
+    return storage_result(context, read_blob(context->handle, "owner", record, sizeof(*record)));
+}
+
+static owner_store_result_t read_consumed(void *argument, uint8_t *consumed)
+{
+    nvs_owner_context_t *context = argument;
+    return storage_result(context, nvs_get_u8(context->handle, "claim_used", consumed));
+}
+
+static owner_store_result_t write_consumed(void *argument)
+{
+    nvs_owner_context_t *context = argument;
+    return storage_result(context, nvs_set_u8(context->handle, "claim_used", 1));
+}
+
+static owner_store_result_t write_owner(void *argument, const owner_record_t *record)
+{
+    nvs_owner_context_t *context = argument;
+    return storage_result(context, nvs_set_blob(context->handle, "owner", record, sizeof(*record)));
+}
+
+static owner_store_result_t commit_owner_store(void *argument)
+{
+    nvs_owner_context_t *context = argument;
+    return storage_result(context, nvs_commit(context->handle));
+}
+
+static owner_store_t owner_store(nvs_owner_context_t *context)
+{
+    return (owner_store_t){.context = context, .read_owner = read_owner, .read_consumed = read_consumed,
+        .write_consumed = write_consumed, .write_owner = write_owner, .commit = commit_owner_store};
+}
+
+static esp_err_t owner_result(owner_store_result_t result, const nvs_owner_context_t *context)
+{
+    if (result == OWNER_STORE_OK) return ESP_OK;
+    if (result == OWNER_STORE_INVALID_VERSION) return ESP_ERR_INVALID_VERSION;
+    if (result == OWNER_STORE_INVALID_STATE) return ESP_ERR_INVALID_STATE;
+    return context->error == ESP_OK ? ESP_FAIL : context->error;
 }
 
 static bool derive(const char *password, const uint8_t salt[16], uint8_t digest[32])
@@ -84,27 +133,9 @@ esp_err_t device_identity_init(void)
     if (result == ESP_OK) result = nvs_get_u32(handle, "claim_cost", &iterations);
     if (result == ESP_OK && iterations != DEVICE_KDF_ITERATIONS) result = ESP_ERR_INVALID_VERSION;
     if (result == ESP_OK) {
-        result = read_blob(handle, "owner", &owner, sizeof(owner));
-        if (result == ESP_ERR_NVS_NOT_FOUND) {
-            owner = (owner_record_t){0};
-            result = ESP_OK;
-        } else if (result == ESP_OK && (owner.version != 1 || owner.iterations != DEVICE_KDF_ITERATIONS)) {
-            result = ESP_ERR_INVALID_VERSION;
-        }
-    }
-    if (result == ESP_OK) {
-        uint8_t consumed = 0;
-        esp_err_t marker = nvs_get_u8(handle, "claim_used", &consumed);
-        if (marker == ESP_ERR_NVS_NOT_FOUND) {
-            if (owner.version == 1) {
-                result = nvs_set_u8(handle, "claim_used", 1);
-                if (result == ESP_OK) result = nvs_commit(handle);
-            }
-        } else if (marker != ESP_OK) {
-            result = marker;
-        } else if (consumed != 1 || owner.version != 1) {
-            result = ESP_ERR_INVALID_STATE;
-        }
+        nvs_owner_context_t context = {.handle = handle};
+        owner_store_t store = owner_store(&context);
+        result = owner_result(owner_store_load(&store, DEVICE_KDF_ITERATIONS, &owner), &context);
     }
     nvs_close(handle);
     if (result == ESP_OK && psa_crypto_init() != PSA_SUCCESS) result = ESP_FAIL;
@@ -161,10 +192,9 @@ esp_err_t device_identity_claim(const char *setup_code, const char *password)
     nvs_handle_t handle;
     esp_err_t result = nvs_open("kb_identity", NVS_READWRITE, &handle);
     if (result == ESP_OK) {
-        result = nvs_set_u8(handle, "claim_used", 1);
-        if (result == ESP_OK) result = nvs_commit(handle);
-        if (result == ESP_OK) result = nvs_set_blob(handle, "owner", &candidate, sizeof(candidate));
-        if (result == ESP_OK) result = nvs_commit(handle);
+        nvs_owner_context_t context = {.handle = handle};
+        owner_store_t store = owner_store(&context);
+        result = owner_result(owner_store_claim(&store, DEVICE_KDF_ITERATIONS, &candidate), &context);
         nvs_close(handle);
     }
     if (result == ESP_OK) {

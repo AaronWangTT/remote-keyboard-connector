@@ -364,11 +364,11 @@ follow-up used Linux host tools, ESP-IDF v6.1, and the loopback preview.
 
 | Area | Executed result |
 | --- | --- |
-| Native C | Four suites passed: access/credential validation, network state/persistence selection, eight USB-state cases, and the full-state JSON parser. Initial Windows validation used Zig 0.15.2 without sanitizers; Linux review follow-up passed ASan/UBSan, including malformed UTF-8 and maximum-length raw SSID cases. |
+| Native C | Five suites passed: owner-record persistence/claim consumption, access/credential validation, network state/persistence selection, eight USB-state cases, and the full-state JSON parser. Initial Windows validation used Zig 0.15.2 without sanitizers; Linux review follow-up passed ASan/UBSan, including interrupted claims, malformed UTF-8, and maximum-length raw SSID cases. |
 | Keyboard model | All 12 existing JavaScript model/layout tests passed. |
 | Provisioning and browser/API | All 24 tests passed, covering unique private setup artifacts, one-time claim, session/Origin/CSRF checks, explicit control, Network settings, expired scans, raw SSIDs, failed candidates, idle-cancel rejection, confirmed/abandoned AP-address transitions, abandoned handover expiry, numeric-address recovery after hostname retirement, lost-response recovery without resubmission, and keyboard regressions. |
 | Browser layout | Chromium and WebKit checked account/network views at 320x568, 390x844, 568x320, 768x1024, and 1366x768 as applicable. Keyboard regression checks retain the larger viewport matrix. Screenshots were inspected; a WebKit long-selector overflow was fixed. |
-| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf3c20` bytes; `0xc3e0` bytes (50,144 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
+| Firmware | ESP-IDF v6.1 ESP32-S3 build passed. App `0xf3ec0` bytes; `0xc140` bytes (49,472 bytes, about 5%) free in the existing app partition, with the SDK low-headroom warning. Bootloader size check passed. No flash/partition/PSRAM expansion. |
 | Device operations | No serial connection, provisioning write, flash write, erase, or eFuse change was performed. The new firmware has not run on the board. |
 
 An isolated Linux harness also executed the actual cleanup and status callbacks
@@ -465,6 +465,14 @@ Isolated loader/claim tests verify write ordering, interrupted owner writes,
 missing owner records, and migration. Incomplete AP address/DHCP restoration is
 retried by the worker at 30-second intervals before normal STA processing;
 deadline tests cover repeated failures and eventual unattended recovery.
+
+Owner-record loading and marker-before-owner commit sequencing now use the
+portable `owner_store` implementation called by the firmware NVS adapter. Its
+committed native suite runs in the default host command and CI. It injects
+failures before and after every write/commit, with immediate and commit-delayed
+durability, and verifies reboot behavior, lost-owner rejection, legacy marker
+migration, invalid records, and storage errors. Startup also propagates either
+AP or STA hostname initialization failure before Wi-Fi is started.
 
 Both firmware JSON parsers validate complete request text as UTF-8 before cJSON
 parsing. Malformed raw UTF-8 and unpaired JSON surrogate escapes are rejected in

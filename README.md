@@ -129,7 +129,7 @@ ESP cross-compiler cannot execute native unit tests. The Bash entry point
 On Linux, the runner selects `/usr/bin/` binutils explicitly so an activated
 ESP-IDF toolchain cannot substitute a cross-assembler or linker.
 
-Four native suites (including eight USB-state cases), twelve keyboard-model
+Five native suites (including owner-record persistence and eight USB-state cases), twelve keyboard-model
 tests, and 24 provisioning/API/Chromium/WebKit tests pass in the Linux review
 validation. Native Windows tests ran without sanitizers; the Linux runner
 enables ASan/UBSan.
@@ -221,8 +221,8 @@ VS Code extension recommendations do not install extensions automatically.
    on a consenting desktop host and real iPhone/iPad controller before broader
    compatibility claims. Record actual report timing and host LED feedback.
 
-The Wi-Fi enhancement image is `0xf3c20` bytes (998,432 bytes), leaving
-`0xc3e0` bytes (50,144 bytes, about 5%) in the existing 1 MiB application partition.
+The Wi-Fi enhancement image is `0xf3ec0` bytes (999,104 bytes), leaving
+`0xc140` bytes (49,472 bytes, about 5%) in the existing 1 MiB application partition.
 Flash layout and PSRAM settings are unchanged. This is below the broader 20%
 headroom goal; physical flash capacity and runtime heap/stack/power behavior
 remain unverified.

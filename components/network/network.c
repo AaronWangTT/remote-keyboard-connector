@@ -711,8 +711,8 @@ esp_err_t network_start(void)
     ESP_RETURN_ON_ERROR(dhcp_result, TAG, "DHCP stop failed");
     ESP_RETURN_ON_ERROR(esp_netif_set_ip_info(ap_interface, &address), TAG, "AP address setup failed");
     ESP_RETURN_ON_ERROR(esp_netif_dhcps_start(ap_interface), TAG, "DHCP start failed");
-    esp_netif_set_hostname(ap_interface, saved.hostname);
-    esp_netif_set_hostname(station_interface, saved.hostname);
+    ESP_RETURN_ON_ERROR(esp_netif_set_hostname(ap_interface, saved.hostname), TAG, "AP hostname setup failed");
+    ESP_RETURN_ON_ERROR(esp_netif_set_hostname(station_interface, saved.hostname), TAG, "Station hostname setup failed");
     wifi_init_config_t initialization = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&initialization), TAG, "Wi-Fi initialization failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "Wi-Fi storage setup failed");
