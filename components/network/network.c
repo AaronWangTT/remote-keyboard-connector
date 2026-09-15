@@ -47,6 +47,8 @@ static bool testing;
 static bool ap_reconnect_pending;
 static bool ap_reconnect_confirmed;
 static int64_t ap_reconnect_until;
+static bool ap_restore_pending;
+static esp_netif_ip_info_t ap_restore_address;
 static bool guarded;
 static bool guard_ap;
 static uint32_t guard_generation;
@@ -289,12 +291,12 @@ static void refresh_snapshot(void)
     esp_netif_get_ip_info(ap_interface, &ap_info);
     esp_netif_get_ip_info(station_interface, &station_info);
     portENTER_CRITICAL(&lock);
-    snapshot.available = driver_started;
+    snapshot.available = driver_started && !ap_restore_pending;
     snapshot.ap_active = driver_started && state.ap;
     snapshot.station_online = driver_started && state.online;
     snapshot.desired_station = saved.station != 0;
     snapshot.has_profile = saved.ssid[0] != '\0';
-    snapshot.can_control = !guarded && !snapshot.busy && !command_pending && !scanning && !testing && driver_started &&
+    snapshot.can_control = !guarded && !ap_restore_pending && !snapshot.busy && !command_pending && !scanning && !testing && driver_started &&
                            !(state.phase == NETWORK_RECOVERY && connecting) &&
                            (state.phase == NETWORK_AP || state.phase == NETWORK_RECOVERY || state.phase == NETWORK_STATION);
     snprintf(snapshot.phase, sizeof(snapshot.phase), "%s", network_phase_name(state.phase));
@@ -319,6 +321,20 @@ static void clear_ap_reconnect(void)
     portENTER_CRITICAL(&lock);
     snapshot.ap_reconnect_ip[0] = '\0';
     portEXIT_CRITICAL(&lock);
+}
+
+static esp_err_t restore_ap_address(void)
+{
+    esp_err_t result = esp_netif_dhcps_stop(ap_interface);
+    if (result == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) result = ESP_OK;
+    if (result == ESP_OK) result = esp_netif_set_ip_info(ap_interface, &ap_restore_address);
+    if (result == ESP_OK) result = esp_netif_dhcps_start(ap_interface);
+    if (result == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) result = ESP_OK;
+    esp_netif_dhcp_status_t status = ESP_NETIF_DHCP_INIT;
+    if (result == ESP_OK) result = esp_netif_dhcps_get_status(ap_interface, &status);
+    if (result == ESP_OK && status != ESP_NETIF_DHCP_STARTED) result = ESP_FAIL;
+    if (result == ESP_OK) ap_restore_pending = false;
+    return result;
 }
 
 static bool non_overlapping_ap(const esp_netif_ip_info_t *station_info)
@@ -365,8 +381,10 @@ static bool non_overlapping_ap(const esp_netif_ip_info_t *station_info)
         if (result == ESP_OK) result = esp_netif_set_ip_info(ap_interface, &alternative);
         if (result == ESP_OK) result = esp_netif_dhcps_start(ap_interface);
         if (result != ESP_OK) {
-            esp_netif_set_ip_info(ap_interface, &current);
-            esp_netif_dhcps_start(ap_interface);
+            ap_restore_address = current;
+            ap_restore_pending = true;
+            esp_err_t restored = restore_ap_address();
+            if (restored != ESP_OK) ESP_LOGE(TAG, "AP address/DHCP rollback failed: %s", esp_err_to_name(restored));
         }
         if (result == ESP_OK) esp_wifi_deauth_sta(0);
         mdns_netif_action(ap_interface, MDNS_EVENT_ENABLE_IP4);
@@ -389,7 +407,8 @@ static esp_err_t recovery(const char *error, bool retry_saved)
     mbedtls_platform_zeroize(&candidate, sizeof(candidate));
     network_state_recover(&state, esp_timer_get_time());
     bool station = retry_saved && saved.station && saved.ssid[0] != '\0';
-    esp_err_t result = configure_driver(true, station, &saved);
+    esp_err_t result = ap_restore_pending ? restore_ap_address() : ESP_OK;
+    if (result == ESP_OK) result = configure_driver(true, station, &saved);
     if (!station) network_state_init(&state, false, esp_timer_get_time());
     job_result("failed", result == ESP_OK ? error : "wifi_unavailable", false);
     return result;

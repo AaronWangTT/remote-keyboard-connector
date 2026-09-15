@@ -266,6 +266,11 @@ test("overlapping AP subnet is announced and confirmed before reconnecting at th
   await expect(page.getByRole("link", { name: "172.30.4.1", exact: true })).toHaveAttribute("href", "http://172.30.4.1/");
   await expect(page.locator("#network-ap-address")).toContainText("192.168.4.1");
   await expect(page.locator("#network-saved")).toHaveText("None");
+  for (let poll = 0; poll < 3; poll++) {
+    await page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/network/job");
+    await expect(page.locator("#network-ap-address a")).toHaveCount(1);
+    await expect(page.locator("#network-ap-address")).toHaveText("192.168.4.1 -> 172.30.4.1");
+  }
   assert.equal(confirmations, 0);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.getByRole("button", { name: "Change AP address", exact: true }).click();
