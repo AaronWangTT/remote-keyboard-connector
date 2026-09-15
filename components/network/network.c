@@ -190,9 +190,10 @@ static esp_err_t save_configuration(const network_config_t *configuration)
     if (!network_config_valid(configuration)) return ESP_ERR_INVALID_ARG;
     nvs_handle_t handle;
     esp_err_t result = nvs_open("kb_network", NVS_READWRITE, &handle);
-    if (result != ESP_OK) return result;
-    result = network_config_store(configuration, &active_slot, stage_configuration, activate_configuration, &handle) ? ESP_OK : ESP_FAIL;
-    nvs_close(handle);
+    if (result == ESP_OK) {
+        result = network_config_store(configuration, &active_slot, stage_configuration, activate_configuration, &handle) ? ESP_OK : ESP_FAIL;
+        nvs_close(handle);
+    }
     if (result == ESP_OK) {
         saved = *configuration;
     } else {

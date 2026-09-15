@@ -51,6 +51,16 @@ export async function writeIdentity(deviceId, output) {
   const directory = resolve(output);
   assert.ok(outsideRepository(directory), "Private provisioning output must be outside the repository");
   const identity = createIdentity(deviceId);
+  let ancestor = dirname(directory);
+  for (;;) {
+    try {
+      assert.ok(outsideRepository(await realpath(ancestor)), "Private output must not resolve into the repository");
+      break;
+    } catch (error) {
+      if (error.code !== "ENOENT" || dirname(ancestor) === ancestor) throw error;
+      ancestor = dirname(ancestor);
+    }
+  }
   await mkdir(dirname(directory), { recursive: true, mode: 0o700 });
   const parent = await realpath(dirname(directory));
   assert.ok(outsideRepository(parent), "Private output must not resolve into the repository");

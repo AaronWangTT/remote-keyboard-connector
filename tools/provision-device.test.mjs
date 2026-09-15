@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { pbkdf2Sync } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
 import { createIdentity, identityCsv, passwordIterations, wifiPayload, writeIdentity } from "./provision-device.mjs";
 
@@ -29,7 +30,15 @@ test("identity generation uses independent device-bound AP and claim credentials
 test("private setup files are outside Git, contain a PNG/card, and never overwrite", async context => {
   await assert.rejects(writeIdentity("001122334455", ".cache/not-private"));
   const temporary = await mkdtemp(join(tmpdir(), "keyboard-provision-test-"));
+  const repository = fileURLToPath(new URL("../", import.meta.url));
+  const unexpectedParent = join(repository, basename(temporary));
+  await assert.rejects(access(unexpectedParent), { code: "ENOENT" });
   try {
+    const repositoryLink = join(temporary, "repository-link");
+    await symlink(repository, repositoryLink, process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(writeIdentity("001122334455", join(repositoryLink, basename(temporary), "nested", "device")),
+      /must not resolve into the repository/);
+    await assert.rejects(access(unexpectedParent), { code: "ENOENT" });
     const parent = join(temporary, "new-parent");
     const directory = join(parent, "device");
     await assert.rejects(writeIdentity("mistyped-MAC", directory));
@@ -59,5 +68,6 @@ test("private setup files are outside Git, contain a PNG/card, and never overwri
     assert.equal(await readFile(join(directory, "identity.csv"), "utf8"), before);
   } finally {
     await rm(temporary, { recursive: true, force: true });
+    await rm(unexpectedParent, { recursive: true, force: true });
   }
 });
