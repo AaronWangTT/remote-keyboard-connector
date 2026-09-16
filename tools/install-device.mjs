@@ -264,7 +264,9 @@ OTA builds: --verification-key <independently trusted public PEM> is required, i
 To install an OTA build: also pass --reset-layout to confirm a full erase and fresh provisioning.
 --allow-test-firmware explicitly permits installation of a test-key build. Never use a candidate bundle as its own trust root.
 Legacy installations retain their existing partition guards; OTA clean installation never reads/converts old settings.
-Private output includes a firmware snapshot, identity, setup card, and backup. Never upload it to Git or CI.`);
+Private output includes a firmware snapshot, fresh identity, setup card, and installation verification records.
+Only legacy factory installations include a full-flash backup. OTA --reset-layout creates no old-flash backup.
+Never upload private output to Git or CI.`);
     return { mode: "help" };
   }
   const sdk = dependencies.sdk ?? ((operation, request) => runSdk(options, operation, request));

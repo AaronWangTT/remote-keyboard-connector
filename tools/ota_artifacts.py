@@ -169,14 +169,16 @@ def build_artifacts(build, sdk, project):
     require(not any(configuration.get(name) for name in forbidden) and configuration.get("ESPTOOLPY_FLASHSIZE") == "16MB",
             "Unsupported OTA hardware security, PHY, or flash profile")
     key_path = (project / configuration["SECURE_BOOT_SIGNING_KEY"]).resolve()
-    private = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
-    require(isinstance(private, rsa.RSAPrivateKey) and private.key_size == 3072, "RSA-3072 signing key required")
-    key = private.public_key()
     release = configuration.get("KEYBOARD_RELEASE") is True
     if release:
         require(not key_path.is_relative_to(project), "Release signing key must be outside the repository")
-        require(subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], cwd=project, check=False).returncode == 0,
-                "Release builds require a clean tracked worktree")
+        worktree = subprocess.run(["git", "status", "--porcelain=v1", "--untracked-files=all"],
+                                  cwd=project, capture_output=True, check=False)
+        require(worktree.returncode == 0 and not worktree.stdout,
+                "Release builds require a verified clean worktree, including untracked files")
+    private = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+    require(isinstance(private, rsa.RSAPrivateKey) and private.key_size == 3072, "RSA-3072 signing key required")
+    key = private.public_key()
     flash = json.loads((build / "flasher_args.json").read_text())
     require(flash["extra_esptool_args"]["chip"] == "esp32s3" and len(flash["flash_files"]) == 4,
             "Unexpected flash manifest")

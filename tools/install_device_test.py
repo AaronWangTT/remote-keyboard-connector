@@ -815,6 +815,33 @@ class OtaArtifactTests(unittest.TestCase):
         recorded = json.loads((self.output / "install-plan.json").read_text())
         self.assertEqual(recorded["layout"]["verifiedSigningKeySha256"], self.firmware["manifest"]["signingKeySha256"])
 
+    def test_release_packaging_rejects_untracked_staged_and_failed_git_checks(self):
+        project = self.root / "release-project"
+        subprocess.run(["git", "init", "--quiet", str(project)], capture_output=True, check=True)
+        config_path = self.build / "config/sdkconfig.json"
+        configuration = json.loads(config_path.read_text())
+        config_path.write_text(json.dumps({**configuration, "KEYBOARD_RELEASE": True}))
+        source = project / "extra-source.c"
+        source.write_text("int unreviewed_source;\n")
+        before = {name: (self.build / name).read_bytes() for name in (
+            "firmware-manifest.json", "firmware-manifest.sig", "firmware-install.zip", "firmware-ota.bin")}
+        for staged in (False, True):
+            if staged:
+                subprocess.run(["git", "add", "--", source.name], cwd=project, capture_output=True, check=True)
+            with self.subTest(staged=staged), patch("ota_artifacts.serialization.load_pem_private_key") as load_key:
+                with self.assertRaisesRegex(ValueError, "verified clean worktree"):
+                    build_artifacts(self.build, self.sdk, project)
+                load_key.assert_not_called()
+                self.assertEqual(before, {name: (self.build / name).read_bytes() for name in before})
+        with patch("ota_artifacts.subprocess.run", return_value=SimpleNamespace(returncode=128, stdout=b"")) as status, \
+                patch("ota_artifacts.serialization.load_pem_private_key") as load_key:
+            with self.assertRaisesRegex(ValueError, "verified clean worktree"):
+                build_artifacts(self.build, self.sdk, project)
+            status.assert_called_once_with(["git", "status", "--porcelain=v1", "--untracked-files=all"],
+                                           cwd=project, capture_output=True, check=False)
+            load_key.assert_not_called()
+            self.assertEqual(before, {name: (self.build / name).read_bytes() for name in before})
+
     def test_missing_reset_or_test_key_consent_never_connects(self):
         for field in ("resetLayout", "allowTestFirmware"):
             with self.subTest(field=field):

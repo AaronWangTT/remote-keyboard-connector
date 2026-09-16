@@ -226,6 +226,13 @@ test("private-package synchronization flushes each file and its containing direc
   }
 });
 
+test("installer help distinguishes legacy backups from fresh OTA installation", async () => {
+  const messages = [];
+  assert.deepEqual(await runInstaller(["--help"], { log: message => messages.push(message) }), { mode: "help" });
+  assert.match(messages.join("\n"), /Only legacy factory installations include a full-flash backup/);
+  assert.match(messages.join("\n"), /OTA --reset-layout creates no old-flash backup/);
+});
+
 test("installer CLI requires explicit execution, device identity, and private output", () => {
   assert.deepEqual(installOptions(["--help"], {}), { help: true });
   assert.throws(() => installOptions([], {}), /ESP-IDF terminal/);

@@ -250,7 +250,8 @@ behavior, or recovery. No real device was flashed during implementation.
 Keep the release private key and a backup outside Git. A private configuration
 overlay outside the repository sets `CONFIG_KEYBOARD_RELEASE=y` and
 `CONFIG_SECURE_BOOT_SIGNING_KEY="/private/keyboard-release.pem"`. Build from a
-clean reviewed commit with a fresh configuration directory and that overlay
+clean reviewed commit with no tracked changes or untracked files, a fresh
+configuration directory, and that overlay
 after the committed defaults. The key must be RSA-3072 and outside the checkout.
 The descriptor labels the result as a release; builds with missing verification
 settings, wrong image sizes, or inconsistent metadata fail packaging.
