@@ -18,3 +18,6 @@ usb_keyboard_status_t usb_keyboard_status(void);
 bool usb_keyboard_submit(uint32_t generation, const keyboard_report_t *report);
 bool usb_keyboard_heartbeat(uint32_t generation);
 void usb_keyboard_release(uint32_t generation);
+bool usb_keyboard_quiescent(void);
+bool usb_keyboard_begin_maintenance(void);
+bool usb_keyboard_service_healthy(void);

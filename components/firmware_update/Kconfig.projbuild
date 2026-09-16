@@ -1,0 +1,5 @@
+menu "Keyboard firmware updates"
+    config KEYBOARD_RELEASE
+        bool "Build a trusted release (requires an external signing key)"
+        default n
+endmenu

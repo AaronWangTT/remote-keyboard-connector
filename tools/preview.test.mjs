@@ -47,6 +47,143 @@ async function takeControl(page) {
   await expect(page.getByRole("button", { name: "A", exact: true })).toBeEnabled();
 }
 
+function previewUpdateImage(version = "0.1.1") {
+  const image = Buffer.alloc(8192, 0xff);
+  image[0] = 0xe9;
+  image.fill(0, 0x120, 0x220);
+  image.write("KBOTA001", 0x120);
+  image.write("esp32s3-generic-16m", 0x120 + 72);
+  image.write("kb16-ab6-nvs64-v1", 0x120 + 104);
+  image.write(version, 0x120 + 184);
+  image[4096] = 0xe7;
+  return image;
+}
+
+for (const mode of ["ap", "station"]) test(`OTA API stages, cancels and activates in ${mode} mode without resetting settings`, { timeout: 12000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_NETWORK_MODE: mode, PREVIEW_UPDATE_DELAY_MS: "100" });
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
+  const call = (path, method = "GET", body) => fetch(new URL(path, url), { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const upload = (body = previewUpdateImage(), extraHeaders = {}) => fetch(new URL("/api/v1/update", url), {
+    method: "POST", headers: { ...headers, "Content-Type": "application/octet-stream", ...extraHeaders }, body });
+  assert.equal((await fetch(new URL("/api/v1/firmware", url))).status, 401);
+  assert.equal((await upload(previewUpdateImage(), { "X-CSRF-Token": "wrong" })).status, 403);
+  assert.equal((await upload(Buffer.alloc(8193))).status, 400);
+  assert.equal((await upload(previewUpdateImage("0.1.0"))).status, 400);
+  await takeRequest(url, session);
+  assert.equal((await upload()).status, 409);
+  assert.equal((await call("/api/v1/control/stop", "POST")).status, 200);
+  const before = await (await call("/api/v1/network/job")).json();
+  assert.equal(before.ap_active, mode === "ap");
+  const staged = await (await upload()).json();
+  assert.equal(staged.phase, "staged");
+  assert.match(staged.sha256, /^[a-f0-9]{64}$/);
+  assert.equal((await call("/api/v1/control/take", "POST")).status, 409);
+  assert.equal((await call("/api/v1/network", "POST", { action: "ap" })).status, 409);
+  assert.equal((await upload()).status, 409);
+  const other = await loginRequest(url);
+  assert.equal((await fetch(new URL("/api/v1/update/job", url), { headers: { Cookie: other.cookie } })).status, 403);
+  assert.equal((await call("/api/v1/update/activate", "POST", { job_id: staged.job_id + 1, sha256: staged.sha256 })).status, 409);
+  assert.equal((await call("/api/v1/update/job", "DELETE", { job_id: staged.job_id })).status, 202);
+  assert.equal((await call("/api/v1/update/activate", "POST", { job_id: staged.job_id, sha256: staged.sha256 })).status, 409);
+  const next = await (await upload()).json();
+  assert.equal((await call("/api/v1/update/activate", "POST", { job_id: next.job_id, sha256: next.sha256 })).status, 202);
+  await expect.poll(async () => (await call("/api/v1/firmware")).status).toBe(401);
+  const renewed = await loginRequest(url);
+  const firmware = await (await fetch(new URL("/api/v1/firmware", url), { headers: { Cookie: renewed.cookie } })).json();
+  assert.equal(firmware.version, "0.1.1");
+  const after = await (await fetch(new URL("/api/v1/network/job", url), { headers: { Cookie: renewed.cookie } })).json();
+  assert.equal(after.ap_active, before.ap_active);
+  assert.equal(after.saved_ssid, before.saved_ssid);
+  assert.equal((await (await fetch(new URL("/__test__/input", url))).json()).down, 0);
+});
+
+for (const engine of [chromium, webkit]) for (const rollback of [false, true]) test(`Firmware view uploads, cancels and confirms ${rollback ? "rollback" : "reboot"} in ${engine.name()}`, { timeout: 30000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_NETWORK_MODE: engine === chromium ? "station" : "ap", PREVIEW_UPDATE_DELAY_MS: "150",
+    PREVIEW_UPDATE_FAIL: rollback ? "boot" : "" });
+  const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+  context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.goto(url);
+  const signIn = async () => {
+    await expect(page.locator("#account-submit")).toBeEnabled();
+    await page.locator("#owner-password").fill("preview-owner-password");
+    await page.locator("#account-submit").click();
+    await expect(page.locator("#account-view")).toBeHidden();
+  };
+  await signIn();
+  await page.locator("#network-settings").click();
+  await page.locator("#firmware-settings").click();
+  await expect(page.locator("#firmware-version")).toHaveText("0.1.0");
+  const upload = async () => {
+    await page.locator("#firmware-file").setInputFiles({ name: "keyboard-0.1.1.bin", mimeType: "application/octet-stream", buffer: previewUpdateImage() });
+    await expect(page.locator("#firmware-upload")).toBeEnabled();
+    await page.locator("#firmware-upload").click();
+    await expect(page.locator("#firmware-activate")).toBeVisible();
+    await expect(page.locator("#firmware-candidate")).toHaveText("0.1.1");
+  };
+  await upload();
+  await page.keyboard.press("x");
+  await page.locator("#firmware-cancel").click();
+  await expect(page.locator("#firmware-status")).toHaveText("Update cancelled");
+  if (engine === chromium) {
+    await page.route("**/api/v1/update", async route => {
+      await route.fetch();
+      await route.abort();
+    }, { times: 1 });
+  }
+  await upload();
+  for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 844, height: 390 }, { width: 1280, height: 800 }]) {
+    await expect(page.locator("#ui-message")).toBeHidden();
+    await page.setViewportSize(viewport);
+    const layout = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, viewport: innerWidth,
+      boxes: ["firmware-version", "firmware-status", "firmware-form", "firmware-activate"].map(id => {
+        const box = document.getElementById(id).getBoundingClientRect();
+        return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+      }) }));
+    assert.equal(layout.width, layout.viewport);
+    assert.ok(layout.boxes.every(box => box.left >= 0 && box.right <= viewport.width));
+    assert.ok(layout.boxes[1].bottom <= layout.boxes[2].top && layout.boxes[2].bottom <= layout.boxes[3].top);
+    await mkdir(new URL("../.cache/tests/", import.meta.url), { recursive: true });
+    await page.screenshot({ path: fileURLToPath(new URL(`../.cache/tests/ota-${engine.name()}-${viewport.width}.png`, import.meta.url)), fullPage: true });
+  }
+  await page.locator("#firmware-activate").click();
+  await expect(page.locator("#account-view")).toBeVisible();
+  await signIn();
+  await expect(page.locator("#firmware-version")).toHaveText(rollback ? "0.1.0" : "0.1.1");
+  await expect(page.locator("#firmware-status")).toHaveText(rollback ? "Update not confirmed; version 0.1.0 is running" : "Version 0.1.1 is running");
+  await page.locator("#firmware-back").click();
+  await page.locator("#network-back").click();
+  await expect(page.locator("#take-control")).toBeEnabled();
+  const input = await (await fetch(new URL("/__test__/input", url))).json();
+  assert.equal(input.down, 0);
+  assert.equal(input.connected, false);
+  assert.deepEqual(errors, []);
+});
+
+test("Firmware view cancels during verification before the first job poll", { timeout: 15000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_UPDATE_DELAY_MS: "1500" });
+  const browser = await chromium.launch();
+  context.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.goto(url);
+  await expect(page.locator("#account-submit")).toBeEnabled();
+  await page.locator("#owner-password").fill("preview-owner-password");
+  await page.locator("#account-submit").click();
+  await page.locator("#network-settings").click();
+  await page.locator("#firmware-settings").click();
+  await expect(page.locator("#firmware-file")).toBeEnabled();
+  await page.locator("#firmware-file").setInputFiles({ name: "test.bin", mimeType: "application/octet-stream", buffer: previewUpdateImage() });
+  await page.locator("#firmware-upload").click();
+  await page.locator("#firmware-cancel").click();
+  await expect(page.locator("#firmware-status")).toHaveText("Update cancelled");
+  await expect(page.locator("#firmware-activate")).toBeHidden();
+  await expect(page.locator("#firmware-file")).toBeEnabled();
+  await expect(page.locator("#firmware-version")).toHaveText("0.1.0");
+});
+
 test("network jobs are owner-only, bounded and preserve the last working profile", { timeout: 10000 }, async context => {
   const url = await startPreview(context, { PREVIEW_SCAN_TTL_MS: "1000" });
   const endpoint = new URL("/api/v1/network", url);

@@ -42,6 +42,7 @@ static int64_t driver_retry_at;
 static bool connecting;
 static bool command_pending;
 static bool storage_fault;
+static bool saved_configuration_valid;
 static uint32_t lease_address;
 static bool scan_done;
 static bool scanning;
@@ -54,6 +55,8 @@ static esp_netif_ip_info_t ap_restore_address;
 static int64_t ap_restore_retry_at;
 static bool guarded;
 static bool control_ready;
+static bool update_reserved;
+static int64_t snapshot_seen_at;
 static bool guard_ap;
 static uint32_t guard_generation;
 static uint32_t ap_address;
@@ -100,7 +103,7 @@ network_control_status_t network_control_status(uint32_t generation)
     bool ap_ready = snapshot.ap_active && ap_address != 0;
     bool station_ready = snapshot.station_online && station_address != 0 && station_address == lease_address;
     network_control_status_t status = {
-        .ready = control_ready && snapshot.available && !snapshot.busy && !command_pending &&
+        .ready = control_ready && !update_reserved && snapshot.available && !snapshot.busy && !command_pending &&
                  (snapshot.can_control || guarded) && (ap_ready || station_ready),
     };
     status.controller_path_ready = status.ready && guarded && generation != 0 && generation == guard_generation &&
@@ -121,7 +124,7 @@ void network_management_touch(uint32_t local_address)
 bool network_control_begin(uint32_t local_address, uint32_t generation)
 {
     portENTER_CRITICAL(&lock);
-    bool valid = snapshot.available && snapshot.can_control && !snapshot.busy && !guarded &&
+    bool valid = snapshot.available && snapshot.can_control && !snapshot.busy && !guarded && !update_reserved &&
                  local_address != 0 && (local_address == ap_address || local_address == station_address);
     if (valid) {
         guarded = true;
@@ -138,15 +141,37 @@ void network_control_end(uint32_t generation)
     portENTER_CRITICAL(&lock);
     if (guarded && generation == guard_generation) {
         guarded = false;
-        snapshot.can_control = control_ready && snapshot.available && !snapshot.busy && !command_pending;
+        snapshot.can_control = control_ready && !update_reserved && snapshot.available && !snapshot.busy && !command_pending;
     }
+    portEXIT_CRITICAL(&lock);
+}
+
+bool network_update_begin(uint32_t local_address)
+{
+    portENTER_CRITICAL(&lock);
+    bool valid = control_ready && snapshot.available && !snapshot.busy && !command_pending && !guarded && !update_reserved &&
+        local_address != 0 && ((snapshot.ap_active && local_address == ap_address) ||
+        (snapshot.station_online && local_address == station_address && station_address == lease_address));
+    if (valid) {
+        update_reserved = true;
+        snapshot.can_control = false;
+    }
+    portEXIT_CRITICAL(&lock);
+    return valid;
+}
+
+void network_update_end(void)
+{
+    portENTER_CRITICAL(&lock);
+    update_reserved = false;
+    snapshot.can_control = control_ready && snapshot.available && !snapshot.busy && !command_pending && !guarded;
     portEXIT_CRITICAL(&lock);
 }
 
 static bool recovery_held(void)
 {
     portENTER_CRITICAL(&lock);
-    bool held = (guarded && guard_ap) || esp_timer_get_time() < management_until;
+    bool held = update_reserved || (guarded && guard_ap) || esp_timer_get_time() < management_until;
     portEXIT_CRITICAL(&lock);
     return held;
 }
@@ -251,7 +276,7 @@ static void wifi_event(void *argument, esp_event_base_t base, int32_t event_id, 
         portENTER_CRITICAL(&lock);
         connecting = false;
         lease_address = 0;
-        snapshot.can_control = snapshot.ap_active && !snapshot.busy && !guarded;
+        snapshot.can_control = snapshot.ap_active && !snapshot.busy && !guarded && !update_reserved;
         snprintf(last_failure, sizeof(last_failure), "%s", failure);
         portEXIT_CRITICAL(&lock);
     }
@@ -340,6 +365,7 @@ static void refresh_snapshot(void)
     esp_netif_get_ip_info(ap_interface, &ap_info);
     esp_netif_get_ip_info(station_interface, &station_info);
     portENTER_CRITICAL(&lock);
+    snapshot_seen_at = esp_timer_get_time();
     snapshot.available = driver_started && !ap_restore_pending && !driver_retry_pending && !hostname_restore_pending;
     snapshot.ap_active = driver_started && state.ap;
     snapshot.station_online = driver_started && state.online;
@@ -348,7 +374,7 @@ static void refresh_snapshot(void)
     control_ready = snapshot.available && !snapshot.busy && !command_pending && !scanning && !testing &&
                     !(state.phase == NETWORK_RECOVERY && connecting) &&
                     (state.phase == NETWORK_AP || state.phase == NETWORK_RECOVERY || state.phase == NETWORK_STATION);
-    snapshot.can_control = control_ready && !guarded;
+    snapshot.can_control = control_ready && !guarded && !update_reserved;
     snprintf(snapshot.phase, sizeof(snapshot.phase), "%s", network_phase_name(state.phase));
     snprintf(snapshot.requested_hostname, sizeof(snapshot.requested_hostname), "%s", saved.hostname);
     network_ssid_display((const uint8_t *)saved.ssid, strnlen(saved.ssid, NETWORK_SSID_MAX), snapshot.saved_ssid);
@@ -701,7 +727,14 @@ static void network_worker(void *argument)
             job_result("failed", "connection_lost", false);
         }
         bool was_testing = testing;
-        network_effect_t effect = network_state_tick(&state, now, recovery_held());
+        portENTER_CRITICAL(&lock);
+        network_effect_t effect = update_reserved ? NETWORK_WAIT :
+            network_state_tick(&state, now, (guarded && guard_ap) || now < management_until);
+        if (effect != NETWORK_WAIT) {
+            control_ready = false;
+            snapshot.can_control = false;
+        }
+        portEXIT_CRITICAL(&lock);
         if (effect == NETWORK_OPEN_AP) {
             char error[40];
             portENTER_CRITICAL(&lock);
@@ -736,6 +769,15 @@ static void network_worker(void *argument)
     }
 }
 
+bool network_service_healthy(void)
+{
+    portENTER_CRITICAL(&lock);
+    bool healthy = saved_configuration_valid && !storage_fault && snapshot_seen_at != 0 &&
+        esp_timer_get_time() - snapshot_seen_at < INT64_C(1000000);
+    portEXIT_CRITICAL(&lock);
+    return healthy;
+}
+
 esp_err_t network_submit(const uint8_t *payload, size_t length, bool scan, uint32_t *job_id)
 {
     if (commands == NULL || job_id == NULL || !device_identity_claimed()) return ESP_ERR_INVALID_STATE;
@@ -751,7 +793,7 @@ esp_err_t network_submit(const uint8_t *payload, size_t length, bool scan, uint3
         strcmp(snapshot.job, "awaiting_confirmation") != 0 &&
         strcmp(snapshot.job, "awaiting_ap_reconnect") != 0;
     bool invalid_cancellation = command.request.action == NETWORK_ACTION_CANCEL && !snapshot.busy;
-    bool busy = storage_blocked || guarded || !snapshot.available || command_pending || invalid_confirmation || invalid_cancellation ||
+    bool busy = storage_blocked || guarded || update_reserved || !snapshot.available || command_pending || invalid_confirmation || invalid_cancellation ||
                 (snapshot.busy && (!terminal_action || strcmp(snapshot.job, "queued") == 0));
     if (!busy) {
         command_pending = true;
@@ -784,6 +826,7 @@ esp_err_t network_start(void)
 {
     ESP_RETURN_ON_ERROR(device_identity_init(), TAG, "Device identity unavailable; no erase or open AP attempted");
     esp_err_t loaded = load_configuration();
+    saved_configuration_valid = loaded == ESP_OK;
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "Network initialization failed");
     ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "Event loop initialization failed");
     ap_interface = esp_netif_create_default_wifi_ap();

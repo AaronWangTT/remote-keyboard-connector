@@ -6,28 +6,31 @@ device operation, never part of a firmware build or CI upload.
 
 ## Public Firmware And Private Installation Files
 
-CI uploads three separate images, generated `flasher_args.json` and `flash_args`,
-version-2 `firmware-manifest.json` with hashes and build-security settings, and a build
-summary. GitHub Actions wraps these files in its download archive.
-There is no nested custom firmware ZIP, merged BIN, or per-device NVS image.
-Extract the complete artifact and use its `build` directory as `--firmware`.
-Use a trusted artifact and a trusted checkout of the matching installer revision.
-The artifact alone is not a standalone installer; the sender needs the repository
-tools and SDK environment below.
-Older artifacts without the version-2 manifest and its required HTTP owner-claim
-capability are refused: rebuild them from trusted source. Do not fabricate a
-manifest to bypass security checks.
+Every normal build produces `firmware-install.zip` for wired fresh installation
+and `firmware-ota.bin` for browser OTA. They contain identical signed application
+bytes, with public manifests and SHA-256 sidecars. The wired ZIP contains the
+bootloader, new partition table, OTA-data initializer, application, generated
+flash metadata, and signed version-3 install manifest. It contains no private
+key, credentials, or NVS image. Extract the ZIP to a directory for `--firmware`.
+The installer still requires a matching trusted checkout and the SDK below.
+
+Default builds use an ignored local RSA-3072 test key and are labeled test-only.
+The key is reused across local builds so a development device can accept later
+updates. CI generates its own ephemeral test key, not a release key. A public
+key delivered alongside a candidate is useful for offline testing but is not
+independent evidence that the candidate is trustworthy. Never fabricate or edit
+a manifest to bypass validation.
 
 The sender command creates a different, private per-device directory outside
 the repository. It includes a firmware snapshot, identity CSV/BIN, Wi-Fi QR,
-printable setup card, install plan with SHA-256 hashes, and a full-flash backup.
+printable setup card, and install plan with SHA-256 hashes.
 These files contain credentials or device data. Never upload them to Git,
-Actions artifacts, issue attachments, or shared logs. Checksums detect changed
-bytes; they are not signatures or evidence of hardware compatibility.
+Actions artifacts, issue attachments, or shared logs. Optional old-flash backups
+are also private. They are not inputs to fresh installation or a required feature.
 
-Merged images are deliberately excluded. Writing their padded gaps can overwrite
-NVS, including ownership and recovery credentials. The installer uses one sparse
-esptool write containing only the three firmware images and the NVS image.
+Merged images are deliberately excluded from OTA. A wired replacement explicitly
+erases flash and provisions fresh NVS; routine OTA writes only the inactive app
+slot and preserves identity, ownership, and Wi-Fi settings.
 
 ## Prerequisites
 
@@ -46,22 +49,25 @@ esptool write containing only the three firmware images and the NVS image.
   `python -m esptool --chip esp32s3 --port <COMx> read-mac` is a separate
   identification command: it connects and may reset the board, but does not
   write flash. Use twelve hexadecimal digits without separators for `--device-id`.
-- Decide whether existing NVS settings and ownership must be preserved. This
-  command initializes NVS; it does not merge records or migrate partition tables.
+- Explicitly accept a full layout reset for wired replacement. It discards all
+  old ownership, AP credentials, saved Wi-Fi, and calibration records. Use OTA
+  instead when updating a device already installed on the new layout.
+- Obtain the trusted RSA-3072 public verification key independently of the
+  candidate bundle. The installer accepts only public PEM input and, for writes,
+  requires its path outside the firmware directory. A private key is never sent
+  to the device or through the installer helper.
 
-The current layout is a single factory application and a writable default `nvs`
-partition. The installer derives offsets and sizes from the supplied partition
-table, not hardcoded write addresses. It accepts a completely blank flash or an
-existing partition table that exactly matches the supplied table. It refuses
-OTA layouts, encrypted partitions, secure boot, flash encryption, secure download
-mode, bootloaders configured for security provisioning or anti-rollback eFuse
-updates, unknown flash capacity, and unsupported configurations without overrides.
-Supported detected capacities are 1/2/4/8/16/32 MiB and must fit the build.
-Detecting capacity does not prove mode/frequency compatibility or USB recovery.
+The target is exactly the committed 16 MiB layout: 64 KiB NVS, 8 KiB OTA metadata,
+and two 6 MiB app slots. It is validated independently against generated metadata.
+The board must report 16 MiB flash and support the DIO/80 MHz profile. The signed
+image's headers are retained using esptool's `flash_size=keep`, not rewritten.
+Hardware Secure Boot, flash encryption, security-force overrides, and eFuse
+anti-rollback are not part of this profile. Detecting capacity alone does not
+prove full-range operation or USB recovery.
 
 The build must enable `KEYBOARD_HTTP_DEVELOPMENT`; otherwise the web server,
-setup card URL, and owner-claim flow are unavailable. Local validation requires
-the generated setting to be `true`. Downloaded manifests bind
+setup card URL, and owner-claim flow are unavailable. Build validation requires
+the generated setting to be `true`. Signed install manifests bind
 `security.httpDevelopment: true` to the image hashes, and the Python helper
 independently enforces that contract. This explicit development-protocol setting
 does not add transport encryption or establish production security.
@@ -71,13 +77,13 @@ does not add transport encryption or establish production security.
 From the repository root:
 
 ```bash
-node tools/install-device.mjs --firmware build
+node tools/install-device.mjs --firmware build --verification-key /trusted/keyboard-public.pem
 ```
 
 The default operation validates metadata, paths, image checksums/SHA-256 digests,
 partition-table integrity, partition bounds, the NVS location, and supported
-build-security settings. Local builds use `config/sdkconfig.json`; downloaded
-artifacts use their image-hash-bound manifest. It displays
+build-security settings. New normal-build artifacts require the authenticated
+install manifest and application signature, verified with the supplied key. It displays
 the write layout but does not generate credentials, connect to a serial port,
 write flash, or change eFuses. `--help` works without an SDK environment.
 
@@ -85,19 +91,18 @@ The generated ESP-IDF v6.1 JSON uses unprefixed keys such as `IDF_TARGET` and
 `SECURE_BOOT`, unlike the `CONFIG_` names in the raw sdkconfig file. The installer
 validates the generated JSON schema, not the raw configuration text.
 
-For a local build you intend to transfer to another sender machine, add
-`--write-manifest` to the offline command, then include `firmware-manifest.json`
-alongside the three images and their flash metadata. This flag is incompatible
-with `--execute`. Only the necessary security flags and image hashes are emitted,
-not the full build configuration, paths, or private credentials. A trusted build
-and manifest are prerequisites; these checks do not attest arbitrary binaries.
+For a default local test build only, offline checks may use the generated
+`build/firmware-signing-public.pem`. For an actual installation, export or obtain
+the expected public key through your trusted build/signing process and retain it
+outside the candidate directory. The build now generates the signed manifests
+automatically; `--write-manifest` is not needed for normal OTA-capable outputs.
 
 ## One Initial Installation Command
 
 Only after completing the prerequisites, substitute your verified values:
 
 ```text
-node tools/install-device.mjs --firmware build --device-id <12-hex-factory-base-MAC> --output <new-private-directory-outside-repo> --port <COMx> --execute
+node tools/install-device.mjs --firmware build --verification-key <trusted-public-PEM-outside-bundle> --device-id <12-hex-factory-base-MAC> --output <new-private-directory-outside-repo> --port <COMx> --execute --reset-layout
 ```
 
 `npm --prefix tools run install:device -- <options>` invokes the same command.
@@ -109,7 +114,9 @@ identity CSV over stdin; an existing output directory is never accepted. Windows
 account or ACL failures stop preparation before a serial connection.
 Serial baud defaults to 460800; `--baud 115200` is available for a slower connection.
 
-One invocation performs these steps:
+For an intentionally installed test-key build, also add `--allow-test-firmware`.
+This is not an unsigned-upload bypass: later OTA still requires the same trusted
+application key. One invocation performs these steps:
 
 1. Validate firmware offline; create independent random AP/setup credentials,
   a setup card, and a private firmware snapshot whose hashes are checked again
@@ -121,34 +128,29 @@ One invocation performs these steps:
    that file and, on POSIX, its directory before connecting to the board.
 3. Open only the supplied port, confirm ESP32-S3, security state, and expected
    factory MAC, then detect physical flash capacity.
-4. Read the complete detected flash, verify its digest against the device,
-  save it privately, synchronize it as described below, and verify the saved
-  backup before any flash write.
-5. Refuse differing existing partition tables and refuse non-empty NVS unless
-   the sender explicitly requested replacement.
-6. Write bootloader, partition table, NVS identity, and application in one
-   esptool operation. Verify all four images, save the verification result,
-  and reset into the application only after verification succeeds.
+4. After those checks, perform the explicitly approved full erase. Do not read,
+  interpret, or convert the previous partition table or NVS.
+5. Write bootloader, partition table, initialized OTA metadata, NVS identity,
+  and signed application using the validated target offsets.
+6. Verify all written ranges, re-read the application and verify its signature,
+  save the result, and reset only after verification succeeds. Complete fresh
+  owner claim and Wi-Fi setup after boot.
 
-**`--replace-nvs` deliberately discards all existing default-NVS settings and
-ownership, not just `kb_identity`.** Use it only for a reviewed initial-install
-or recommissioning operation, not as a retry shortcut. The backup is retained,
-but no old keys are merged into the new partition. The flag cannot bypass
-security, identity, capacity, backup, or partition-layout checks. No whole-chip
-erase, security-force option, or eFuse change is performed.
+**`--reset-layout` deliberately discards the whole previous installation.**
+It is distinct from the legacy `--replace-nvs` flag, which cannot authorize this
+layout. There is no dedicated migration tool, source-layout conversion, or old
+credential import. No eFuses are changed.
 
 The private output contains:
 
 ```text
-firmware/                       Three images, flash metadata, and manifest
+firmware/                       Four public images, flash metadata, signed manifest
 identity.csv                    Private input, bound to the factory MAC
 wifi-qr.png                     Private Wi-Fi connection QR
 setup-card.html                 Wi-Fi password and one-time owner setup code
 installation/identity.csv       Validated private NVS input copy
 installation/identity.bin       Generated NVS image
 installation/install-plan.json  Offsets, sizes, hashes, and replacement policy
-installation/flash-backup.bin   Complete original flash, when backup succeeds
-installation/flash-backup.json  Device ID, size, offset, SHA-256, and durability
 installation/install-result.json  Created only after all written images verify
 ```
 
@@ -162,30 +164,35 @@ Installation is one command, not an atomic flash transaction. Power loss or a
 write error can leave partially replaced firmware or NVS. There is no automatic
 retry, erase, restore, or credential regeneration. Keep the entire private output
 directory, use the verified ROM recovery procedure, and review the saved plan
-and backup before a separately authorized recovery write. Do not delete a
-successful backup or start a fresh credential set to recover a partial install.
+before a separately authorized recovery write. Do not start a fresh credential
+set to recover a partial install; retain the already prepared images and card.
 A failed preflight can leave private preparation files but never writes flash.
 After all flash images verify, a failure saving the result record is still
 reported as an error, but the installer attempts to reset the verified board
 into its application. Failed flash verification never triggers that reset.
 
-A verified backup is not an unconditional host power-loss recovery guarantee.
+Private-file verification is not an unconditional host power-loss guarantee.
 On POSIX, private file contents and their directory entries are synchronized with
 `fsync`; the new directory's ancestor entries are also synchronized. A failed
 synchronization stops installation before any flash write. This relies on the
 filesystem and storage device honoring those requests.
 On Windows, file contents are synchronized, but directory-entry durability is not
-guaranteed. The installer warns about this limitation and records `file-sync-only`
-in the backup metadata and result, rather than claiming a power-loss-durable
-backup. Keep both the host and backup storage powered; a host or storage failure
-can still lose the backup needed for recovery. POSIX metadata records
-`file-and-directory-sync`, not a guarantee against every storage failure.
+guaranteed. Keep the host and private artifact storage powered; a host or storage
+failure can still lose files needed for recovery. Windows filesystem acceptance
+remains a hardware/environment gate, not something Linux mocks can prove.
 
-For ordinary updates with an unchanged compatible partition layout, flash only
-firmware and preserve the existing NVS. `idf.py -p <COMx> flash` in the project
-uses the firmware-only generated metadata; it does not install an identity.
-Do not rerun initial provisioning, use `--replace-nvs`, or use an old merged BIN
-as a routine update. Changed layouts require a separately reviewed migration.
+For ordinary updates, connect through either standalone AP or the device's
+station/LAN address, sign in, release control, and open Network > Firmware
+updates. Upload `firmware-ota.bin`, wait for verification, then select Install
+and restart. Sign in again and check the running version. An upload alone does
+not activate an image; a lost response is resolved through status, not by
+automatically repeating activation. Wi-Fi settings and ownership survive OTA
+and rollback. Do not use an install ZIP or a merged BIN as an OTA image.
+
+The default version is `0.1.0`. A subsequent build needs a higher numeric version,
+for example `idf.py -D PROJECT_VER=0.1.1 build`, with the same board/layout and
+signing key. Same-version and older OTA uploads are rejected. Full wired
+replacement remains available for each normal build, with reset/reprovisioning.
 
 After successful installation, verify that the intended board boots, its private
 AP/card works, ownership can be claimed once, and AP identity plus the owner
@@ -201,7 +208,7 @@ Run these commands from an ESP-IDF terminal; none uses hardware:
 ```bash
 node --test tools/provision-device.test.mjs
 python tools/install_device_test.py
-node tools/install-device.mjs --firmware build
+node tools/install-device.mjs --firmware build --verification-key build/firmware-signing-public.pem
 ```
 
 The Node suite checks credential preparation, input rejection, explicit CLI
@@ -221,7 +228,26 @@ tests do not establish Windows filesystem acceptance. CI runs the SDK suite and
 the freshly built firmware's offline check in the firmware job; Node tests run
 with the existing browser/provisioning job.
 
-These checks passed locally on 2026-09-15 against the existing build. They do
-not establish that the combined installer has run on a physical board. No real
-device identity, serial connection, flash write, erase, or eFuse change was made
-while implementing it. Physical installation and recovery remain unverified.
+The OTA additions exercise real RSA image and manifest verification, identical
+wired/OTA outputs, legacy-cost rejection, explicit reset/test-key consent,
+unknown old layouts, wrong-device/capacity refusals, and failed readback without
+resetting. Native tests cover inactive-slot writes, cancellation, expiry,
+activation, and trial-boot handling. Browser tests cover AP and station flows.
+These do not establish physical installation, full-capacity operation, power-loss
+behavior, or recovery. No real device was flashed during implementation.
+
+## Trusted Release Builds
+
+Keep the release private key and a backup outside Git. A private configuration
+overlay outside the repository sets `CONFIG_KEYBOARD_RELEASE=y` and
+`CONFIG_SECURE_BOOT_SIGNING_KEY="/private/keyboard-release.pem"`. Build from a
+clean reviewed commit with a fresh configuration directory and that overlay
+after the committed defaults. The key must be RSA-3072 and outside the checkout.
+The descriptor labels the result as a release; builds with missing verification
+settings, wrong image sizes, or inconsistent metadata fail packaging.
+
+Normal CI has no release key and cannot produce trusted releases. Signing a
+release locally still produces both artifacts from exactly one signed app.
+After device acceptance and separate publication approval, distribute both
+artifacts and public metadata through a durable GitHub Release. Key provisioning,
+publication, and recovery from key loss/compromise remain explicit operator steps.

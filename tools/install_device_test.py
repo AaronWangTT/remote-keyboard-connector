@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -12,7 +13,12 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+import espsecure
+
 from install_device import create_private_directory, generate_nvs, inspect_firmware, install, load_sdk, private_write, validate_identity
+from ota_artifacts import build_artifacts, inspect_ota_firmware, parse_descriptor, verify_application, verify_manifest
 
 
 class FakeDevice:
@@ -127,7 +133,7 @@ class InstallerTests(unittest.TestCase):
             self.csv = ("key,type,encoding,value\nkb_identity,namespace,,\nversion,data,u32,1\n"
                     "device_id,data,string,001122334455\nap_password,data,string," + "A" * 24 +
                     "\nclaim_salt,data,hex2bin," + "ab" * 16 + "\nclaim_hash,data,hex2bin," + "cd" * 32 +
-                    "\nclaim_cost,data,u32,100000\n")
+                        "\nclaim_cost,data,u32,100000\n")
             (self.root / "identity.csv").write_text(self.csv, encoding="utf-8")
             self.request = {"execute": True, "deviceId": "001122334455", "port": "MOCK", "baud": 460800,
                     "directory": str(self.output), "identityCsv": self.csv, "firmware": self.firmware, "replaceNvs": False}
@@ -147,6 +153,12 @@ class InstallerTests(unittest.TestCase):
         plan = inspect_firmware(self.firmware, self.sdk)
         self.assertEqual(plan["nvs"], {"offset": 0x9000, "size": 0x6000})
         self.assertEqual(plan["partitionTable"]["offset"], 0x8000)
+
+    def test_identity_policy_rejects_legacy_cost(self):
+        fresh = self.csv.replace("claim_cost,data,u32,100000\n", "claim_cost,data,u32,10\n")
+        validate_identity(fresh, self.request["deviceId"])
+        with self.assertRaisesRegex(ValueError, "claim_cost"):
+            validate_identity(self.csv, self.request["deviceId"])
 
     def test_missing_or_disabled_http_claim_ui_never_connects(self):
         for value in (None, False, "true", 1):
@@ -270,11 +282,11 @@ class InstallerTests(unittest.TestCase):
             inspect_firmware(self.firmware, self.sdk)
 
     def test_official_generator_produces_a_partition_sized_nvs_image(self):
-        data = generate_nvs(self.root, "001122334455", 0x6000)
+        data = generate_nvs(self.root, "001122334455", 0x6000, 100000)
         self.assertEqual(len(data), 0x6000)
         self.assertIn(b"kb_identity", data)
         with self.assertRaisesRegex(ValueError, "already exists"):
-            generate_nvs(self.root, "001122334455", 0x6000)
+            generate_nvs(self.root, "001122334455", 0x6000, 100000)
 
     @unittest.skipIf(os.name == "nt", "Directory fsync is POSIX-only")
     def test_generated_nvs_syncs_file_then_directory_before_connecting(self):
@@ -286,7 +298,7 @@ class InstallerTests(unittest.TestCase):
             original_sync(descriptor)
 
         with patch("install_device.os.fsync", side_effect=record_sync):
-            generate_nvs(self.root, "001122334455", 0x6000)
+            generate_nvs(self.root, "001122334455", 0x6000, 100000)
         self.assertEqual(synchronized, ["file", "directory"])
         self.assertEqual(self.transport.events, [])
 
@@ -625,6 +637,207 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue(self.device.closed)
         self.assertFalse((self.output / "install-result.json").exists())
         self.assertTrue((self.output / "flash-backup.bin").is_file())
+
+
+class FakeOtaEsptool(FakeEsptool):
+    detected_size = "16MB"
+
+    def erase_flash(self, device, **options):
+        if options != {"force": False} or not (self.directory / "install-plan.json").exists():
+            raise ValueError("Unsafe or unprepared erase")
+        self.events.append("erase")
+        device.flash[:] = b"\xff" * len(device.flash)
+
+    def write_flash(self, device, payloads, **options):
+        if self.events != ["connect", "erase"] or options.get("force") is not False or options.get("erase_all") is not False:
+            raise ValueError("Write attempted without a guarded erase")
+        if options.get("flash_size") != "keep":
+            raise ValueError("Signed image headers must not change")
+        self.events.append("write")
+        self.writes.append(payloads)
+        for offset, data in payloads:
+            device.flash[offset:offset + len(data)] = data
+
+    def read_flash(self, device, offset, size, **_options):
+        self.events.append("readback")
+        return bytes(device.flash[offset:offset + size])
+
+
+class OtaArtifactTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.sdk = load_sdk(os.environ["IDF_PATH"])
+        cls.key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="keyboard-ota-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.build = self.root / "build"
+        self.build.mkdir()
+        self.key_path = self.root / "test-key.pem"
+        self.key_path.write_bytes(self.key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                        serialization.NoEncryption()))
+        self.key_path.chmod(0o600)
+        descriptor = struct.pack("<8s8I32s32s32s48s32s40s", b"KBOTA001", 1, 1, 1, 1, 10, 0x1000000, 0x600000, 1,
+                                 b"remote-keyboard", b"esp32s3-generic-16m", b"kb16-ab6-nvs64-v1",
+                                 b"0123456789abcdef0123456789abcdef01234567", b"0.1.0", bytes(40))
+        app_description = bytearray(256)
+        struct.pack_into("<I", app_description, 0, 0xABCD5432)
+        app_description[16:21] = b"0.1.0"
+        app_description[112:116] = b"v6.1"
+        image = self.sdk.images.ESP32S3FirmwareImage()
+        image.chip_id = image.ROM_LOADER.IMAGE_CHIP_ID
+        image.flash_mode = 2
+        image.flash_size_freq = 0x4F
+        image.segments.append(self.sdk.images.ImageSegment(0x3C020020, bytes(app_description) + descriptor))
+        image.segments[0].name = "fixture"
+        unsigned = image.save(None)
+        (self.build / "app-unsigned.bin").write_bytes(unsigned)
+        with self.key_path.open("rb") as keyfile, (self.build / "app-unsigned.bin").open("rb") as datafile:
+            espsecure.sign_secure_boot_v2([keyfile], str(self.build / "app.bin"), False, False, None, [], [], datafile)
+        self.sdk.partitions.offset_part_table = 0x8000
+        table = self.sdk.partitions.PartitionTable.from_csv((Path(__file__).resolve().parents[1] / "partitions.csv").read_text())
+        (self.build / "partition-table.bin").write_bytes(table.to_binary())
+        (self.build / "bootloader.bin").write_bytes(unsigned)
+        (self.build / "otadata.bin").write_bytes(b"\xff" * 8192)
+        flash = {"flash_settings": {"flash_mode": "dio", "flash_freq": "80m", "flash_size": "keep"},
+                 "write_flash_args": ["--flash-mode", "dio", "--flash-freq", "80m", "--flash-size", "keep"],
+                 "extra_esptool_args": {"chip": "esp32s3"}, "flash_files": {}}
+        for role, offset in (("bootloader", 0), ("partition-table", 0x8000), ("otadata", 0x19000), ("app", 0x20000)):
+            flash[role] = {"offset": hex(offset), "file": f"{role}.bin", "encrypted": "false"}
+            flash["flash_files"][hex(offset)] = f"{role}.bin"
+        (self.build / "flasher_args.json").write_text(json.dumps(flash))
+        configuration = {name: True for name in ("SECURE_SIGNED_APPS_NO_SECURE_BOOT", "SECURE_SIGNED_APPS_RSA_SCHEME",
+                         "SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT", "SECURE_BOOT_BUILD_SIGNED_BINARIES",
+                         "BOOTLOADER_APP_ROLLBACK_ENABLE", "BOOTLOADER_WDT_ENABLE", "BOOTLOADER_WDT_DISABLE_IN_USER_CODE",
+                         "ESP_PHY_CALIBRATION_AND_DATA_STORAGE", "KEYBOARD_HTTP_DEVELOPMENT")}
+        configuration.update(ESPTOOLPY_FLASHSIZE="16MB", SECURE_BOOT_SIGNING_KEY=str(self.key_path))
+        (self.build / "config").mkdir()
+        (self.build / "config/sdkconfig.json").write_text(json.dumps(configuration))
+        self.firmware = build_artifacts(self.build, self.sdk, self.root)
+        self.output = self.root / "installation"
+        self.device = FakeDevice(b"old!" * (0x1000000 // 4))
+        self.transport = FakeOtaEsptool(self.device, self.output)
+        self.connected_sdk = SimpleNamespace(partitions=self.sdk.partitions, images=self.sdk.images, esptool=self.transport)
+        public_pem = self.key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+        self.csv = ("key,type,encoding,value\nkb_identity,namespace,,\nversion,data,u32,1\n"
+                "device_id,data,string,001122334455\nap_password,data,string," + "A" * 24 +
+                "\nclaim_salt,data,hex2bin," + "ab" * 16 + "\nclaim_hash,data,hex2bin," + "cd" * 32 +
+                "\nclaim_cost,data,u32,10\n")
+        self.request = {"execute": True, "deviceId": "001122334455", "port": "MOCK", "baud": 460800,
+                "directory": str(self.output), "identityCsv": self.csv, "firmware": self.firmware,
+                "resetLayout": True, "verificationKey": public_pem, "allowTestFirmware": True}
+
+    def test_signed_outputs_share_application_and_authenticate_manifest(self):
+        verify_manifest(self.firmware, self.key.public_key())
+        descriptor = verify_application((self.build / "firmware-ota.bin").read_bytes(), self.key.public_key())
+        self.assertEqual(descriptor["kdfIterations"], 10)
+        self.assertTrue(descriptor["testOnly"])
+        self.assertEqual((self.build / "firmware-ota.bin").read_bytes(), (self.build / "app.bin").read_bytes())
+        self.assertEqual(inspect_ota_firmware(self.firmware, self.sdk, self.key.public_key())["nvs"]["size"], 65536)
+
+    def test_changed_manifest_is_rejected_even_with_matching_image_metadata(self):
+        self.firmware["manifest"]["descriptor"]["version"] = "9.9.9"
+        with self.assertRaisesRegex(ValueError, "manifest signature"):
+            verify_manifest(self.firmware, self.key.public_key())
+
+    def test_changed_payload_is_rejected_before_install(self):
+        (self.build / "app.bin").write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError, "changed after validation"):
+            inspect_ota_firmware(self.firmware, self.sdk, self.key.public_key())
+
+    def test_wrong_signature_key_and_unsigned_images_are_rejected(self):
+        data = (self.build / "app.bin").read_bytes()
+        wrong_key = rsa.generate_private_key(public_exponent=65537, key_size=3072).public_key()
+        with self.assertRaises(Exception):
+            verify_application(data, wrong_key)
+        with self.assertRaises(ValueError):
+            verify_application(data[:-4096], self.key.public_key())
+        with self.assertRaisesRegex(ValueError, "Untrusted"):
+            verify_manifest(self.firmware, wrong_key)
+
+    def test_descriptor_rejects_legacy_policy_and_conflicting_versions(self):
+        data = bytearray((self.build / "app.bin").read_bytes())
+        struct.pack_into("<I", data, 0x120 + 24, 100000)
+        with self.assertRaisesRegex(ValueError, "descriptor"):
+            parse_descriptor(data)
+        data = bytearray((self.build / "app.bin").read_bytes())
+        data[48:53] = b"9.9.9"
+        with self.assertRaisesRegex(ValueError, "version differs"):
+            parse_descriptor(data)
+
+    def test_security_and_target_changes_are_rejected(self):
+        self.firmware["settings"]["flash_size"] = "16MB"
+        with self.assertRaisesRegex(ValueError, "unchanged flash headers"):
+            inspect_ota_firmware(self.firmware, self.sdk, self.key.public_key())
+        self.firmware["settings"]["flash_size"] = "keep"
+        self.firmware["images"][0]["offset"] = 4096
+        with self.assertRaisesRegex(ValueError, "offset"):
+            inspect_ota_firmware(self.firmware, self.sdk, self.key.public_key())
+
+    def test_fresh_install_erases_unknown_old_layout_without_migration_or_backup(self):
+        result = install(self.request, self.connected_sdk)
+        self.assertTrue(result["verified"] and result["resetLayout"])
+        self.assertEqual(self.transport.events, ["connect", "erase", "write", "verify", "readback", "reset"])
+        self.assertFalse((self.output / "flash-backup.bin").exists())
+        self.assertEqual(self.device.flash[0x9000:0x19000], (self.output / "identity.bin").read_bytes())
+        self.assertEqual(self.device.flash[0x620000:], b"\xff" * (0x1000000 - 0x620000))
+        self.assertTrue(self.device.closed)
+        recorded = json.loads((self.output / "install-plan.json").read_text())
+        self.assertEqual(recorded["layout"]["verifiedSigningKeySha256"], self.firmware["manifest"]["signingKeySha256"])
+
+    def test_missing_reset_or_test_key_consent_never_connects(self):
+        for field in ("resetLayout", "allowTestFirmware"):
+            with self.subTest(field=field):
+                request = {**self.request, field: False}
+                with self.assertRaises(ValueError):
+                    install(request, self.connected_sdk)
+        self.assertEqual(self.transport.events, [])
+        self.assertFalse(self.output.exists())
+
+    def test_untrusted_manifest_never_connects_or_creates_credentials(self):
+        self.request["firmware"]["manifest"]["flashBytes"] = 0x2000000
+        with self.assertRaisesRegex(ValueError, "manifest signature"):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, [])
+        self.assertFalse(self.output.exists())
+
+    def test_wrong_device_never_erases(self):
+        self.device.device_id = "ffeeddccbbaa"
+        with self.assertRaisesRegex(ValueError, "MAC mismatch"):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, ["connect"])
+        self.assertEqual(self.device.flash[:4], b"old!")
+
+    def test_wrong_capacity_never_erases(self):
+        self.transport.detected_size = "8MB"
+        with self.assertRaisesRegex(ValueError, "16 MiB"):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, ["connect"])
+
+    def test_failed_fresh_install_never_resets_and_retains_prepared_credentials(self):
+        self.transport.fail_verify = True
+        with self.assertRaisesRegex(ValueError, "verification failed"):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, ["connect", "erase", "write", "verify"])
+        self.assertTrue((self.output / "identity.bin").exists())
+        self.assertFalse((self.output / "install-result.json").exists())
+        with self.assertRaises(FileExistsError):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, ["connect", "erase", "write", "verify"])
+
+    def test_node_inspects_signed_bundle_and_requires_explicit_trusted_key(self):
+        public_path = self.root / "trusted-public.pem"
+        public_path.write_text(self.request["verificationKey"])
+        script = str(Path(__file__).with_name("install-device.mjs"))
+        command = ["node", script, "--firmware", str(self.build), "--idf-path", os.environ["IDF_PATH"], "--python", sys.executable]
+        failed = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("verification-key", failed.stderr)
+        accepted = subprocess.run(command + ["--verification-key", str(public_path)], capture_output=True, text=True, check=False)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn("Offline check only", accepted.stdout)
 
 
 if __name__ == "__main__":

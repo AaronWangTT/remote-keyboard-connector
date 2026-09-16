@@ -46,6 +46,17 @@ let networkFieldsInitialized = false;
 let networkFieldsJob = 0;
 let renderedProfile = "";
 let renderedScan = "";
+let firmwareState = null;
+let firmwareJob = null;
+let firmwareTimer = null;
+let firmwarePolling = false;
+let firmwareMutating = false;
+let firmwareUpload = null;
+let firmwareTransferred = 0;
+let firmwareOutcome = "";
+let firmwareUncertain = false;
+let expectedFirmware = "";
+try { expectedFirmware = sessionStorage.getItem("keyboard.pending-firmware.v1") ?? ""; } catch {}
 
 function renderLocalEcho() {
   surface.dataset.localEcho = String(localEchoEnabled);
@@ -77,7 +88,13 @@ function errorMessage(error) {
     usb_unavailable: "USB is not ready.", csrf_denied: "Session changed. Reload and sign in again.",
     provisioning_required: "This keyboard needs sender provisioning.", claim_failed: "Owner setup could not be saved. Reconnect before trying again.",
     network_busy: "Network operation in progress. Refresh its status before trying again.",
-    release_control_first: "Release keyboard control before changing the network.",
+    release_control_first: "Release keyboard control before continuing.",
+    update_busy: "A firmware update is in progress.", update_unavailable_or_busy: "Firmware update is unavailable or another operation is in progress.",
+    invalid_update_request: "Select a compatible signed firmware image within the size limit.",
+    update_failed: "Firmware verification or transfer failed. The running version is unchanged.",
+    update_not_ready: "This update is no longer ready. Refresh its status.",
+    update_owner_required: "This update belongs to another session.",
+    device_starting: "The keyboard is checking startup. Try again shortly.",
     storage_failed: "Settings storage is unavailable. Restart the keyboard before retrying.",
     invalid_network_request: "Check the network name, password, and hostname.",
     login_required: "Sign in to continue." })[error.code] ?? "Cannot reach the keyboard. Check the connection and try again.";
@@ -121,15 +138,18 @@ function clearNetworkPassword() {
 function renderAccount() {
   if (!account.authenticated) {
     currentView = "keyboard";
+    firmwareUpload?.abort();
+    firmwareState = firmwareJob = null;
     clearNetworkPassword();
     setPasswordVisibility(document.querySelector('[data-password-toggle="owner-password"]'), false);
   }
   document.querySelector("#account-view").hidden = account.authenticated;
   surface.hidden = !account.authenticated || currentView !== "keyboard";
   document.querySelector("#network-view").hidden = !account.authenticated || currentView !== "network";
+  document.querySelector("#firmware-view").hidden = !account.authenticated || currentView !== "firmware";
   for (const id of ["take-control", "release", "network-settings"]) document.getElementById(id).hidden = !account.authenticated || currentView !== "keyboard";
   document.querySelector("#logout").hidden = !account.authenticated;
-  document.querySelector("#take-control").disabled = !account.authenticated || socket !== null || takingControl;
+  document.querySelector("#take-control").disabled = !account.authenticated || socket !== null || takingControl || firmwareState?.busy;
   const claiming = !account.claimed;
   document.querySelector("#account-title").textContent = claiming ? "Claim keyboard" : "Sign in";
   document.querySelector("#account-submit").textContent = claiming ? "Claim keyboard" : "Sign in";
@@ -150,7 +170,10 @@ async function loadSession() {
     if (previous && !account.authenticated) disconnect();
     if (socket === null) connectionStatus.textContent = account.authenticated ? "Released" : "Signed out";
     renderAccount();
-    if (account.authenticated) pollNetwork();
+    if (account.authenticated) {
+      pollNetwork();
+      if (currentView === "firmware" || expectedFirmware) pollFirmware();
+    }
     if (!account.provisioned) notify("This keyboard needs sender provisioning.");
   } catch (error) {
     notify(errorMessage(error));
@@ -165,7 +188,7 @@ function renderNetwork() {
   document.querySelector("#wifi-ssid").required = stationMode;
   document.querySelector("#wifi-password").required = stationMode;
   document.querySelector("#network-apply").textContent = stationMode ? "Test and Connect" : "Use Standalone AP";
-  const busy = !state || state.busy || !state.available || networkMutating || networkUncertain;
+  const busy = !state || state.busy || !state.available || networkMutating || networkUncertain || firmwareState?.busy;
   for (const input of document.querySelectorAll("#network-form input, #network-form select, #network-form button, #hostname-form input, #hostname-form button")) input.disabled = busy;
   document.querySelector("#forget-network").hidden = !state?.has_profile;
   document.querySelector("#forget-network").disabled = busy;
@@ -288,6 +311,161 @@ async function submitNetwork(action, fields = {}) {
     networkMutating = false;
     renderNetwork();
     pollNetwork();
+  }
+}
+
+function renderFirmware() {
+  const phase = firmwareJob?.phase ?? "idle";
+  const locked = !firmwareState?.available || firmwareState.busy || firmwareUpload !== null || firmwareMutating || Boolean(expectedFirmware);
+  document.querySelector("#firmware-version").textContent = firmwareState?.version ?? "-";
+  document.querySelector("#firmware-board").textContent = firmwareState?.board ?? "-";
+  document.querySelector("#firmware-profile").textContent = firmwareState ? (firmwareState.test_only ? "Test build" : "Release build") : "-";
+  document.querySelector("#firmware-candidate").textContent = firmwareJob?.candidate_version || "None";
+  document.querySelector("#firmware-file").disabled = locked;
+  document.querySelector("#firmware-upload").disabled = locked || !document.querySelector("#firmware-file").files.length;
+  document.querySelector("#firmware-activate").hidden = phase !== "staged" || Boolean(expectedFirmware);
+  document.querySelector("#firmware-activate").disabled = firmwareMutating || firmwareUpload !== null;
+  document.querySelector("#firmware-cancel").hidden = !["receiving", "verifying", "staged"].includes(phase) && firmwareUpload === null;
+  document.querySelector("#firmware-cancel").disabled = firmwareMutating;
+  const progress = document.querySelector("#firmware-progress");
+  progress.hidden = !["receiving", "verifying", "staged"].includes(phase) && firmwareUpload === null;
+  progress.value = firmwareUpload ? firmwareTransferred : firmwareJob?.expected ? Math.min(100, firmwareJob.received / firmwareJob.expected * 100) : 0;
+  const phases = { idle: firmwareState?.available ? "Ready" : "Checking device", receiving: "Uploading", verifying: "Verifying image",
+    staged: "Image verified; ready to install", activating: "Restarting", failed: "Update failed; running firmware retained", cancelled: "Update cancelled" };
+  document.querySelector("#firmware-status").textContent = firmwareOutcome || (expectedFirmware ? "Restart requested; checking running version" :
+    firmwareUpload ? (firmwareTransferred >= 100 ? "Transfer complete; waiting for verification" : "Uploading") : phases[phase]);
+  document.querySelector("#firmware-status").dataset.error = String(phase === "failed");
+  renderAccount();
+}
+
+async function pollFirmware() {
+  if (!account.authenticated || document.hidden || firmwarePolling) return;
+  if (firmwareTimer !== null) clearTimeout(firmwareTimer);
+  firmwarePolling = true;
+  const csrf = account.csrf;
+  try {
+    const information = await api("/api/v1/firmware");
+    if (!account.authenticated || account.csrf !== csrf) return;
+    firmwareState = information;
+    try {
+      const job = await api("/api/v1/update/job");
+      if (account.authenticated && account.csrf === csrf) firmwareJob = job;
+    } catch (error) {
+      if (error.code === "update_owner_required") firmwareJob = null;
+      else throw error;
+    }
+    if (!account.authenticated || account.csrf !== csrf) return;
+    if (firmwareUncertain) {
+      firmwareOutcome = "";
+      firmwareUncertain = false;
+    }
+    if (expectedFirmware && !firmwareState.busy && !firmwareState.trial_boot) {
+      firmwareOutcome = firmwareState.version === expectedFirmware ? `Version ${expectedFirmware} is running` :
+        `Update not confirmed; version ${firmwareState.version} is running`;
+      expectedFirmware = "";
+      try { sessionStorage.removeItem("keyboard.pending-firmware.v1"); } catch {}
+    }
+    renderFirmware();
+  } catch (error) {
+    if (currentView === "firmware") {
+      firmwareUncertain = true;
+      firmwareOutcome = expectedFirmware ? "Restarting; sign in again when the device returns" : errorMessage(error);
+      renderFirmware();
+    }
+  } finally {
+    firmwarePolling = false;
+    if (account.authenticated && !document.hidden && (currentView === "firmware" || firmwareState?.busy || firmwareUpload || expectedFirmware)) {
+      firmwareTimer = setTimeout(pollFirmware, 500);
+    }
+  }
+}
+
+async function uploadFirmware(event) {
+  event.preventDefault();
+  const file = document.querySelector("#firmware-file").files[0];
+  if (!file || firmwareUpload || firmwareState?.busy || firmwareMutating) return;
+  if (file.size < 8192 || file.size > (firmwareState?.max_bytes ?? 0) || file.size % 4096) {
+    notify(errorMessage({ code: "invalid_update_request" }));
+    return;
+  }
+  disconnect();
+  notify();
+  firmwareOutcome = "";
+  firmwareJob = null;
+  firmwareTransferred = 0;
+  const csrf = account.csrf;
+  const upload = new XMLHttpRequest();
+  firmwareUpload = upload;
+  renderFirmware();
+  try {
+    await new Promise((resolve, reject) => {
+      upload.open("POST", "/api/v1/update");
+      upload.responseType = "json";
+      upload.timeout = 300000;
+      upload.setRequestHeader("Content-Type", "application/octet-stream");
+      upload.setRequestHeader("X-CSRF-Token", csrf);
+      upload.upload.onprogress = progress => {
+        if (firmwareUpload !== upload) return;
+        firmwareTransferred = progress.lengthComputable ? Math.min(100, progress.loaded / progress.total * 100) : 0;
+        renderFirmware();
+      };
+      upload.onload = () => upload.status >= 200 && upload.status < 300 ? resolve() : reject({ code: upload.response?.error });
+      upload.onerror = upload.ontimeout = () => reject({ code: "upload_unknown" });
+      upload.onabort = () => reject({ code: "upload_cancelled" });
+      upload.send(file);
+    });
+  } catch (error) {
+    if (account.authenticated && account.csrf === csrf) {
+      if (error.code === "upload_unknown") {
+        firmwareUncertain = true;
+        firmwareOutcome = "Upload response lost; checking device status";
+      } else notify(error.code === "upload_cancelled" ? "Upload stopped" : errorMessage(error));
+    }
+  } finally {
+    if (firmwareUpload === upload) firmwareUpload = null;
+    document.querySelector("#firmware-file").value = "";
+    renderFirmware();
+    if (account.authenticated && account.csrf === csrf) await pollFirmware();
+  }
+}
+
+async function firmwareCommand(activate) {
+  if (firmwareMutating) return;
+  firmwareMutating = true;
+  firmwareOutcome = "";
+  notify();
+  renderFirmware();
+  try {
+    const job = !activate && !firmwareJob?.job_id ? await api("/api/v1/update/job") : firmwareJob;
+    if (!job?.job_id) {
+      if (!activate) firmwareUpload?.abort();
+      return;
+    }
+    if (!activate && !["receiving", "verifying", "staged"].includes(job.phase)) {
+      firmwareUpload?.abort();
+      firmwareJob = job;
+      firmwareState = job;
+      return;
+    }
+    if (activate) {
+      expectedFirmware = job.candidate_version;
+      try { sessionStorage.setItem("keyboard.pending-firmware.v1", expectedFirmware); } catch {}
+    }
+    const result = await api(activate ? "/api/v1/update/activate" : "/api/v1/update/job", activate ? "POST" : "DELETE",
+      { job_id: job.job_id, ...(activate ? { sha256: job.sha256 } : {}) });
+    firmwareJob = result;
+    firmwareState = result;
+    if (!activate) firmwareUpload?.abort();
+  } catch (error) {
+    if (activate && error.status) {
+      expectedFirmware = "";
+      try { sessionStorage.removeItem("keyboard.pending-firmware.v1"); } catch {}
+    }
+    notify(errorMessage(error));
+  } finally {
+    firmwareMutating = false;
+    renderFirmware();
+    pollFirmware();
   }
 }
 
@@ -657,6 +835,11 @@ document.querySelector("#account-form").addEventListener("submit", async event =
   } finally {
     document.querySelector("#account-form").reset();
     renderAccount();
+    if (account.authenticated && expectedFirmware) {
+      currentView = "firmware";
+      renderAccount();
+      pollFirmware();
+    }
   }
 });
 for (const button of document.querySelectorAll("[data-password-toggle]")) button.addEventListener("click", () => {
@@ -685,6 +868,28 @@ document.querySelector("#network-back").addEventListener("click", () => {
   renderAccount();
 });
 for (const radio of document.querySelectorAll('[name="network-mode"]')) radio.addEventListener("change", renderNetwork);
+document.querySelector("#firmware-settings").addEventListener("click", async () => {
+  disconnect();
+  clearNetworkPassword();
+  currentView = "firmware";
+  notify();
+  renderAccount();
+  renderFirmware();
+  await pollFirmware();
+});
+document.querySelector("#firmware-back").addEventListener("click", () => {
+  currentView = "network";
+  if (firmwareTimer !== null) clearTimeout(firmwareTimer);
+  firmwareTimer = null;
+  renderAccount();
+  renderNetwork();
+  pollNetwork();
+});
+document.querySelector("#firmware-file").addEventListener("change", renderFirmware);
+document.querySelector("#firmware-form").addEventListener("submit", uploadFirmware);
+document.querySelector("#firmware-refresh").addEventListener("click", () => { firmwareOutcome = ""; pollFirmware(); });
+document.querySelector("#firmware-cancel").addEventListener("click", () => firmwareCommand(false));
+document.querySelector("#firmware-activate").addEventListener("click", () => firmwareCommand(true));
 document.querySelector("#wifi-network").addEventListener("change", event => {
   const input = document.querySelector("#wifi-ssid");
   const option = event.target.selectedOptions[0];

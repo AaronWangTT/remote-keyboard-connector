@@ -1,6 +1,8 @@
 #include "board_status.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "firmware_update.h"
 #include "network.h"
 #include "usb_keyboard.h"
 #include "web_server.h"
@@ -18,8 +20,19 @@ static board_status_snapshot_t board_status_source(void)
     };
 }
 
+static bool services_healthy(void)
+{
+    network_status_t network;
+    network_status(&network);
+    web_server_status_t web = web_server_status();
+    return network_service_healthy() && network.available && (network.ap_active || network.station_online) && web.valid &&
+        (uint64_t)(esp_timer_get_time() / 1000) - web.sampled_at_ms < 500 && usb_keyboard_service_healthy();
+}
+
 void app_main(void)
 {
+    ESP_LOGI(TAG, "Firmware %s (%s)", firmware_update_descriptor()->version, firmware_update_descriptor()->board);
+    ESP_ERROR_CHECK(firmware_update_init());
     esp_err_t led_result = board_status_start(board_status_source);
     if (led_result != ESP_OK && led_result != ESP_ERR_NOT_SUPPORTED) {
         ESP_LOGW(TAG, "Board status LED unavailable (%s); keyboard startup continues", esp_err_to_name(led_result));
@@ -33,8 +46,9 @@ void app_main(void)
     }
     result = web_server_start();
     if (result != ESP_OK) ESP_LOGE(TAG, "Web interface unavailable (%s); keyboard remains disarmed", esp_err_to_name(result));
-    else if (led_result == ESP_OK) {
+    else {
         result = web_server_status_start();
-        if (result != ESP_OK) ESP_LOGW(TAG, "Board status publication unavailable (%s); keyboard service continues", esp_err_to_name(result));
+        if (result == ESP_OK) result = firmware_update_validate_boot(services_healthy);
+        if (result != ESP_OK) ESP_LOGE(TAG, "Boot validation service unavailable (%s)", esp_err_to_name(result));
     }
 }

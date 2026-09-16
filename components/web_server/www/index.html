@@ -105,7 +105,33 @@
           <div class="field"><label for="network-hostname">Local hostname</label><div class="hostname-field"><input id="network-hostname" value="kb" maxlength="32" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" autocomplete="off" spellcheck="false" required><span>.local</span></div></div>
           <button class="command-button secondary" type="submit">Save name</button>
         </form>
-        <div class="network-footer"><button id="forget-network" class="command-button danger" type="button" hidden>Forget network</button></div>
+        <div class="network-footer network-job-actions">
+          <button id="firmware-settings" class="command-button secondary" type="button">Firmware updates</button>
+          <button id="forget-network" class="command-button danger" type="button" hidden>Forget network</button>
+        </div>
+      </section>
+      <section id="firmware-view" class="network-panel" aria-labelledby="firmware-title" hidden>
+        <div class="view-heading">
+          <h2 id="firmware-title">Firmware</h2>
+          <button id="firmware-back" class="tool-button neutral" type="button" aria-label="Back to network settings" title="Back to network settings"><span class="icon" data-icon="back" aria-hidden="true"></span></button>
+        </div>
+        <dl class="network-facts">
+          <dt>Running version</dt><dd id="firmware-version">-</dd>
+          <dt>Board</dt><dd id="firmware-board">-</dd>
+          <dt>Build</dt><dd id="firmware-profile">-</dd>
+          <dt>Candidate</dt><dd id="firmware-candidate">None</dd>
+        </dl>
+        <p id="firmware-status" class="job-status" role="status" aria-live="polite">Loading</p>
+        <progress id="firmware-progress" max="100" value="0" aria-label="Firmware upload progress" hidden></progress>
+        <form id="firmware-form">
+          <div class="field"><label for="firmware-file">Firmware image</label><input id="firmware-file" type="file" accept=".bin,application/octet-stream" required></div>
+          <button id="firmware-upload" class="command-button" type="submit" disabled>Upload</button>
+        </form>
+        <div class="network-job-actions firmware-actions">
+          <button id="firmware-activate" class="command-button" type="button" hidden>Install and restart</button>
+          <button id="firmware-cancel" class="command-button secondary" type="button" hidden>Cancel update</button>
+          <button id="firmware-refresh" class="tool-button neutral" type="button" aria-label="Refresh firmware status" title="Refresh firmware status"><span class="icon" data-icon="refresh" aria-hidden="true"></span></button>
+        </div>
       </section>
     <section id="keyboard" class="keyboard-surface" aria-label="Remote keyboard" tabindex="0" hidden>
         <div class="keyboard-meta">

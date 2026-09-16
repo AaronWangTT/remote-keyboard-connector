@@ -69,7 +69,8 @@ jobs:
         run: |
           source "$IDF_PATH/export.sh"
           python tools/install_device_test.py 2>&1 | tee .cache/ci/installer-tests.log
-          node tools/install-device.mjs --firmware build --write-manifest 2>&1 | tee .cache/ci/firmware-validation.log
+          node tools/install-device.mjs --firmware build \
+            --verification-key build/firmware-signing-public.pem 2>&1 | tee .cache/ci/firmware-validation.log
 
       - name: Summarize firmware build
         if: ${{ !cancelled() }}
@@ -80,7 +81,7 @@ jobs:
             printf 'Build type: **%s** (not a release).\n\n' "$BUILD_KIND"
             printf 'Checked-out commit: `%s`\n\n' "$(git rev-parse HEAD)"
             printf 'Target: `esp32s3`; ESP-IDF: `v6.1`.\n\n'
-            printf 'No hardware was flashed or tested. Generic artifacts exclude NVS images and credentials; sender installation is a separate explicit operation.\n\n'
+            printf 'No hardware was flashed or tested. Both outputs use the same signed application under a generated CI-only key; these are not trusted releases. NVS, private keys and credentials are excluded.\n\n'
             printf '### Image and Partition Size\n\n```text\n'
             if [[ -f .cache/ci/firmware-build.log ]]; then
               grep -F 'Smallest app partition' .cache/ci/firmware-build.log || true
@@ -104,6 +105,14 @@ jobs:
             build/flasher_args.json
             build/flash_args
             build/firmware-manifest.json
+            build/firmware-manifest.sig
+            build/ota_data_initial.bin
+            build/firmware-install.zip
+            build/firmware-install.zip.sha256
+            build/firmware-ota.bin
+            build/firmware-ota.bin.sha256
+            build/firmware-ota.json
+            build/firmware-signing-public.pem
             .cache/ci/firmware-summary.md
           include-hidden-files: true
           if-no-files-found: error

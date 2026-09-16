@@ -6,18 +6,19 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
 
-export const passwordIterations = 100000;
+export const passwordIterations = 10;
 const root = fileURLToPath(new URL("../", import.meta.url));
 
-export function createIdentity(deviceId) {
+export function createIdentity(deviceId, iterations = passwordIterations) {
   assert.match(deviceId, /^[0-9a-f]{12}$/i, "Use the board's twelve-digit factory base MAC without separators");
+  assert.ok(iterations === passwordIterations || iterations === 100000, "Unsupported credential policy");
   const identity = {
     version: 1,
     deviceId: deviceId.toLowerCase(),
     apPassword: randomBytes(18).toString("base64url"),
     setupCode: randomBytes(12).toString("hex"),
     salt: randomBytes(16).toString("hex"),
-    iterations: passwordIterations,
+    iterations,
   };
   identity.ssid = `WiFiKeyboard-${identity.deviceId.slice(-6).toUpperCase()}`;
   identity.verifier = pbkdf2Sync(identity.setupCode, Buffer.from(identity.salt, "hex"),
@@ -25,12 +26,13 @@ export function createIdentity(deviceId) {
   return identity;
 }
 
-export function identityCsv(identity) {
+export function identityCsv(identity, iterations = passwordIterations) {
   assert.match(identity.deviceId, /^[0-9a-f]{12}$/);
   assert.match(identity.apPassword, /^[A-Za-z0-9_-]{24}$/);
   assert.match(identity.salt, /^[0-9a-f]{32}$/);
   assert.match(identity.verifier, /^[0-9a-f]{64}$/);
-  assert.equal(identity.iterations, passwordIterations);
+  assert.ok(iterations === passwordIterations || iterations === 100000, "Unsupported credential policy");
+  assert.equal(identity.iterations, iterations);
   return ["key,type,encoding,value", "kb_identity,namespace,,",
     `version,data,u32,${identity.version}`, `device_id,data,string,${identity.deviceId}`,
     `ap_password,data,string,${identity.apPassword}`, `claim_salt,data,hex2bin,${identity.salt}`,
@@ -47,10 +49,10 @@ function outsideRepository(directory) {
   return isAbsolute(contained) || contained === ".." || contained.startsWith(`..${sep}`);
 }
 
-export async function writeIdentity(deviceId, output) {
+export async function writeIdentity(deviceId, output, iterations = passwordIterations) {
   const directory = resolve(output);
   assert.ok(outsideRepository(directory), "Private provisioning output must be outside the repository");
-  const identity = createIdentity(deviceId);
+  const identity = createIdentity(deviceId, iterations);
   let ancestor = dirname(directory);
   for (;;) {
     try {
@@ -86,7 +88,7 @@ code{font-size:16px}small{display:block;margin-top:24px} @media print{body{margi
 <p>Join the protected Wi-Fi, open the browser address, and choose your own owner password. The setup code stops working after ownership is claimed. The Wi-Fi password remains useful for AP operation and recovery.</p>
 <small>HTTP/WS development firmware: use a protected, trusted test network. Application credentials and input are not protected against network interception. This card grants Wi-Fi access; keep it private.</small>
 </body></html>\n`;
-    await writeFile(resolve(directory, "identity.csv"), identityCsv(identity), { flag: "wx", mode: 0o600 });
+    await writeFile(resolve(directory, "identity.csv"), identityCsv(identity, iterations), { flag: "wx", mode: 0o600 });
     await writeFile(resolve(directory, "wifi-qr.png"), png, { flag: "wx", mode: 0o600 });
     await writeFile(resolve(directory, "setup-card.html"), card, { flag: "wx", mode: 0o600 });
     return directory;

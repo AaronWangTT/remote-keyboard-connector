@@ -20,6 +20,11 @@ const boardDriver = {
   sources: ["components/board/board_status_logic.c", "components/board/board_status.c", "components/board/test/board_driver_test.c"],
 };
 const suites = {
+  update_service: { includes: [".cache/tests/update-stubs", "components/firmware_update/test", "components/firmware_update/include",
+      "components/network/include", "components/usb_keyboard/include"],
+    sources: ["components/firmware_update/update_policy.c", "components/firmware_update/test/update_service_test.c"] },
+  update_policy: { includes: ["components/firmware_update/include"],
+    sources: ["components/firmware_update/update_policy.c", "components/firmware_update/test/update_policy_test.c"] },
   board_status: { includes: ["components/board/include"],
     sources: ["components/board/board_status_logic.c", "components/board/test/board_status_test.c"] },
   board_driver: { ...boardDriver, flags: ["-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1", "-DCONFIG_IDF_TARGET_ESP32S3=1"] },
@@ -62,6 +67,12 @@ for (const header of ["sdkconfig.h", "esp_err.h", "esp_log.h", "esp_timer.h", "d
   const path = resolve(".cache/tests/board-stubs", header);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, '#include "idf_stubs.h"\n');
+}
+for (const header of ["sdkconfig.h", "esp_err.h", "esp_log.h", "esp_timer.h", "esp_flash.h", "esp_ota_ops.h", "esp_system.h", "esp_image_format.h",
+  "freertos/FreeRTOS.h", "freertos/task.h", "hal/wdt_hal.h", "psa/crypto.h"]) {
+  const path = resolve(".cache/tests/update-stubs", header);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, '#include "update_stubs.h"\n');
 }
 const section = (source, start, end) => {
   const first = source.indexOf(start);

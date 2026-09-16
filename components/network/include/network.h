@@ -55,3 +55,6 @@ esp_err_t network_submit(const uint8_t *payload, size_t length, bool scan, uint3
 void network_management_touch(uint32_t local_address);
 bool network_control_begin(uint32_t local_address, uint32_t generation);
 void network_control_end(uint32_t generation);
+bool network_update_begin(uint32_t local_address);
+void network_update_end(void);
+bool network_service_healthy(void);

@@ -13,6 +13,7 @@
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static network_status_t snapshot;
 static bool control_ready;
+static bool update_reserved;
 static bool command_pending;
 static bool guarded;
 static bool guard_ap;
@@ -152,7 +153,7 @@ static void reset_network(void)
 {
     snapshot = (network_status_t){.available = true, .ap_active = true, .can_control = true};
     control_ready = true;
-    command_pending = guarded = guard_ap = false;
+    command_pending = guarded = guard_ap = update_reserved = false;
     ap_address = 1;
     station_address = lease_address = guard_generation = 0;
 }
@@ -203,6 +204,28 @@ static void test_network_observation(void)
     assert(snapshot.can_control);
     snapshot.can_control = false;
     expect_network(9, false, false);
+    reset_network();
+    assert(network_update_begin(ap_address));
+    assert(!snapshot.can_control);
+    assert(!network_control_begin(ap_address, 9));
+    assert(!network_update_begin(ap_address));
+    expect_network(0, false, false);
+    network_update_end();
+    assert(snapshot.can_control);
+    snapshot.ap_active = false;
+    snapshot.station_online = true;
+    station_address = lease_address = 2;
+    assert(!network_update_begin(ap_address));
+    assert(network_update_begin(station_address));
+    network_update_end();
+    lease_address = 0;
+    assert(!network_update_begin(station_address));
+    lease_address = 2;
+    command_pending = true;
+    assert(!network_update_begin(station_address));
+    command_pending = false;
+    guarded = true;
+    assert(!network_update_begin(station_address));
     reset_network();
 }
 

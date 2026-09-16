@@ -5,8 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
-static const uint32_t iterations = 100000;
-static const owner_record_t candidate = {.version = 1, .iterations = 100000, .salt = {1}, .digest = {2}};
+static const uint32_t iterations = 10;
+static const owner_record_t candidate = {.version = 1, .iterations = 10, .salt = {1}, .digest = {2}};
 
 typedef struct {
     bool consumed;

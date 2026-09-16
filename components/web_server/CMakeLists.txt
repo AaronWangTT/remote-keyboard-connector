@@ -1,6 +1,6 @@
 idf_component_register(SRCS "web_server.c" "input_protocol.c" "access_control.c"
                        INCLUDE_DIRS "include"
-                       PRIV_REQUIRES esp_http_server esp_timer esp_netif esp_hw_support usb_keyboard device_identity network mbedtls
+                       PRIV_REQUIRES esp_http_server esp_timer esp_netif esp_hw_support usb_keyboard device_identity network firmware_update mbedtls
                        EMBED_TXTFILES "www/index.html" "www/app.css" "www/app.mjs" "www/keyboard.mjs"
                                       "www/icons/shift.svg" "www/icons/caps.svg" "www/icons/backspace.svg"
                                       "www/icons/return.svg" "www/icons/release.svg")
