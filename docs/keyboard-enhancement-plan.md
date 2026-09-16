@@ -141,6 +141,27 @@ Caps off. The host's LED report determines `Caps on`/`Caps off`; a request shows
 `Caps pending` and missing feedback remains unknown or at its last confirmed
 state. No local uppercase toggle is presented as proof of a host lock change.
 
+With Host set to Win, the on-screen Shift modifier is sent only alongside a
+typing key. A tap of at most 400 ms still arms the next chord locally, or
+requests Caps off when Caps is on, but never sends a standalone Shift tap.
+This separates capitalization from Microsoft Pinyin's configurable Shift
+Chinese/English mode toggle. An unused hold of at least 1000 ms sends one
+standalone Left Shift tap on release and clears the local latch. An unused
+hold between those thresholds does neither. Any other input during the hold,
+including physical keys rejected by the forwarding filters, another held input
+source, or cancellation prevents the IME gesture. Holding
+Shift while typing remains a normal chord without an extra mode-switch tap.
+The Shift key shows its held state even while its HID modifier is deferred;
+that state is distinct from a one-shot latch after release. Changing Host clears
+held input and local Shift gestures, publishing only a neutral release if needed.
+The old hold cannot complete a gesture after the profile change. iOS-profile
+and physical Shift key mappings are unchanged. An invalid saved Host disables
+the host-dependent Globe and on-screen Shift controls without blocking ordinary
+typing or physical Shift. The input model also rejects invalid-profile
+on-screen Shift gestures. Model and
+Chromium/WebKit tests verify the emitted reports; actual Windows IME behavior
+still requires device validation with the host's configured shortcuts.
+
 Physical typing keys and left/right Shift use `KeyboardEvent.code`, so the USB
 host must use the expected US-ANSI layout. Browser/OS shortcuts remain outside
 the forwarding guarantee. Shift is a shared HID modifier: in a simultaneous

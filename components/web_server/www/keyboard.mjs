@@ -3,6 +3,7 @@ export const SHIFT_RIGHT = 32;
 export const CAPS_LOCK = 57;
 export const DEFAULT_HOST_PROFILE = "ios";
 
+const WINDOWS_IME_HOLD_MS = 1000;
 const hostCommands = Object.freeze({
   ios: Object.freeze({ modifiers: 1, keys: Object.freeze([44]) }),
   windows: Object.freeze({ modifiers: 8, keys: Object.freeze([44]) }),
@@ -116,17 +117,21 @@ export class KeyboardInput {
 
   get report() {
     let modifiers = this.chordShift ? SHIFT_LEFT : 0;
+    let deferredModifiers = 0;
     const keys = new Set();
     for (const source of this.sources.values()) {
-      modifiers |= source.modifiers ?? 0;
+      if (source.deferStandalone) deferredModifiers |= source.modifiers ?? 0;
+      else modifiers |= source.modifiers ?? 0;
       if (source.usage !== undefined) keys.add(source.usage);
     }
+    if (keys.size) modifiers |= deferredModifiers;
     if (keys.size > 6) throw new Error("key_capacity");
     return { modifiers, keys: [...keys].sort((left, right) => left - right) };
   }
 
   get shiftActive() {
-    return this.shiftLatched || (this.report.modifiers & (SHIFT_LEFT | SHIFT_RIGHT)) !== 0;
+    return this.shiftLatched || [...this.sources.values()].some(source => source.controlShift) ||
+      (this.report.modifiers & (SHIFT_LEFT | SHIFT_RIGHT)) !== 0;
   }
 
   get uppercase() {
@@ -152,11 +157,20 @@ export class KeyboardInput {
     return [this.report, { modifiers: command.modifiers, keys: [...command.keys] }, this.report];
   }
 
-  press(sourceId, key, now) {
-    if (this.sources.has(sourceId)) return [];
+  cancelDeferredShiftGestures() {
+    for (const source of this.sources.values()) {
+      if (source.deferStandalone) source.used = true;
+    }
+  }
+
+  press(sourceId, key, now, hostProfile = DEFAULT_HOST_PROFILE) {
+    if (this.sources.has(sourceId) || (key.action === "shift" && !validHostProfile(hostProfile))) return [];
+    this.cancelDeferredShiftGestures();
     if (key.action === "shift") {
       this.sources.set(sourceId, { modifiers: SHIFT_LEFT, controlShift: true, started: now,
-        initialLatch: this.shiftLatched, used: this.report.keys.length > 0 });
+        deferStandalone: hostProfile === "windows",
+        initialLatch: this.shiftLatched,
+        used: this.report.keys.length > 0 || (hostProfile === "windows" && this.sources.size > 0) });
     } else {
       if (key.usage !== undefined && key.usage !== CAPS_LOCK) {
         for (const source of this.sources.values()) if (source.controlShift) source.used = true;
@@ -177,6 +191,12 @@ export class KeyboardInput {
     this.sources.delete(sourceId);
     if (![...this.sources.values()].some(held => held.usage !== undefined && held.usage !== CAPS_LOCK)) {
       this.chordShift = false;
+    }
+    if (source.deferStandalone && !source.used && this.sources.size === 0 &&
+        now - source.started >= WINDOWS_IME_HOLD_MS) {
+      this.shiftLatched = false;
+      this.lastShiftTap = -Infinity;
+      return [this.report, { modifiers: SHIFT_LEFT, keys: [] }, this.report];
     }
     if (source.controlShift && !source.used && now - source.started <= 400) {
       if (this.capsLock === true || now - this.lastShiftTap <= 300) {

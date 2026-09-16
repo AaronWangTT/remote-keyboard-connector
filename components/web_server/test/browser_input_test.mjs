@@ -68,6 +68,141 @@ test("held Shift chords and long holds do not leave a latch", () => {
   assert.equal(keyboard.shiftLatched, false);
 });
 
+test("Windows touch Shift taps stay local and capitalize the next chord", () => {
+  const keyboard = new KeyboardInput();
+  assert.deepEqual(keyboard.press("shift", shift, 0, "windows"), [neutral]);
+  assert.equal(keyboard.shiftActive, true);
+  assert.deepEqual(keyboard.release("shift", 50), [neutral]);
+  assert.equal(keyboard.shiftLatched, true);
+  assert.deepEqual(keyboard.press("a", characterKey("a"), 100, "windows"),
+    [{ modifiers: SHIFT_LEFT, keys: [4] }]);
+  assert.equal(keyboard.shiftLatched, false);
+  assert.deepEqual(keyboard.release("a", 150), [neutral]);
+  assert.equal(keyboard.shiftActive, false);
+  assert.deepEqual(keyboard.press("shift", shift, 500, "windows"), [neutral]);
+  assert.deepEqual(keyboard.release("shift", 550), [neutral]);
+  assert.deepEqual(keyboard.press("shift", shift, 1000, "windows"), [neutral]);
+  assert.deepEqual(keyboard.release("shift", 1050), [neutral]);
+  assert.equal(keyboard.shiftLatched, false);
+});
+
+test("unsupported profiles cannot start on-screen Shift gestures or disturb ordinary typing", () => {
+  for (const profile of ["", "macos", "linux", "constructor", "toString", "__proto__", null]) {
+    const keyboard = new KeyboardInput();
+    assert.deepEqual(keyboard.press("shift", shift, 0, profile), []);
+    assert.equal(keyboard.sources.size, 0);
+    assert.deepEqual(keyboard.release("shift", 2000), []);
+    assert.equal(keyboard.shiftLatched, false);
+    assert.deepEqual(keyboard.press("a", characterKey("a"), 2100, profile),
+      [{ modifiers: 0, keys: [4] }]);
+    assert.deepEqual(keyboard.press("shift", shift, 2150, profile), []);
+    assert.deepEqual(keyboard.report, { modifiers: 0, keys: [4] });
+    assert.deepEqual(keyboard.release("a", 2200), [neutral]);
+    assert.deepEqual(keyboard.press("physical", physicalKeys.get("ShiftLeft"), 2300, profile),
+      [{ modifiers: SHIFT_LEFT, keys: [] }]);
+    assert.deepEqual(keyboard.release("physical", 2400), [neutral]);
+  }
+});
+
+test("Windows held touch Shift has no standalone report in either release order", () => {
+  for (const releaseShiftFirst of [false, true]) {
+    const keyboard = new KeyboardInput();
+    assert.deepEqual(keyboard.press("shift", shift, 0, "windows"), [neutral]);
+    assert.deepEqual(keyboard.press("a", characterKey("a"), 50, "windows"),
+      [{ modifiers: SHIFT_LEFT, keys: [4] }]);
+    if (releaseShiftFirst) {
+      assert.deepEqual(keyboard.release("shift", 1500), [{ modifiers: 0, keys: [4] }]);
+      assert.deepEqual(keyboard.release("a", 1550), [neutral]);
+    } else {
+      assert.deepEqual(keyboard.release("a", 1500), [neutral]);
+      assert.equal(keyboard.shiftActive, true);
+      assert.deepEqual(keyboard.release("shift", 1550), [neutral]);
+    }
+    assert.equal(keyboard.shiftLatched, false);
+    assert.deepEqual(keyboard.press("shift", shift, 2000, "windows"), [neutral]);
+    assert.deepEqual(keyboard.release("shift", 2500), [neutral]);
+    assert.equal(keyboard.shiftActive, false);
+  }
+});
+
+test("Windows Shift duration boundaries separate capitalization from IME switching", () => {
+  for (const duration of [400, 401, 999, 1000, 2500]) {
+    const keyboard = new KeyboardInput();
+    assert.deepEqual(keyboard.press("shift", shift, 0, "windows"), [neutral]);
+    assert.deepEqual(keyboard.release("shift", duration), duration >= 1000 ?
+      [neutral, { modifiers: SHIFT_LEFT, keys: [] }, neutral] : [neutral]);
+    assert.equal(keyboard.shiftLatched, duration <= 400);
+    assert.equal(keyboard.shiftActive, duration <= 400);
+    assert.deepEqual(keyboard.release("shift", duration + 10), []);
+    assert.deepEqual(keyboard.press("a", characterKey("a"), duration + 20, "windows"),
+      [{ modifiers: duration <= 400 ? SHIFT_LEFT : 0, keys: [4] }]);
+    assert.equal(keyboard.shiftLatched, false);
+    assert.deepEqual(keyboard.release("a", duration + 30), [neutral]);
+    assert.equal(keyboard.shiftActive, false);
+  }
+  const keyboard = new KeyboardInput();
+  keyboard.press("shift", shift, 0, "windows");
+  keyboard.release("shift", 40);
+  assert.equal(keyboard.shiftLatched, true);
+  keyboard.press("shift", shift, 500, "windows");
+  assert.deepEqual(keyboard.release("shift", 1500),
+    [neutral, { modifiers: SHIFT_LEFT, keys: [] }, neutral]);
+  assert.equal(keyboard.shiftLatched, false);
+  keyboard.press("shift", shift, 1600, "windows");
+  assert.deepEqual(keyboard.release("shift", 1640), [neutral]);
+  assert.equal(keyboard.shiftLatched, true);
+  assert.equal(keyboard.capsPending, false);
+});
+
+test("Windows long Shift holds cannot toggle IME after cancellation or other input", () => {
+  const keyboard = new KeyboardInput();
+  keyboard.press("shift", shift, 0, "windows");
+  keyboard.clear();
+  assert.deepEqual(keyboard.release("shift", 2000), []);
+  for (const duration of [50, 2000]) {
+    keyboard.press("shift", shift, 0, "windows");
+    keyboard.cancelDeferredShiftGestures();
+    assert.deepEqual(keyboard.report, neutral);
+    assert.equal(keyboard.shiftActive, true);
+    assert.deepEqual(keyboard.release("shift", duration), [neutral]);
+    assert.equal(keyboard.shiftLatched, false);
+  }
+  for (const key of [physicalKeys.get("CapsLock"), physicalKeys.get("ShiftRight"), shift]) {
+    keyboard.clear();
+    keyboard.press("shift", shift, 0, "windows");
+    keyboard.press("other", key, 500, "windows");
+    keyboard.release("other", 550);
+    assert.deepEqual(keyboard.release("shift", 2000), [neutral]);
+    assert.equal(keyboard.shiftLatched, false);
+    keyboard.press("other", key, 2500, "windows");
+    keyboard.press("shift", shift, 2600, "windows");
+    keyboard.release("other", 2700);
+    assert.deepEqual(keyboard.release("shift", 4000), [neutral]);
+  }
+});
+
+test("Windows touch Shift preserves Caps Lock and physical Shift reports", () => {
+  const keyboard = new KeyboardInput();
+  keyboard.setCapsLock(false);
+  assert.deepEqual(keyboard.press("shift", shift, 0, "windows"), [neutral]);
+  assert.deepEqual(keyboard.release("shift", 40), [neutral]);
+  assert.deepEqual(keyboard.press("shift", shift, 100, "windows"), [neutral]);
+  assert.deepEqual(keyboard.release("shift", 140),
+    [neutral, { modifiers: 0, keys: [CAPS_LOCK] }, neutral]);
+  keyboard.setCapsLock(true);
+  assert.equal(keyboard.uppercase, true);
+  assert.deepEqual(keyboard.press("shift", shift, 500, "windows"), [neutral]);
+  assert.equal(keyboard.uppercase, false);
+  assert.deepEqual(keyboard.release("shift", 540),
+    [neutral, { modifiers: 0, keys: [CAPS_LOCK] }, neutral]);
+  for (const code of ["ShiftLeft", "ShiftRight"]) {
+    assert.deepEqual(keyboard.press(code, physicalKeys.get(code), 1000, "windows"),
+      [{ modifiers: physicalKeys.get(code).modifiers, keys: [] }]);
+    assert.deepEqual(keyboard.release(code, 1050), [neutral]);
+    assert.equal(keyboard.shiftLatched, false);
+  }
+});
+
 test("left and right physical Shift stay independent", () => {
   const keyboard = new KeyboardInput();
   keyboard.press("left", physicalKeys.get("ShiftLeft"), 0);

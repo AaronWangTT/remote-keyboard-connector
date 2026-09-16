@@ -512,15 +512,21 @@ unsupported saved values leave both segments unselected until the user chooses o
 A Globe tap sends its preset when the normal control and USB
 readiness gates permit input. Keep the host-type setting editable and retain a
 saved selection across reloads and reconnects rather than resetting it to iOS.
-Loading the page or changing the host setting must never send a chord. An invalid
-or unsupported saved profile must not silently fall back or emit input; require
-a valid selection instead. A remembered host type is a user preference and must
+Loading the page or changing the host setting must never send a chord. A profile
+change clears held input and one-shot Shift, sending only a neutral release if
+needed. It never completes a pending gesture from the old profile. An invalid
+or unsupported saved profile disables the host-dependent Globe and on-screen
+Shift actions until a valid selection is made, without falling back to iOS.
+Ordinary typing and physical Shift remain available because their mappings do
+not depend on Host. A remembered host type is a user preference and must
 be updated when the board moves to a different host type. USB-enumeration
 fingerprinting is heuristic and is not part of this design.
 
 The code cannot determine the host's current input language, installed language
-list, or active IME from keyboard HID. Host type selects only the shortcut to
-send, not a language. Keep Globe stateless: do not track an assumed language,
+list, or active IME from keyboard HID. For Globe, host type selects the shortcut
+to send, not a language. The Windows profile also defines the on-screen Shift
+gestures in [Typing Behavior](keyboard-enhancement-plan.md#typing-behavior).
+Keep Globe stateless: do not track an assumed language,
 toggle an English/Chinese label, count taps to predict the host's input source,
 or change the visible key map after a switch request. The host may change its
 input source independently, and its shortcuts may be customized or unavailable.

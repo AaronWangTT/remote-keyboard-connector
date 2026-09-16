@@ -342,11 +342,12 @@ function render() {
   for (const button of rows.querySelectorAll("button")) {
     const key = definitions.get(button.dataset.key);
     button.disabled = key.action !== "page" &&
-      (!ready || (key.action === "globe" && !validHostProfile(hostProfile)));
+      (!ready || ((key.action === "globe" || key.action === "shift") && !validHostProfile(hostProfile)));
     if (key.action === "shift") {
       button.dataset.shift = keyboard.capsPending ? "pending" : keyboard.capsLock === true ? "caps" :
         keyboard.shiftLatched ? "latched" : "off";
-      button.dataset.held = String((report.modifiers & 0x22) !== 0);
+      button.dataset.held = String((report.modifiers & 0x22) !== 0 ||
+        [...keyboard.sources.values()].some(source => source.controlShift));
       button.setAttribute("aria-pressed", String(keyboard.shiftActive || keyboard.capsLock === true));
       button.querySelector(".icon").dataset.icon = keyboard.capsLock === true ? "caps" : "shift";
     } else {
@@ -510,7 +511,7 @@ surface.addEventListener("pointerdown", event => {
   if (key.action === "page") { switchPage(key.page); return; }
   if (key.action === "globe" || key.action === "cancel") { activateCommand(key.action); return; }
   try { surface.setPointerCapture(event.pointerId); } catch { disconnect(); return; }
-  changeInput(() => keyboard.press(`pointer:${event.pointerId}`, key, performance.now()));
+  changeInput(() => keyboard.press(`pointer:${event.pointerId}`, key, performance.now(), hostProfile));
 });
 
 surface.addEventListener("pointerup", event => {
@@ -535,10 +536,11 @@ surface.addEventListener("click", event => {
   surface.focus({ preventScroll: true });
   if (key.action === "page") { switchPage(key.page); return; }
   if (key.action === "globe" || key.action === "cancel") { activateCommand(key.action); return; }
-  changeInput(() => keyboard.press("accessible", key, performance.now()));
+  changeInput(() => keyboard.press("accessible", key, performance.now(), hostProfile));
   changeInput(() => keyboard.release("accessible", performance.now()));
 });
 
+window.addEventListener("keydown", () => keyboard.cancelDeferredShiftGestures(), true);
 surface.addEventListener("keydown", event => {
   if (event.isComposing || event.target.closest("#local-echo-text, input, textarea, select, [contenteditable], button:not([data-key])")) return;
   const button = event.target.closest("button[data-key]");
@@ -589,6 +591,8 @@ hostProfileToggle.addEventListener("change", event => {
   if (!event.target.matches('input[name="host-profile"]') || !event.target.checked ||
       !validHostProfile(event.target.value)) return;
   hostProfile = event.target.value;
+  keyboard.clear();
+  if (ready) publish([keyboard.report]);
   try { localStorage.setItem(hostProfileStorageKey, hostProfile); }
   catch { notify("Host preference could not be saved."); }
   render();
