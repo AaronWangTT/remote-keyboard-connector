@@ -164,7 +164,8 @@ def build_artifacts(build, sdk, project):
                 "BOOTLOADER_APP_ROLLBACK_ENABLE", "BOOTLOADER_WDT_ENABLE", "BOOTLOADER_WDT_DISABLE_IN_USER_CODE",
                 "ESP_PHY_CALIBRATION_AND_DATA_STORAGE", "KEYBOARD_HTTP_DEVELOPMENT")
     require(all(configuration.get(name) is True for name in required), "Missing required OTA build verification settings")
-    forbidden = ("SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK", "ESP_PHY_INIT_DATA_IN_PARTITION")
+    forbidden = ("SECURE_BOOT", "SECURE_BOOT_V2_ENABLED", "SECURE_FLASH_ENC_ENABLED",
+                 "BOOTLOADER_APP_ANTI_ROLLBACK", "ESP_PHY_INIT_DATA_IN_PARTITION")
     require(not any(configuration.get(name) for name in forbidden) and configuration.get("ESPTOOLPY_FLASHSIZE") == "16MB",
             "Unsupported OTA hardware security, PHY, or flash profile")
     key_path = (project / configuration["SECURE_BOOT_SIGNING_KEY"]).resolve()

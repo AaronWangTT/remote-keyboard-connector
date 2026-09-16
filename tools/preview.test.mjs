@@ -227,7 +227,17 @@ for (const engine of [chromium, webkit]) for (const rollback of [false, true]) t
     await page.locator("#firmware-file").setInputFiles({ name: "keyboard-0.1.1.bin", mimeType: "application/octet-stream", buffer: previewUpdateImage() });
     await expect(page.locator("#firmware-upload")).toBeEnabled();
     await page.locator("#firmware-upload").click();
-    await expect(page.locator("#firmware-activate")).toBeVisible();
+    try {
+      await expect(page.locator("#firmware-activate")).toBeVisible();
+    } catch (error) {
+      console.error("OTA upload state:", JSON.stringify({
+        status: await page.locator("#firmware-status").textContent(),
+        message: await page.locator("#ui-message").textContent(),
+        job: await (await page.request.get(new URL("/api/v1/update/job", url).href)).json(),
+        pageErrors: errors,
+      }));
+      throw error;
+    }
     await expect(page.locator("#firmware-candidate")).toHaveText("0.1.1");
   };
   await upload();

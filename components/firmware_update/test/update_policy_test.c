@@ -16,6 +16,7 @@ int main(void)
 {
     uint32_t version[3];
     assert(update_version_parse("0.1.65535", version) && version[2] == 65535);
+    assert(update_version_parse("65535.65535.65535", version) && version[0] == 65535 && version[1] == 65535 && version[2] == 65535);
     const char *invalid[] = {"", "1", "1.2", "1.2.3.4", "1.2.3-beta", "01.2.3", "1..3", "-1.2.3", "65536.0.0",
         "4294967298.0.0", "0.4294967298.0", "0.0.4294967298", "999999999999999.0.0"};
     for (size_t index = 0; index < sizeof(invalid) / sizeof(invalid[0]); index++) assert(!update_version_parse(invalid[index], version));

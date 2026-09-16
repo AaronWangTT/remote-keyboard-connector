@@ -10,6 +10,9 @@ static size_t erase_bytes, write_offset;
 static bool reserved, allow_network, quiescent, signature_ok, activation_ok, health_ok, watchdog_disabled;
 static bool cancel_in_begin;
 static bool extra_bytes;
+static bool check_worker_exit, check_network_release;
+static unsigned cleanup_checks;
+static void expect_cleanup_busy(void);
 static esp_ota_img_states_t boot_state;
 static esp_err_t boot_state_result;
 static esp_ota_select_entry_t boot_metadata[2];
@@ -24,7 +27,14 @@ static update_descriptor_t running_descriptor;
 static esp_app_desc_t running_app = {.version = "0.1.0", .project_name = "esp32s3_starter"};
 
 void test_update_enter(portMUX_TYPE *mutex) { assert(enters++ == 0 && *mutex == 0); *mutex = 1; }
-void test_update_exit(portMUX_TYPE *mutex) { assert(enters-- == 1 && *mutex == 1); *mutex = 0; }
+void test_update_exit(portMUX_TYPE *mutex)
+{
+    assert(enters-- == 1 && *mutex == 1); *mutex = 0;
+    if (check_worker_exit && !worker_active && network_held && !update_policy_busy(&status.policy)) {
+        check_worker_exit = false;
+        expect_cleanup_busy();
+    }
+}
 int64_t esp_timer_get_time(void) { return now; }
 esp_err_t esp_timer_create(const esp_timer_create_args_t *args, esp_timer_handle_t *timer)
 { assert(args->callback != NULL); *timer = &now; return ESP_OK; }
@@ -81,13 +91,31 @@ int psa_hash_finish(psa_hash_operation_t *operation, uint8_t *digest, size_t cap
 int psa_hash_abort(psa_hash_operation_t *operation) { operation->active = 0; return PSA_SUCCESS; }
 bool network_update_begin(uint32_t address)
 { assert(!reserved); if (!allow_network || (address != 1 && address != 2)) return false; reserved = true; return true; }
-void network_update_end(void) { assert(reserved && enters == 0); reserved = false; releases++; }
+void network_update_end(void)
+{
+    assert(reserved && enters == 0);
+    if (check_network_release) expect_cleanup_busy();
+    reserved = false;
+    if (check_network_release) expect_cleanup_busy();
+    releases++;
+}
 usb_keyboard_status_t usb_keyboard_status(void) { return (usb_keyboard_status_t){.generation = 1}; }
 void usb_keyboard_release(uint32_t generation) { assert(generation == 1); }
 bool usb_keyboard_quiescent(void) { return quiescent; }
 bool usb_keyboard_begin_maintenance(void) { return true; }
 const update_descriptor_t *firmware_update_descriptor(void) { return &running_descriptor; }
 static bool healthy(void) { health_calls++; return health_ok; }
+
+static void expect_cleanup_busy(void)
+{
+    firmware_update_status_t previous = firmware_update_status();
+    uint32_t next_job = 0;
+    assert(previous.busy);
+    assert(firmware_update_reserve(8192, 1, &next_job) == ESP_ERR_INVALID_STATE && next_job == 0);
+    assert(status.policy.job_id == previous.policy.job_id && status.policy.phase == previous.policy.phase);
+    assert(!worker_active);
+    cleanup_checks++;
+}
 
 esp_err_t bootloader_common_read_otadata(const esp_partition_pos_t *partition, esp_ota_select_entry_t *records)
 { assert(partition->offset == 0x19000); memcpy(records, boot_metadata, sizeof(boot_metadata)); return ESP_OK; }
@@ -113,7 +141,7 @@ bool write_otadata(const esp_ota_select_entry_t *record, uint32_t offset, bool e
 
 static void reset(void)
 {
-    status = (firmware_update_status_t){0}; worker_active = network_held = initialized = handle_open = false;
+    status = (firmware_update_status_t){0}; worker_active = network_held = network_releasing = initialized = handle_open = false;
     boot_task = NULL; boot_entry = NULL; target = NULL; hash = (psa_hash_operation_t)PSA_HASH_OPERATION_INIT;
     now = enters = begins = writes = aborts = ends = selections = releases = marks = rollbacks = 0;
     write_offset = erase_bytes = health_calls = 0; reserved = watchdog_disabled = cancel_in_begin = extra_bytes = false;
@@ -121,6 +149,8 @@ static void reset(void)
     boot_state = ESP_OTA_IMG_VALID;
     boot_state_result = ESP_OK;
     boot_metadata_writes = 0;
+    check_worker_exit = check_network_release = false;
+    cleanup_checks = 0;
     running_descriptor = (update_descriptor_t){.magic = {'K','B','O','T','A','0','0','1'}, .format_version = 1,
         .bootstrap_version = 1, .updater_version = 1, .settings_version = 1, .kdf_iterations = 10,
         .flash_bytes = 0x1000000, .slot_bytes = UPDATE_SLOT_BYTES, .security_profile = 1,
@@ -226,6 +256,15 @@ int main(void)
     assert(firmware_update_reserve(8192, 1, &job) == ESP_OK);
     firmware_update_worker_done(job - 1);
     assert(firmware_update_status().busy && reserved);
+    firmware_update_cancel(job); firmware_update_worker_done(job);
+
+    reset(); job = begin();
+    assert(firmware_update_cancel(job));
+    check_worker_exit = check_network_release = true;
+    firmware_update_worker_done(job);
+    assert(cleanup_checks == 3 && !check_worker_exit && releases == 1 && !firmware_update_status().busy);
+    check_network_release = false;
+    assert(firmware_update_reserve(8192, 1, &job) == ESP_OK);
     firmware_update_cancel(job); firmware_update_worker_done(job);
 
     reset(); cancel_in_begin = true; job = begin();

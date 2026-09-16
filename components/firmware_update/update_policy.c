@@ -11,8 +11,9 @@ bool update_version_parse(const char *text, uint32_t version[3])
         uint32_t value = 0;
         const char *start = text;
         while (*text >= '0' && *text <= '9') {
-            value = value * 10 + (uint32_t)(*text++ - '0');
-            if (value > 65535) return false;
+            uint32_t digit = (uint32_t)(*text++ - '0');
+            if (value > (UINT32_C(65535) - digit) / 10) return false;
+            value = value * 10 + digit;
         }
         if (text == start || (text - start > 1 && *start == '0')) return false;
         version[part] = value;

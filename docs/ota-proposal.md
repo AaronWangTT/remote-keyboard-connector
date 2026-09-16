@@ -554,6 +554,8 @@ component; no separate migration utility is introduced.
 - [Network maintenance admission](../components/network/network.c) accepts
    either a live AP or station address and excludes control/network changes.
    No AP activation or Internet access is required for station-mode OTA.
+   The updater remains busy through network-reservation release; a new job is
+   not created until the preceding worker and reservation cleanup have finished.
 - Pending-verification trial boots require eight consecutive healthy samples 250 ms apart, including
    network-worker progress, readable saved settings, a live HTTP service, and
    USB-task progress without host enumeration. The RTC watchdog stays armed
@@ -576,7 +578,7 @@ component; no separate migration utility is introduced.
    navigation to or from the keyboard/network settings UI. Lost responses are
    resolved through status without repeating activation or keyboard control.
 - Local validation includes 12 ASan/UBSan native suites, 25 keyboard-model tests,
-   61 SDK-backed installer/artifact tests, and Chromium/WebKit browser/API tests.
+   62 SDK-backed installer/artifact tests, and Chromium/WebKit browser/API tests.
    The native harness exercises the actual updater with mocked SDK boundaries;
    the browser preview simulates signature and reboot outcomes. Real signature
    verification is exercised separately with Espressif's SDK. Phone and desktop

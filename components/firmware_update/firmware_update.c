@@ -24,6 +24,7 @@ static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static firmware_update_status_t status;
 static bool worker_active;
 static bool network_held;
+static bool network_releasing;
 static bool initialized;
 static bool handle_open;
 static esp_ota_handle_t handle;
@@ -116,7 +117,7 @@ firmware_update_status_t firmware_update_status(void)
 {
     portENTER_CRITICAL(&lock);
     firmware_update_status_t result = status;
-    result.busy = worker_active || update_policy_busy(&status.policy);
+    result.busy = worker_active || network_held || network_releasing || update_policy_busy(&status.policy);
     portEXIT_CRITICAL(&lock);
     return result;
 }
@@ -125,9 +126,17 @@ static void release_network_if_done(void)
 {
     portENTER_CRITICAL(&lock);
     bool release = network_held && !worker_active && !update_policy_busy(&status.policy);
-    if (release) network_held = false;
+    if (release) {
+        network_held = false;
+        network_releasing = true;
+    }
     portEXIT_CRITICAL(&lock);
-    if (release) network_update_end();
+    if (release) {
+        network_update_end();
+        portENTER_CRITICAL(&lock);
+        network_releasing = false;
+        portEXIT_CRITICAL(&lock);
+    }
 }
 
 void firmware_update_fail(uint32_t job_id, const char *error)
@@ -145,7 +154,8 @@ esp_err_t firmware_update_reserve(size_t bytes, uint32_t local_address, uint32_t
 {
     if (job_id == NULL || !update_image_size_valid(bytes)) return ESP_ERR_INVALID_SIZE;
     portENTER_CRITICAL(&lock);
-    bool accepted = status.available && !worker_active && update_policy_begin(&status.policy, bytes, esp_timer_get_time());
+    bool accepted = status.available && !worker_active && !network_held && !network_releasing &&
+        update_policy_begin(&status.policy, bytes, esp_timer_get_time());
     if (accepted) {
         worker_active = true;
         status.candidate_version[0] = status.digest[0] = status.error[0] = '\0';

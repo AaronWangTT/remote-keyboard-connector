@@ -791,6 +791,19 @@ class OtaArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "offset"):
             inspect_ota_firmware(self.firmware, self.sdk, self.key.public_key())
 
+    def test_packaging_rejects_hardware_security_before_reading_key_or_writing_outputs(self):
+        config_path = self.build / "config/sdkconfig.json"
+        original = json.loads(config_path.read_text())
+        before = {name: (self.build / name).read_bytes() for name in (
+            "firmware-manifest.json", "firmware-manifest.sig", "firmware-install.zip", "firmware-ota.bin")}
+        for flag in ("SECURE_BOOT", "SECURE_BOOT_V2_ENABLED", "SECURE_FLASH_ENC_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK"):
+            with self.subTest(flag=flag), patch("ota_artifacts.serialization.load_pem_private_key") as load_key:
+                config_path.write_text(json.dumps({**original, flag: True}))
+                with self.assertRaisesRegex(ValueError, "Unsupported OTA hardware security"):
+                    build_artifacts(self.build, self.sdk, self.root)
+                load_key.assert_not_called()
+                self.assertEqual(before, {name: (self.build / name).read_bytes() for name in before})
+
     def test_fresh_install_erases_unknown_old_layout_without_migration_or_backup(self):
         result = install(self.request, self.connected_sdk)
         self.assertTrue(result["verified"] and result["resetLayout"])
