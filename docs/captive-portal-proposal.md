@@ -178,9 +178,12 @@ Board-originated station DHCP, DNS, and advisory probes are not AP-client transi
 and need their own bounded, mode-scoped egress policy. Release acceptance requires
 packet-level evidence for both directions in every state and injected failure.
 
-The portal normally observes the board's stable station MAC and current DHCP
-lease address. Only the MAC is intended to remain stable; an address change
-invalidates translations and may require portal reauthorization. The browser's HTTP properties and
+The upstream Wi-Fi access point/gateway observes the board's stable station MAC
+and current DHCP lease address. A remote portal HTTP server normally sees only
+the source IP after any additional upstream NAT, not the Wi-Fi MAC; the gateway
+may associate a portal login with its own MAC/lease state. Only the station MAC
+is intended to remain stable; an address change invalidates translations and may
+require portal reauthorization. The browser's HTTP properties and
 cookies remain those of the real client. This works when the gateway grants
 network access to the station MAC/IP after browser sign-in; it may not work when
 the portal grants access only to a browser cookie or actively detects and blocks
@@ -252,6 +255,10 @@ never a mixed-size struct or partially migrated configuration.
 Persisting portal-router mode authorizes restoring the upstream profile, not
 restoring client transit. Transit authorization, association/lease bindings,
 NAPT entries, and DNS transactions are runtime-only and start empty after reboot.
+Restore the upstream only after the existing device-identity initialization and
+claimed-device gates succeed. An initialized but unclaimed device remains on its
+protected AP; an identity initialization/storage failure must retain the existing
+fail-closed no-station behavior, not bypass the gate because a profile exists.
 
 Use an explicit portal-network action rather than treating every blank password
 as permission to join an open network. For scan results, show the observed
@@ -785,7 +792,9 @@ not weaken the existing control boundary.
   initial open-network selection, a new/replacement BSSID profile, or enabling
   portal-router mode. Prior confirmation of a committed, BSSID-pinned profile
   permits association to that same profile at reboot or an AP-idle retry without
-  an owner present. This authorizes upstream association only: start client
+  an owner session present only if identity initialization succeeds and
+  `device_identity_claimed()` is true. A saved profile never bypasses those
+  prerequisites. This authorizes upstream association only: start with client
   transit blocked and require the fresh owner-session grant below before routing.
 - Treat the AP credential as permission to associate, not permission to route.
   Require an explicit authenticated **Enable browser access** action on the AP
@@ -899,7 +908,7 @@ responses.
 | Portal redirect or sign-in fails | Keep NAPT and the AP available for retry; do not erase the SSID or classify every failure as bad credentials. |
 | Upstream captive-portal authorization expires | Return to `login_required` or `limited`; retain the selected mode. Browser reauthentication may use NAPT only while the separate local grant remains active and validated; otherwise require a fresh grant and DNS validation first. |
 | Local transit grant expires | Block both directions, revoke, disable/flush NAPT, and cancel DNS transactions. Retain only AP/profile/local-service recovery; a fresh explicit owner grant and client-DNS validation are required to reopen routing. |
-| Station address changes | Disable NAPT, discard old translations, refresh DNS, and rebuild routing from the new lease. |
+| Station address changes | Block both directions, revoke the bound local transit grant, disable/flush NAPT, and cancel old DNS/check state. Refresh DNS for the new lease, but reopen routing only after a fresh explicit grant and client-DNS validation. |
 | Device AP client disconnects or its IPv4 lease is replaced | Release keyboard input, block transit, revoke the client grant, flush translations and DNS transactions, and reject late old-generation work before reusing the address. The station connection alone may remain; a replacement client needs fresh owner authorization. |
 | Owner logs out or its session expires | Block transit, revoke the grant, and flush per-client state; keep local sign-in available. Returning to portal browsing requires a fresh explicit owner grant. |
 | Reboot during setup | Recover to either the previous committed configuration or fully committed portal-router mode, never a mixed/open AP configuration. Transit starts blocked with no restored client grant or translations. |
@@ -917,6 +926,16 @@ Enable the pinned ESP-IDF forwarding/NAPT configuration, retain the protected
 device AP, advertise the lab DHCP resolver, and route one test client. Prove
 HTTP redirect, HTTPS portal assets, DNS UDP/TCP, and post-login access without
 copying portal content.
+
+The lab harness must install the same bidirectional default-deny policy before
+transit is possible and use an explicitly authorized, short-lived test grant
+bound to an initialized/claimed test identity, owner session, AP association/
+IPv4 lease, and station/routing generation. Exercise release-before-transit,
+client-DNS validation, expiry, and revoke/flush behavior from the outset. A
+controlled harness may drive these contracts before the production API/UI exists,
+but must never enable unrestricted forwarding or an AP-password-only transit
+shortcut, even for the proof of concept. Failure to enforce the bindings blocks
+this first gate; it cannot be deferred until Phase 3 or carried into product code.
 
 Exercise both manual navigation to a known plain-HTTP trigger and the supported
 operating systems' connectivity-check flow. The manual route is required; an
@@ -956,6 +975,9 @@ cover AP with/without a retained protected profile and Personal STA, preserve
 their original association rules, and inject power loss/failure at each inactive-
 slot write/commit/readback/active-pointer step. Reject malformed and unsupported
 layouts without erasing the original slot.
+Boot/restore tests must reject station association for unclaimed or identity-fault
+devices even with a valid saved portal profile; initialized/claimed devices may
+restore only the pinned association, with client transit still blocked.
 
 ### 3. Routing, DNS, And Isolation
 
