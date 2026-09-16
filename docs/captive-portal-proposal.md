@@ -75,7 +75,7 @@ intentionally rejects open upstream networks:
 | Station security | Requires WPA2 or WPA/WPA2 association. | Require `WIFI_AUTH_OPEN` exactly for an open candidate and retain the existing protected-network checks. |
 | AP+STA lifecycle | Uses AP+STA temporarily for candidate testing and recovery, then normally closes the AP. | Add a durable portal-router mode that deliberately keeps both interfaces active. |
 | DHCP and DNS | The device AP provides DHCP; no upstream DNS-routing contract exists. | Advertise a working upstream resolver or the address of a bounded local forwarder. |
-| Packet routing | lwIP IP forwarding and NAPT are disabled. | Enable the two build features and activate NAPT only in portal-router state. |
+| Packet routing | lwIP IP forwarding and NAPT are disabled. | Enable the two build features with a default-deny, per-mode forwarding policy; allow NAPT transit only for an authorized portal-router client. |
 | Service exposure | The web application can operate over AP or normal STA paths. | In portal-router mode, accept keyboard and management service traffic only through the protected AP. |
 
 ESP-IDF 6.1 supports this architecture on ESP32-S3. Its public
@@ -92,6 +92,9 @@ CONFIG_LWIP_IPV4_NAPT_PORTMAP=n
 
 Port mapping is unnecessary and should be explicitly disabled. The project
 currently has DHCP-server support but does not enable IP forwarding or NAPT.
+These build options enable forwarding globally; disabling NAPT does not disable
+untranslated forwarding. The bidirectional policy below is required in every
+mode, including existing AP+STA candidate testing and recovery.
 The board has one Wi-Fi radio, so its AP follows the station channel and scans,
 association, and upstream channel changes can briefly disrupt AP clients.
 
@@ -109,7 +112,7 @@ portal workflow with this product's security boundaries:
 
 | Reference | What it demonstrates | What it does not establish |
 | --- | --- | --- |
-| [ESP-IDF SoftAP+STA example](https://github.com/espressif/esp-idf/tree/master/examples/wifi/softap_sta) | Official ESP32-S3 AP+STA support, station default routing, public `esp_netif_napt_enable()`, and propagation of station DNS through the AP DHCP offer. | Portal detection, browser handoff, reconnect behavior, or service isolation. |
+| [ESP-IDF 6.1 SoftAP+STA example](https://github.com/espressif/esp-idf/tree/v6.1/examples/wifi/softap_sta) | Official ESP32-S3 AP+STA support, station default routing, public `esp_netif_napt_enable()`, and propagation of station DNS through the AP DHCP offer. | Portal detection, browser handoff, reconnect behavior, or service isolation. |
 | [ESP-IoT-Bridge Wi-Fi Router](https://github.com/espressif/esp-iot-bridge/tree/master/examples/wifi_router) | A maintained Espressif component and ESP32-S3 example for SoftAP-to-station NAPT, DHCP/DNS updates, subnet-conflict handling, and web/BLE provisioning. | Explicit open-network portal login, portal-state reporting, or AP-only exposure of a USB-control service. |
 | [ESP32 NAT Router](https://github.com/martin-ger/esp32_nat_router) | A mature AP-to-STA router with NAPT, upstream DNS propagation, reconnect handling, firewall hooks, and broad deployment history. Its maintainer states in [issue #79](https://github.com/martin-ger/esp32_nat_router/issues/79) that the first downstream client should receive an upstream portal. | A universal success claim: [issue #73](https://github.com/martin-ger/esp32_nat_router/issues/73) reports that the portal did not appear through the ESP32 router even though the same scenario worked for that user with the ESP8266 predecessor. |
 | [ESP32 NAT Router Extended](https://github.com/dchristl/esp32_nat_router_extended) | Open upstream selection using a blank station password, persistent AP+STA NAPT, upstream DNS propagation, and public-Wi-Fi-oriented operation. | Its documented captive portal primarily redirects to the router's own configuration page; that is different from passing through an upstream portal. |
@@ -153,19 +156,30 @@ Traffic has four distinct paths:
 | Traffic | Handling |
 | --- | --- |
 | Client to board AP address | Terminate locally for the authenticated keyboard and Network UI; never send it upstream. |
-| Client to external IPv4 address | Forward AP to STA with source address and port translated to the board's station identity. |
-| Reply to an established translation | Translate and return to the originating AP client. |
+| Authorized client to external IPv4 address | Forward AP to STA with source address and port translated to the board's station identity. |
+| Reply to an established translation | Translate and return only to the originating, still-authorized AP client. |
 | Unsolicited station-side traffic | Drop before it can reach the AP client or local keyboard service. |
 
-Do not assume that address translation alone is a complete firewall. Enabling
-lwIP forwarding creates a router, and the implementation must verify how the
-pinned ESP-IDF version treats packets deliberately addressed toward the AP
-subnet. Add an explicit station-ingress forwarding policy if unmatched traffic
-can cross interfaces. Release acceptance requires packet-level evidence that
-only replies belonging to established NAPT state reach an AP client.
+Do not assume that address translation alone is a complete firewall. Install a
+default-deny forwarding policy before either interface can carry transit:
 
-The portal normally observes the board's stable station MAC and DHCP address,
-which is the intended authorization identity. The browser's HTTP properties and
+| Runtime state | AP-to-STA transit | STA-to-AP transit |
+| --- | --- | --- |
+| Standalone AP or Personal STA, including candidate testing and recovery | Drop, even while both interfaces are up. | Drop, including directly addressed AP-subnet packets. |
+| Startup, transition, partial failure, or portal router without a current transit authorization | Drop. | Drop, including replies to any stale translation. |
+| Portal router with a valid lease, configured DNS, and current transit authorization, during path validation or ready operation | Permit only the authorized AP association and its current IPv4 lease through NAPT; reject spoofed sources and untranslated transit. | Permit only replies matching translations owned by that same authorization generation; drop everything else. |
+
+Close both forwarding directions before changing mode, lease, authorization,
+NAPT, or DNS state. If policy installation or cleanup cannot be verified, leave
+transit blocked; NAPT being disabled is not the safety boundary. Local AP
+management, DHCP, and optional DNS service are separately permitted, not routed.
+Board-originated station DHCP, DNS, and advisory probes are not AP-client transit
+and need their own bounded, mode-scoped egress policy. Release acceptance requires
+packet-level evidence for both directions in every state and injected failure.
+
+The portal normally observes the board's stable station MAC and current DHCP
+lease address. Only the MAC is intended to remain stable; an address change
+invalidates translations and may require portal reauthorization. The browser's HTTP properties and
 cookies remain those of the real client. This works when the gateway grants
 network access to the station MAC/IP after browser sign-in; it may not work when
 the portal grants access only to a browser cookie or actively detects and blocks
@@ -202,13 +216,17 @@ preserving the existing one-profile limit:
 | --- | --- | --- | --- | --- |
 | Standalone AP | On | Off | Off | Device AP |
 | Personal STA | Temporary during testing/recovery | WPA2 station | Off | Station after confirmed handover |
-| Portal router | Always on | Open station | On after DHCP/DNS readiness | Device AP only |
+| Portal router | Always on | Open station | On only during authorized path validation or ready operation, after a valid IPv4 lease and DNS configuration | Device AP only |
 
 The next configuration schema should store mode, SSID bytes, requested hostname,
 upstream security type, and a password only when the type requires one. Migrate
 valid version-1 records to Personal STA or Standalone AP without changing their
 meaning. Unknown modes and malformed combinations fail closed into the protected
 recovery AP without erasing the prior record.
+
+Persisting portal-router mode authorizes restoring the upstream profile, not
+restoring client transit. Transit authorization, association/lease bindings,
+NAPT entries, and DNS transactions are runtime-only and start empty after reboot.
 
 Use an explicit portal-network action rather than treating every blank password
 as permission to join an open network. For scan results, show the observed
@@ -235,23 +253,37 @@ public `esp_netif` API rather than private lwIP calls.
 
 After the station receives a valid IPv4 lease:
 
-1. Disarm affected control paths and verify that the AP and station subnets do
-   not overlap.
+1. Keep both forwarding directions blocked, disarm affected control paths, and
+  verify that the AP and station subnets do not overlap.
 2. Select the station interface as the default route.
-3. Establish usable DNS service for AP clients.
-4. Enable NAPT on the AP interface with `esp_netif_napt_enable()`.
-5. Mark routing ready only after every required operation succeeds.
+3. Configure the IPv4 resolver and AP DHCP DNS offer or local forwarder. This is
+  DNS configuration, not proof that AP-client DNS works. Complete any required
+  AP-client lease renewal before the next step.
+4. Obtain fresh owner transit authorization for the current AP association and
+  IPv4 lease. Install its generation-bound forwarding policy and enable NAPT on
+  the AP interface with `esp_netif_napt_enable()`; on either failure, close both
+  directions and clean up.
+5. Verify the AP-client DNS path through the now-enabled data path, then mark
+  DNS and routing ready. Forwarding during this validation is already authorized;
+  `routing_ready` must not be a prerequisite for the DNS test itself.
 
-On station address loss, disconnect, mode change, AP renumbering, or routing
-failure:
+On station address loss, station or AP-client disconnect, mode change, AP
+renumbering, authorization loss, or routing failure:
 
-1. Mark transit unavailable immediately.
-2. Disable NAPT to discard stale translations.
-3. Clear DNS upstream state and the advisory portal result.
+1. Block both forwarding directions and mark transit unavailable immediately.
+2. Revoke the transit authorization and disable NAPT. Clear all translations
+  before any new client or authorization generation can use the data path.
+  Verify the selected public-API cleanup sequence actually empties the table;
+  do not assume that disabling NAPT alone flushes it.
+3. Cancel DNS transactions and late callbacks from the old generation. Clear
+  upstream DNS configuration when the station lease or resolver is invalid, and
+  clear the advisory portal result.
 4. Keep the protected AP and local keyboard service available when their own
    state remains healthy.
-5. Retry the upstream connection with bounded backoff; re-enable routing only
-   after a fresh lease and DNS setup.
+5. Retry a lost upstream connection with bounded backoff. A healthy station lease
+  may remain after AP-client disconnect, but translations, DNS transactions, and
+  client authorization must not. Re-enable transit only through the setup
+  sequence with a valid station lease, DNS configuration, and fresh owner grant.
 
 Do not forward IPv6 or advertise an IPv6 router in the first increment. Do not
 add NAPT port mappings. Keep the current single AP-client limit. Bound and
@@ -268,15 +300,18 @@ default.
 
 For the proof of concept, follow the ESP-IDF SoftAP+STA example:
 
-1. Read the main station DNS server after DHCP completes.
+1. Read the main station DNS server after IPv4 DHCP completes and require a
+  usable, nonzero unicast IPv4 resolver reachable through the station. Missing
+  DNS or an IPv6-only resolver leaves DNS unavailable and transit disabled.
 2. Stop the AP DHCP server long enough to update its DNS option.
 3. Set the AP interface DNS information and enable the DHCP DNS offer.
 4. Restart the AP DHCP server.
-5. Require the AP client to reconnect or renew its lease before declaring the
-   DNS path ready.
+5. Require the AP client to reconnect or renew its lease, then obtain its fresh
+  owner transit authorization and enable the data path before verifying DNS.
 
 DNS requests then traverse NAPT as ordinary UDP or TCP traffic. Repeat the setup
-after station lease or resolver changes. An already leased client is not assumed
+after station lease or resolver changes using the closed-transit lifecycle above.
+An already leased client is not assumed
 to learn a changed DNS option merely because the DHCP server restarted.
 
 This stage is intentionally small and directly falsifiable: if a supported
@@ -295,12 +330,15 @@ Before writing a new parser, evaluate a maintained ESP-IDF-compatible component.
 Any forwarder selected or implemented here must:
 
 - Bind only to the protected AP path and reject station-side clients.
-- Forward to the resolver learned through station DHCP and replace it after a
-  lease change.
+- Forward to the same validated IPv4 resolver learned through station DHCP and
+  replace it after a lease change; IPv6-only DNS remains unavailable. The
+  forwarder's upstream sockets originate on the board and use the station route,
+  not AP-client NAPT. Client-facing DNS still requires the current transit grant.
 - Support UDP and the TCP fallback required for truncated DNS responses.
 - Preserve queries and responses without synthesizing portal answers.
 - Use bounded transaction state, randomized upstream identifiers or source
-  ports, short deadlines, and strict response-source matching.
+  ports, short deadlines, and strict response-source matching. Bind transactions
+  to the authorized AP association/lease generation and discard them on revoke.
 - Handle malformed packets, duplicate identifiers, oversized messages, EDNS,
   exhaustion, and upstream loss without memory growth or blocking the network
   worker.
@@ -340,7 +378,20 @@ Do not fetch or store the redirected portal on behalf of the browser. The UI's
 documented HTTP trigger URL through NAPT; the network then performs its own
 redirect. A captive-network mini-browser may appear, but the product must not
 depend on that OS behavior and must retain a direct route back to
-`http://192.168.4.1/`.
+the current protected-AP URL published by network status. `http://192.168.4.1/`
+is only the normal default; AP renumbering must update the displayed recovery
+and reconnect addresses.
+
+The browser trigger is a separate contract from the board's advisory probe.
+Before implementing the handoff command, select and document a product-controlled
+plain-HTTP origin and path, endpoint owner, retention policy, expected response,
+and outage behavior. The command opens that URL with a normal browser GET and
+`noopener,noreferrer`, with no device identifier, owner token, or application-
+supplied query parameters. The uncaptive endpoint must return a documented static
+response with `Cache-Control: no-store`; captive redirects are followed by the
+browser, never by the board. Tests use a controlled lab URL. Do not ship an
+arbitrary third-party fallback or enable the command before this decision is
+resolved; an unavailable trigger must not be reported as failed portal credentials.
 
 After the owner completes sign-in, a manual **Check again** action and bounded
 background probes can update the advisory state. Distinguish gateway-wide
@@ -359,6 +410,14 @@ not weaken the existing control boundary.
 
 - Require an authenticated owner session and explicit confirmation before
   joining an open network or enabling portal-router mode.
+- Treat the AP credential as permission to associate, not permission to route.
+  Require an explicit authenticated **Enable browser access** action on the AP
+  path, bound to the requesting client's current Wi-Fi association generation,
+  IPv4 lease, and owner-session generation. Enforce that binding at packet ingress,
+  not merely by trusting a source IP. Revoke on AP disconnect, lease replacement,
+  owner logout/session expiry, mode change, or reboot. A reconnect, even with the
+  same MAC/IP or saved browser session, requires a fresh explicit grant; background
+  polling never grants or extends transit authorization.
 - Release and revoke keyboard control before network selection and portal
   handoff. Require a fresh **Take Control** after the owner returns to the
   keyboard page.
@@ -366,6 +425,8 @@ not weaken the existing control boundary.
   validation, session expiry, and controller lease rules unchanged.
 - In portal-router mode, reject HTTP and WebSocket service requests received on
   the station interface, even when they contain a valid-looking session token.
+  Apply this isolation before joining an open candidate and on saved-mode boot,
+  not only after committing the candidate profile.
 - Advertise the keyboard mDNS service only on the protected AP in this mode. Do
   not reflect mDNS, SSDP, broadcast, or multicast traffic across interfaces.
 - Permit only established NAPT replies toward the AP. Do not enable a DMZ,
@@ -386,7 +447,9 @@ not weaken the existing control boundary.
 
 Compiling IP forwarding into lwIP broadens the network attack surface even when
 portal mode is inactive. Runtime tests must prove that NAPT and forwarding are
-off in Standalone AP and Personal STA modes and after every partial failure.
+off in Standalone AP and Personal STA modes, including AP+STA testing/recovery,
+and after every partial failure. Test untranslated packets in both directions,
+not just successful NAPT sessions. Association alone must never enable transit.
 
 ## Network Settings Experience
 
@@ -397,15 +460,19 @@ Extend the existing Network view rather than creating a second setup site:
 - Offer an explicit **Use browser sign-in** action for a selected open network;
   do not show a password field for that action.
 - Before connecting, explain that the protected device AP stays active and that
-  Internet traffic from its one client will traverse the selected network.
+  Internet traffic from its one client will traverse the selected network only
+  after explicit owner authorization. Show when browser access is disabled or
+  expired, and require **Enable browser access** again after reconnect.
 - Show association, station address, DNS readiness, routing readiness, portal
   state, last probe age, and bounded error codes without exposing portal URLs or
   payloads.
 - Provide **Open network sign-in**, **Check again**, **Retry upstream**,
   **Return to standalone AP**, and separately confirmed **Forget network**
   commands as applicable.
-- Keep `http://192.168.4.1/` visible as the recovery address. Do not promise that
-  the OS will open a captive-portal window or switch networks automatically.
+- Keep the current AP recovery URL visible using `state.ap_ip`, and show the
+  proposed `state.ap_reconnect_ip` before a confirmed address change. Treat
+  `http://192.168.4.1/` only as the normal default. Do not promise that the OS will
+  open a captive-portal window or switch networks automatically.
 - Keep all Network-view fields isolated from USB keyboard reporting and make
   reconnect/lost-response behavior idempotent.
 
@@ -421,14 +488,15 @@ responses.
 | Open SSID unavailable or changes security | Report the specific association failure, retain the prior committed profile, and keep the protected AP. |
 | Station DHCP timeout | Do not enable NAPT; retry with bounded backoff while local service remains available. |
 | AP and station subnets overlap | Keep routing disabled and use the existing confirmed AP-renumbering workflow before retrying. |
-| No station DNS server | Report DNS unavailable; do not silently substitute a public resolver. |
+| No usable IPv4 station DNS server, including IPv6-only DNS | Report DNS unavailable and keep transit disabled; do not silently substitute a public resolver. |
 | DHCP DNS update does not reach client | Ask for one bounded reconnect in the proof of concept; require the local forwarder before release if the supported-client gate still fails. |
 | NAPT enable or ingress-policy failure | Mark `routing_failed`, disable forwarding, and keep local AP operation. |
 | Portal redirect or sign-in fails | Keep NAPT and the AP available for retry; do not erase the SSID or classify every failure as bad credentials. |
 | Portal grant expires | Return to `login_required` or `limited`; retain the selected mode and allow browser reauthentication. |
 | Station address changes | Disable NAPT, discard old translations, refresh DNS, and rebuild routing from the new lease. |
-| Device AP client disconnects | Release keyboard input immediately; retain upstream state for a bounded period or reconnect policy without broadening access. |
-| Reboot during setup | Recover to either the previous committed configuration or fully committed portal-router mode, never a mixed/open AP configuration. |
+| Device AP client disconnects or its IPv4 lease is replaced | Release keyboard input, block transit, revoke the client grant, flush translations and DNS transactions, and reject late old-generation work before reusing the address. The station connection alone may remain; a replacement client needs fresh owner authorization. |
+| Owner logs out or its session expires | Block transit, revoke the grant, and flush per-client state; keep local sign-in available. Returning to portal browsing requires a fresh explicit owner grant. |
+| Reboot during setup | Recover to either the previous committed configuration or fully committed portal-router mode, never a mixed/open AP configuration. Transit starts blocked with no restored client grant or translations. |
 
 Internet authorization is not local keyboard readiness. Conversely, successful
 DNS or a portal HTTP response is not proof that arbitrary Internet destinations
@@ -474,9 +542,14 @@ small network-owned abstraction so lifecycle tests can inject failures. Add the
 station-ingress policy and AP-only local-service enforcement before exposing the
 mode in a release UI.
 
-Gate: transition/failure tests prove correct call ordering and cleanup; packet
-tests prove established-only return traffic, no local-service exposure on STA,
-no port mapping, and no forwarding in other modes.
+Gate: transition/failure tests prove DNS configuration precedes authorized NAPT
+enablement and DNS verification follows it. Test IPv6-only/missing resolvers,
+every partial failure, and verified translation/DNS cleanup. Packet tests prove
+bidirectional default-deny behavior in other modes and during candidate testing,
+established-only return traffic, no STA local-service exposure, and no port
+mapping. Disconnect the sole AP client, give a replacement the same IP, inject
+late old-client replies, and prove that neither stale traffic nor unapproved new
+transit reaches it before or after fresh authorization.
 
 ### 4. Owner Workflow And Detection
 
@@ -487,6 +560,9 @@ the embedded application.
 Gate: Chromium and WebKit tests cover selection, warning/confirmation, redirect
 handoff, reconnect, login-required/authorized/limited states, lost responses,
 mode exit, and management-field USB isolation on phone and desktop layouts.
+Cover explicit transit grants and revocation on disconnect/logout/expiry/reboot,
+the trigger URL's request/privacy contract and outage state, and recovery links
+before and after AP renumbering.
 
 ### 5. Resource And Physical Acceptance
 
@@ -504,11 +580,11 @@ small compatibility matrix into universal support.
 
 | Layer | Minimum evidence |
 | --- | --- |
-| Native C | Profile migration/validation, state transitions, NAPT/DNS ordering, rollback, retry, station-IP change, and injected API failures. |
-| DNS | Upstream changes, UDP and TCP, truncation, malformed replies, timeout, transaction exhaustion, AP-only binding, and no-query logging. |
-| Browser/API | Owner/CSRF protections, open-network confirmation, portal states, idempotent recovery, no secret persistence, and keyboard-input isolation. |
+| Native C | Profile migration/validation, state transitions, NAPT/DNS configuration/verification ordering, grant/revoke generations, rollback, retry, station-IP change, and injected API/cleanup failures. |
+| DNS | Missing/IPv6-only resolvers, upstream changes, UDP and TCP, truncation, malformed replies, timeout, transaction exhaustion, AP-only authorized binding, stale-generation cleanup, and no-query logging. |
+| Browser/API | Owner/CSRF protections, explicit transit authorization and revocation, open-network confirmation, portal states, trigger endpoint contract, current recovery addresses, idempotent recovery, no secret persistence, and keyboard-input isolation. |
 | ESP-IDF build | Required forwarding/NAPT settings enabled, port mapping disabled, no PSRAM dependency, size/headroom recorded, and release logging reviewed. |
-| Packet security | NAPT source identity, established-only return traffic, no STA access to local HTTP/WebSocket/mDNS, no local control traffic upstream, and no IPv6 forwarding. |
+| Packet security | NAPT source identity, bidirectional default-deny in all non-routing/failed states, authorized association/lease enforcement, same-IP replacement with delayed old-client replies, established-only return traffic, no STA access to local HTTP/WebSocket/mDNS, no local control traffic upstream, and no IPv6 forwarding. |
 | Physical network | AP+STA channel changes, subnet overlap, DHCP/DNS renewal, station reconnect/address change, client reconnect, portal expiry, and reboot persistence. |
 | Resource behavior | Portal asset bursts, translation-table pressure, heap low-water mark, throughput, local UI responsiveness, and USB all-keys-up deadlines. |
 
@@ -537,11 +613,16 @@ is approved:
 
 1. Whether the supported client matrix can reliably renew the upstream DNS
    option, or a local DNS forwarder is mandatory for the first release.
-2. Which product-controlled connectivity probe, if any, meets the privacy and
-   availability contract.
-3. Which supported ESP-IDF hook or interface boundary enforces unmatched
-   station-ingress drops, based on packet-level tests of the pinned version.
-4. The bounded upstream-retention period after the sole AP client disconnects.
+2. The product-controlled browser trigger URL and its owner, exact request and
+  response, retention, and outage contract, separately from any optional
+  connectivity-probe endpoint. Resolve the trigger before Phase 4 implementation.
+3. Which supported ESP-IDF hook or interface boundary enforces bidirectional,
+  per-mode forwarding and association/lease-generation binding, and which public
+  lifecycle sequence verifiably clears NAPT state. Prove these with packet tests
+  on the pinned SDK before enabling the global build options in product firmware.
+4. The bounded station-connection retention period after the sole AP client
+  disconnects. No choice may retain translations, DNS transactions, or transit
+  authorization across that disconnect.
 5. Resource limits and status surfaced for NAPT table pressure without exposing
    browsing metadata.
 
