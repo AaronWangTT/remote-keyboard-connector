@@ -391,11 +391,16 @@ renumbering, authorization loss, DNS-validation failure, or routing failure:
   clear the advisory portal result.
 4. Keep the protected AP and local keyboard service available when their own
    state remains healthy.
-5. Schedule a lost upstream connection for bounded retry under the AP-idle
-  arbitration below. A healthy station lease may remain after AP-client
-  disconnect, but translations, DNS transactions, and client authorization must
-  not. Re-enable transit only through the setup sequence with the confirmed
-  BSSID, a valid station lease, DNS configuration, and fresh owner grant.
+5. Schedule bounded upstream retry only if the station association or IPv4 lease
+  is actually lost and that connection is still desired by the current mode/job;
+  apply the AP-idle arbitration below. AP-client disconnect, owner logout/expiry,
+  or client-DNS validation failure alone must not enqueue station scans,
+  reassociation, or channel changes while the station lease is healthy. Retain
+  that healthy connection with translations, DNS transactions, and client
+  authorization cleared. Mode exit, Forget, or an intentional station stop
+  cancels pending upstream retries. Re-enable transit only through the setup
+  sequence with the confirmed BSSID, a valid station lease, DNS configuration,
+  and fresh owner grant.
 
 Reuse the existing network-owned AP-idle arbitration for firmware-initiated
 station scans, association retries, and channel changes. Defer disruptive work
@@ -724,6 +729,9 @@ automatic disruptive work deferred during both active AP control and setup
 windows, verify that polling does not prolong the window, and cover guard changes
 between timer scheduling and dispatch. Test idle resumption and confirmed manual
 retry, with release before disruption and fresh authorization after AP reconnect.
+With a healthy station lease, AP-client disconnect, owner logout/expiry, and
+client-DNS validation failure must clear client state without any station scan,
+reassociation, or channel-change effect; intentional station stops cancel retries.
 
 ### 4. Owner Workflow And Detection
 
