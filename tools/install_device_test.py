@@ -11,14 +11,15 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+import zlib
 from unittest.mock import Mock, patch
 
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 import espsecure
 
 from install_device import create_private_directory, generate_nvs, inspect_firmware, install, load_sdk, private_write, validate_identity
-from ota_artifacts import build_artifacts, inspect_ota_firmware, parse_descriptor, verify_application, verify_manifest
+from ota_artifacts import build_artifacts, canonical_json, inspect_ota_firmware, parse_descriptor, verify_application, verify_manifest
 
 
 class FakeDevice:
@@ -772,6 +773,46 @@ class OtaArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Untrusted"):
             verify_manifest(self.firmware, wrong_key)
 
+    def test_bootstrap_rejects_a_different_embedded_signature_key(self):
+        data = bytearray((self.build / "app.bin").read_bytes())
+        wrong_key = rsa.generate_private_key(public_exponent=65537, key_size=3072).public_key()
+        numbers = wrong_key.public_numbers()
+        primitives = espsecure._get_sbv2_rsa_primitives(wrong_key)
+        signature_start = len(data) - 4096
+        struct.pack_into("<384sI384sI", data, signature_start + 36, numbers.n.to_bytes(384, "little"), numbers.e,
+                 primitives.rinv.to_bytes(384, "little"), primitives.m & 0xFFFFFFFF)
+        struct.pack_into("<I", data, signature_start + 1196, zlib.crc32(data[signature_start:signature_start + 1196]))
+        encoded = self.key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        espsecure.verify_signature_v2(False, None, io.BytesIO(encoded), io.BytesIO(data))
+        with self.assertRaisesRegex(ValueError, "embedded.*key"):
+            verify_application(bytes(data), self.key.public_key())
+        app = next(image for image in self.firmware["images"] if image["role"] == "app")
+        Path(app["source"]).write_bytes(data)
+        app["sha256"] = hashlib.sha256(data).hexdigest()
+        manifest = self.firmware["manifest"]
+        next(image for image in manifest["images"] if image["role"] == "app")["sha256"] = app["sha256"]
+        self.firmware["manifestSignature"] = self.key.sign(canonical_json(manifest),
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32), hashes.SHA256()).hex()
+        verify_manifest(self.firmware, self.key.public_key())
+        with self.assertRaisesRegex(ValueError, "embedded.*key"):
+            install(self.request, self.connected_sdk)
+        self.assertEqual(self.transport.events, [])
+        self.assertFalse(self.output.exists())
+        self.assertEqual(self.device.flash[:4], b"old!")
+
+    def test_bootstrap_rejects_altered_embedded_key_accelerator_parameters(self):
+        original = (self.build / "app.bin").read_bytes()
+        encoded = self.key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        for offset in (424, 808):
+            with self.subTest(offset=offset):
+                data = bytearray(original)
+                signature_start = len(data) - 4096
+                data[signature_start + offset] ^= 1
+                struct.pack_into("<I", data, signature_start + 1196, zlib.crc32(data[signature_start:signature_start + 1196]))
+                espsecure.verify_signature_v2(False, None, io.BytesIO(encoded), io.BytesIO(data))
+                with self.assertRaisesRegex(ValueError, "embedded.*key accelerator"):
+                    verify_application(bytes(data), self.key.public_key())
+
     def test_descriptor_rejects_legacy_policy_and_conflicting_versions(self):
         data = bytearray((self.build / "app.bin").read_bytes())
         struct.pack_into("<I", data, 0x120 + 24, 100000)
@@ -814,6 +855,7 @@ class OtaArtifactTests(unittest.TestCase):
         self.assertTrue(self.device.closed)
         recorded = json.loads((self.output / "install-plan.json").read_text())
         self.assertEqual(recorded["layout"]["verifiedSigningKeySha256"], self.firmware["manifest"]["signingKeySha256"])
+        self.assertEqual(recorded["layout"]["observedSigningKeySha256"], recorded["layout"]["verifiedSigningKeySha256"])
 
     def test_release_packaging_rejects_untracked_staged_and_failed_git_checks(self):
         project = self.root / "release-project"

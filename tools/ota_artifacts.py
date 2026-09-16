@@ -89,11 +89,26 @@ def parse_descriptor(data):
             "testOnly": fields[8] == 1, "idfVersion": text(data[144:176])}
 
 
-def verify_application(data, key):
+def embedded_signing_key(data):
     require(8192 <= len(data) <= IMAGE_LIMIT and len(data) % 4096 == 0,
             "Signed application exceeds its budget or is not sector aligned")
     require(data[-4096 + espsecure.SIG_BLOCK_SIZE:] == b"\xff" * (4096 - espsecure.SIG_BLOCK_SIZE),
             "Exactly one signature block is required")
+    with contextlib.redirect_stdout(sys.stderr):
+        block = espsecure.validate_signature_block(data, 0)
+    require(block is not None and block[1] == espsecure.SIG_BLOCK_VERSION_RSA, "Invalid embedded RSA signing key block")
+    modulus, exponent, rinv, mprime = struct.unpack_from("<384sI384sI", block, 36)
+    observed = rsa.RSAPublicNumbers(exponent, int.from_bytes(modulus, "little")).public_key()
+    require(observed.key_size == 3072, "Application embedded signing key must be RSA-3072")
+    primitives = espsecure._get_sbv2_rsa_primitives(observed)
+    require(int.from_bytes(rinv, "little") == primitives.rinv and mprime == (primitives.m & 0xFFFFFFFF),
+            "Application embedded signing key accelerator parameters are invalid")
+    return observed
+
+
+def verify_application(data, key):
+    observed = embedded_signing_key(data)
+    require(observed.public_numbers() == key.public_numbers(), "Application embedded signing key differs from the trusted key")
     encoded = key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
     with contextlib.redirect_stdout(sys.stderr):
         espsecure.verify_signature_v2(hsm=False, hsm_config=None,
@@ -136,7 +151,8 @@ def inspect_ota_firmware(firmware, sdk, key):
     descriptor = verify_application(image_bytes(images["app"]), key)
     return {"nvs": {"offset": 0x9000, "size": 0x10000}, "partitionTable": {"offset": 0x8000, "size": 4096},
             "settings": firmware["settings"], "flashBytes": FLASH_BYTES, "descriptor": descriptor,
-            "verifiedSigningKeySha256": key_fingerprint(key)}
+            "verifiedSigningKeySha256": key_fingerprint(key),
+            "observedSigningKeySha256": key_fingerprint(embedded_signing_key(image_bytes(images["app"])))}
 
 
 def verify_manifest(firmware, key):

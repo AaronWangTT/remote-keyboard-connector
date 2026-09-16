@@ -203,6 +203,13 @@ old artifacts, while the new profile rejects those old records.
 
 ## Artifact Contract
 
+ESP-IDF v6.1 already sets the flashing size to `keep` when
+`CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y`, after generating the fixed-size image
+header arguments. Thus normal 16 MiB builds produce `flash_settings.flash_size`
+and `write_flash_args` with `keep` without a post-generation rewrite. Packaging
+checks the signed images' fixed 16 MiB headers separately and rejects a changed
+flashing contract instead of silently changing generated metadata.
+
 The normal build workflow must produce both deliverables by default for the
 selected board/profile. Build and sign the application once, then package those
 exact bytes for both installation methods. No OTA-specific build switch,
@@ -569,6 +576,10 @@ component; no separate migration utility is introduced.
    checks equality between the wired ZIP's application and OTA payload. Private
    keys and NVS are excluded. CI keys are test-only; trusted releases use an
    independently supplied local RSA-3072 key outside the checkout.
+   Bootstrap verification also compares the embedded RSA modulus/exponent with
+   that trusted key and validates the SDK's accelerator parameters. The install
+   plan records matching trusted and observed public-key fingerprints. A valid
+   external-key signature alone is not sufficient to establish the embedded key.
 - [Existing installation tooling](../tools/install-device.mjs) supports explicit
    `--reset-layout`, independent public-key verification, fresh provisioning,
    and complete readback checks. It does not inspect or convert an old layout.
@@ -578,7 +589,7 @@ component; no separate migration utility is introduced.
    navigation to or from the keyboard/network settings UI. Lost responses are
    resolved through status without repeating activation or keyboard control.
 - Local validation includes 12 ASan/UBSan native suites, 25 keyboard-model tests,
-   63 SDK-backed installer/artifact tests, and Chromium/WebKit browser/API tests.
+   65 SDK-backed installer/artifact tests, and Chromium/WebKit browser/API tests.
    The native harness exercises the actual updater with mocked SDK boundaries;
    the browser preview simulates signature and reboot outcomes. Real signature
    verification is exercised separately with Espressif's SDK. Phone and desktop
