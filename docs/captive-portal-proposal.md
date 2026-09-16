@@ -390,6 +390,20 @@ and station/routing generations. Rotate it on any bound change, grant expiry, or
 revocation. It is an admission context, not an authentication credential; status
 reads may expose it but never extend session/grant deadlines or enable forwarding.
 
+This requires an implementation change: the current `request_session()` calls
+`access_session_find()`, which validates with `touch=true`, including on status
+GETs. Add a non-touching cookie lookup that preserves the existing strict cookie/
+token parsing and checks `access_session_current()` or validation with
+`touch=false` before returning the session. Do not first call the touching lookup
+and then attempt a read-only check. In portal/open-candidate mode, all periodic
+status/network reads, DNS-check retrieval/results, and other automatic background
+requests must use this non-touching path. Only a validated explicit owner action
+may touch the session, after authentication/admission succeeds. Retain the current
+15-minute idle and 8-hour absolute timeout values and never let automatic polling
+extend either. This is a deliberately scoped lookup-policy change for portal
+mode, not a claim that today's shared helper already behaves this way; existing
+Personal STA and Standalone AP behavior otherwise stays unchanged.
+
 The enable request contains exactly three strings:
 `{"action":"portal_grant","request_id":"<32-lowercase-hex>","transit_context":"<issued-context>"}`.
 The browser creates a fresh unpredictable 128-bit `request_id` only for an
@@ -604,6 +618,26 @@ Origin/CSRF, and strict-parser rules. This report only acknowledges that the
 browser started the attempt: fetch success, CORS failure, or a browser-supplied
 claim of DNS success is never authoritative evidence.
 
+The current page CSP is `connect-src 'self'`, so `no-cors` alone cannot enable
+this fetch. For the AP document containing the portal Network view, add only
+`http://*.<approved-dns-check-zone>:80` to `connect-src` alongside `'self'`, using
+the dedicated product-controlled zone selected in the endpoint decision. Never
+allow a blanket `http:`, `*`, or a zone derived from SSID, upstream DHCP, request
+headers, or browser input. Keep script/style/image/default sources and all other
+CSP directives unchanged; non-portal and OTA documents retain their existing
+policy. Validate each issued URL as HTTP port 80, one 32-lowercase-hex label under
+that exact zone, path `/`, and no userinfo, query, or fragment before fetching.
+Redirects remain blocked by the fetch contract. A missing approved zone must not
+produce a permissive CSP or enable transit.
+
+CSP applies to the loaded document, not later API responses. If the Network view
+was loaded before portal mode supplied the challenge-zone policy, reload the
+current AP document before offering the grant action; do not automatically grant
+on reload. Browser acceptance must use the actual response CSP and demonstrate
+that the challenge emits a DNS attempt, an unrelated host is blocked, and a stale
+self-only document cannot start validation transit. Do not weaken CSP after a
+failed check merely to force it to pass.
+
 The network worker marks the check successful only after that acknowledgement
 and matching packet evidence before the deadline:
 
@@ -708,9 +742,16 @@ authorization of the board's MAC/IP from browser-cookie-only access. A browser
 may work while a board-origin probe remains captive; report that ambiguity as
 `limited`, not as a definitive failure.
 
-Portal expiration keeps the protected AP and NAPT path available for another
-browser sign-in. It does not erase the profile, reboot the board, regenerate an
-identity, or disable an otherwise healthy local keyboard path.
+Upstream captive-portal authorization and the local transit grant have different
+lifetimes. An upstream gateway's portal authorization expiring may leave NAPT
+available for another browser sign-in only while the independent local grant is
+still active, unexpired, and validated. Local grant expiry or any owner/session/
+association revocation always blocks both directions, revokes the grant, disables
+and flushes NAPT, and cancels DNS state. Only the protected AP, saved profile, and
+otherwise healthy local service remain; a fresh explicit grant and successful
+client-DNS validation are required to reopen transit. Neither kind of expiration
+erases the profile, reboots the board, or regenerates an identity. Local keyboard
+readiness follows its own owner/control rules, never the upstream portal state.
 
 ## Security And Privacy Boundaries
 
@@ -735,7 +776,9 @@ not weaken the existing control boundary.
   handoff. Require a fresh **Take Control** after the owner returns to the
   keyboard page.
 - Keep the per-device WPA2 AP password, owner authentication, CSRF/Origin/Host
-  validation, session expiry, and controller lease rules unchanged.
+  validation, session timeout values, and controller lease rules unchanged.
+  Apply the explicitly defined non-touching portal lookup policy above so
+  automatic polling cannot postpone idle expiry.
 - In portal-router mode, reject HTTP and WebSocket service requests received on
   the station interface, even when they contain a valid-looking session token.
   Apply this isolation before joining an open candidate and on saved-mode boot,
@@ -829,7 +872,8 @@ responses.
 | DHCP DNS update does not reach client | Ask for one bounded reconnect in the proof of concept; require the local forwarder before release if the supported-client gate still fails. |
 | NAPT enable or ingress-policy failure | Mark `routing_failed`, disable forwarding, and keep local AP operation. |
 | Portal redirect or sign-in fails | Keep NAPT and the AP available for retry; do not erase the SSID or classify every failure as bad credentials. |
-| Portal grant expires | Return to `login_required` or `limited`; retain the selected mode and allow browser reauthentication. |
+| Upstream captive-portal authorization expires | Return to `login_required` or `limited`; retain the selected mode. Browser reauthentication may use NAPT only while the separate local grant remains active and validated; otherwise require a fresh grant and DNS validation first. |
+| Local transit grant expires | Block both directions, revoke, disable/flush NAPT, and cancel DNS transactions. Retain only AP/profile/local-service recovery; a fresh explicit owner grant and client-DNS validation are required to reopen routing. |
 | Station address changes | Disable NAPT, discard old translations, refresh DNS, and rebuild routing from the new lease. |
 | Device AP client disconnects or its IPv4 lease is replaced | Release keyboard input, block transit, revoke the client grant, flush translations and DNS transactions, and reject late old-generation work before reusing the address. The station connection alone may remain; a replacement client needs fresh owner authorization. |
 | Owner logs out or its session expires | Block transit, revoke the grant, and flush per-client state; keep local sign-in available. Returning to portal browsing requires a fresh explicit owner grant. |
@@ -955,6 +999,13 @@ payload retries, lost responses, stale context after every bound-generation
 change, fixed lifetime despite polling/session activity, timeout/expiry, reboot,
 and old revoke IDs against newer grants. No login, profile action, **Take
 Control**, or authenticated GET may create or extend a transit grant.
+Use a fake monotonic clock with repeated status/Network polling and DNS-check
+messages to prove that portal lookup leaves `last_seen` unchanged and returns 401
+at idle/absolute expiry, with transit cleanup. Validate explicit owner-action
+touch separately. Test upstream portal expiry with a still-live local grant and
+local grant expiry with an upstream-authorized gateway as distinct cases; only
+the former may keep NAPT. Browser tests must enforce the real response CSP and
+its narrow challenge-host allowlist, including mode-transition document reload.
 
 ### 5. Resource And Physical Acceptance
 
