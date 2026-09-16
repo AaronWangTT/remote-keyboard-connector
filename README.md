@@ -25,6 +25,7 @@ encrypted credential storage remain lower-priority follow-up work.
 - [Sender installation and firmware artifact guide](docs/sender-installation.md)
 - [OTA design, implementation, and hardware acceptance gates](docs/ota-proposal.md)
 - [Wi-Fi enhancement plan, implementation record, and remaining gates](docs/wifi-enhancement-plan.md)
+- [Captive portal pass-through proposal and implementation gates](docs/captive-portal-proposal.md)
 - [Keyboard enhancement plan and validation results](docs/keyboard-enhancement-plan.md)
 - [Minimal implementation plan and validation results](docs/minimal-implementation-plan.md)
 - [Wi-Fi USB remote keyboard design specification](docs/remote-keyboard-design.md)
