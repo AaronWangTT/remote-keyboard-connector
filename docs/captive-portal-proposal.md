@@ -370,7 +370,10 @@ After the station receives a valid IPv4 lease:
   IPv4 lease. Install its generation-bound forwarding policy and enable NAPT on
   the AP interface with `esp_netif_napt_enable()`; on either failure, close both
   directions and clean up.
-5. Verify the AP-client DNS path through the now-enabled data path, then mark
+  Reserve the client-DNS check and arm its fixed deadline before opening transit;
+  a reservation, observer, or timer failure must leave both directions blocked.
+5. Run the generation-bound AP-client DNS check defined below through the
+  now-enabled data path, then mark
   DNS and routing ready. Forwarding during this validation is already authorized;
   `routing_ready` must not be a prerequisite for the DNS test itself.
    A timeout, unusable resolver/response, or other DNS-validation error is a setup
@@ -483,6 +486,72 @@ continues to use link-local mDNS on the protected AP, with the AP IP as the
 reliable fallback. DNS-over-HTTPS traffic from the browser is ordinary NAPT
 traffic; some captive networks may block it, and the firmware must not weaken
 the browser's security settings to work around that policy.
+
+### AP-Client DNS Readiness Check
+
+A board-originated resolver query does not validate the AP DHCP option or client
+path. Reserve at most one check, bound to the current owner session, AP
+association/IPv4 lease, transit grant, and station/routing generations, before
+the explicit transit grant opens the validation data path. Arm the 10000 ms
+deadline at that opening, whether or not the browser ever requests the challenge.
+The authenticated AP page then submits `{"action":"portal_dns_check"}` on the
+existing network-command path to retrieve that already-pending check.
+Return a random 128-bit `check_id` as 32 lowercase hex characters, a fresh random
+128-bit hostname label under a product-controlled DNS-check zone, and a 10000 ms
+server-monotonic deadline with its remaining time, never a fresh interval measured
+from this request. Repeated starts while this check is pending return the
+same check without extending its deadline; they do not create new grants.
+
+The browser initiates one fetch to `http://<challenge-host>/` with
+`credentials: "omit"`, `mode: "no-cors"`, `redirect: "error"`,
+`cache: "no-store"`, `referrerPolicy: "no-referrer"`, and a deadline-bound
+abort signal. It then reports
+`{"action":"portal_dns_check_result","check_id":"<issued-id>","result":"attempted"}`
+through the authenticated local AP API; use `result: "not_started"` if the fetch
+could not be initiated. Reject other fields/results, invalid IDs, wrong
+owner/AP/generation bindings, and late reports under the existing 1024-byte,
+Origin/CSRF, and strict-parser rules. This report only acknowledges that the
+browser started the attempt: fetch success, CORS failure, or a browser-supplied
+claim of DNS success is never authoritative evidence.
+
+The network worker marks the check successful only after that acknowledgement
+and matching packet evidence before the deadline:
+
+- Stage A observes a query for this fresh hostname from the authorized AP client
+  to the configured IPv4 DHCP resolver across the AP-to-STA NAPT path, and a
+  matching usable IPv4 DNS reply translated back toward that same client.
+- Stage B observes the client's query at the AP-bound forwarder, its matched
+  exchange with the configured upstream resolver, and the reply emitted to that
+  same AP association/lease. A query from the board itself does not count.
+
+For either stage, match the question, transaction/transport tuples, resolver,
+and authorization generation, including UDP and TCP fallback. Require a bounded
+valid `NOERROR` response with a usable IPv4 answer for the challenge name. A
+captive resolver's usable portal address is acceptable: this checks the DNS
+path, not Internet authorization, and no successful HTTP fetch or expected
+public-address answer is required before portal login. Use a reviewed bounded
+DNS decoder/observer, keep only the current challenge transaction metadata, and
+never persist or log questions, answers, or browser traffic. Prove the required
+AP-ingress and reply-egress observation points on the pinned SDK before relying
+on this gate; a station-only probe or callback is not a substitute.
+
+Report `dns_check` in authenticated status as `pending`, `succeeded`, or `failed`
+with its `check_id` and a bounded error code. Only the network worker may set
+`dns_ready`/`routing_ready` after the matching client check succeeds. A missing
+acknowledgement, `not_started`, absent/unusable packet evidence, deadline expiry,
+or any bound-generation change runs the full block/revoke/disable/flush/cancel
+sequence. Late reports and packets cannot reopen the path. A browser using only
+encrypted DNS or an external proxy may provide no observable AP-client DNS
+exchange; report `limited`/`dns_unverified` and tear down validation transit,
+without asking it to disable security settings. Compatibility must be recorded
+for that client configuration, not inferred from the board's resolver success.
+
+Select the product-controlled zone/HTTP sink and its owner, wildcard IPv4 answer,
+retention, and outage policy alongside the browser-trigger decision before
+implementation. Use no device identifiers, owner tokens, or persistent tracking
+values in the challenge, and send no browser credentials. Lab tests use a
+controlled resolver/zone; a missing production contract leaves the feature
+development-only rather than choosing an arbitrary third-party destination.
 
 ## Portal Detection And Browser Handoff
 
@@ -719,6 +788,14 @@ every partial failure, and verified translation/DNS cleanup. In particular, inje
 DNS validation timeout and unusable responses after authorized NAPT enablement;
 assert both forwarding directions close, the grant is revoked, translations and
 DNS transactions are cleared, and no late validation can reopen the path.
+Drive the DNS check from a real AP client: wrong DHCP resolver, missing AP-side
+query, board-only success, wrong reply tuple/generation, absent acknowledgement,
+and post-deadline reports must fail. Prove Stage A observes NAPT in both
+directions and Stage B observes the client-facing exchange, including TCP fallback.
+Omitting the browser start entirely must expire the same grant-opening deadline
+and close transit; reservation/observer/timer failures must never open it.
+HTTP blocked/redirected by a captive gateway must not fail otherwise valid DNS
+evidence; encrypted-DNS-only clients must be reported as unverified, not passed.
 Packet tests prove
 bidirectional default-deny behavior in other modes and during candidate testing,
 established-only return traffic, no STA local-service exposure, and no port
@@ -752,6 +829,9 @@ Cover BSSID replacement confirmation/cancellation, deferred-retry status, and
 explicit retry confirmation without automatic control or transit restoration.
 Cover visible and hidden `portal_scan` requests, selection-token expiry/rescan,
 protected-result tampering, mismatched discovery records, and reconnect invalidation.
+Cover DNS-check start/result/status fields, no-credential challenge fetches,
+duplicate-start deadline stability, wrong-session/ID and late reports, check
+cancellation on reconnect, and no readiness from browser claims alone.
 
 ### 5. Resource And Physical Acceptance
 
@@ -815,11 +895,15 @@ is approved:
    option, or a local DNS forwarder is mandatory for the first release.
 2. The product-controlled browser trigger URL and its owner, exact request and
   response, retention, and outage contract, separately from any optional
-  connectivity-probe endpoint. Resolve the trigger before Phase 4 implementation.
+  connectivity-probe endpoint. Also select the AP-client DNS-check zone/HTTP
+  sink and verify its challenge/privacy contract. Resolve these before Phase 4
+  implementation; the client DNS check is required even if advisory probes are off.
 3. Which supported ESP-IDF hook or interface boundary enforces bidirectional,
   per-mode forwarding and association/lease-generation binding, and which public
   lifecycle sequence verifiably clears NAPT state. Prove these with packet tests
   on the pinned SDK before enabling the global build options in product firmware.
+  The same proof must establish AP-client DNS query/reply observation for the
+  selected DNS stage; board-originated resolver success is insufficient.
 4. The bounded station-connection retention period after the sole AP client
   disconnects. No choice may retain translations, DNS transactions, or transit
   authorization across that disconnect.
