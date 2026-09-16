@@ -15,6 +15,7 @@
 #include "access_control.h"
 #include "cJSON.h"
 #include "device_identity.h"
+#include "firmware_update.h"
 #include "input_protocol.h"
 #include "mbedtls/platform_util.h"
 #include "lwip/sockets.h"
@@ -23,6 +24,10 @@
 
 extern const char index_start[] asm("_binary_index_html_start");
 extern const char index_end[] asm("_binary_index_html_end");
+extern const char ota_html_start[] asm("_binary_ota_html_start");
+extern const char ota_html_end[] asm("_binary_ota_html_end");
+extern const char ota_script_start[] asm("_binary_ota_mjs_start");
+extern const char ota_script_end[] asm("_binary_ota_mjs_end");
 extern const char css_start[] asm("_binary_app_css_start");
 extern const char css_end[] asm("_binary_app_css_end");
 extern const char javascript_start[] asm("_binary_app_mjs_start");
@@ -65,6 +70,8 @@ typedef struct {
 
 static const web_asset_t assets[] = {
     {"/", "text/html; charset=utf-8", index_start, index_end},
+    {"/ota", "text/html; charset=utf-8", ota_html_start, ota_html_end},
+    {"/ota.mjs", "text/javascript; charset=utf-8", ota_script_start, ota_script_end},
     {"/app.css", "text/css; charset=utf-8", css_start, css_end},
     {"/app.mjs", "text/javascript; charset=utf-8", javascript_start, javascript_end},
     {"/keyboard.mjs", "text/javascript; charset=utf-8", keyboard_start, keyboard_end},
@@ -105,6 +112,9 @@ static TaskHandle_t status_task;
 static portMUX_TYPE status_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool status_pending;
 static web_server_status_t status_snapshot;
+static access_session_t *update_owner;
+static uint32_t update_owner_generation;
+static uint32_t update_owner_address;
 
 static void response_headers(httpd_req_t *request);
 static cJSON *network_json(void);
@@ -115,6 +125,13 @@ web_server_status_t web_server_status(void)
     web_server_status_t status = status_snapshot;
     portEXIT_CRITICAL(&status_lock);
     return status;
+}
+
+bool web_server_service_healthy(void)
+{
+    web_server_status_t current = web_server_status();
+    uint64_t now = (uint64_t)(esp_timer_get_time() / 1000);
+    return server_started && current.valid && now >= current.sampled_at_ms && now - current.sampled_at_ms < 500;
 }
 
 static void publish_status(void *argument)
@@ -279,6 +296,15 @@ static void expire_control(void *argument)
 {
     (void)argument;
     int64_t now = esp_timer_get_time();
+    firmware_update_tick();
+    firmware_update_status_t update = firmware_update_status();
+    if (!update.busy) {
+        update_owner = NULL;
+        update_owner_generation = 0;
+        update_owner_address = 0;
+    } else if (update_owner != NULL && !access_session_current(update_owner, update_owner_generation, now)) {
+        firmware_update_cancel(update.policy.job_id);
+    }
     if (pending_owner != NULL && (now >= pending_until || pending_usb_generation != usb_keyboard_status().generation ||
         !access_session_valid(pending_owner, pending_generation, now, false))) {
         network_control_end(pending_usb_generation);
@@ -521,6 +547,7 @@ static esp_err_t network_handler(httpd_req_t *request)
         return result;
     }
     expire_control(NULL);
+    if (firmware_update_status().busy) return problem(request, "409 Conflict", "update_busy");
     if (active_client != NULL || pending_owner != NULL) return problem(request, "409 Conflict", "release_control_first");
     bool scan = strcmp(request->uri, "/api/v1/network/scan") == 0;
     char type[64];
@@ -565,6 +592,172 @@ static void random_token(char token[ACCESS_TOKEN_LENGTH + 1])
     }
     token[ACCESS_TOKEN_LENGTH] = '\0';
     mbedtls_platform_zeroize(bytes, sizeof(bytes));
+}
+
+static esp_err_t update_reply(httpd_req_t *request, bool job, uint32_t expected_job)
+{
+    firmware_update_status_t update = firmware_update_status();
+    if (expected_job != 0 && expected_job != update.policy.job_id) return problem(request, "409 Conflict", "update_not_ready");
+    const update_descriptor_t *running = firmware_update_descriptor();
+    const char *phases[] = {"idle", "receiving", "verifying", "staged", "activating", "failed", "cancelled"};
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) return problem(request, "503 Service Unavailable", "unavailable");
+    bool valid = cJSON_AddStringToObject(root, "version", running->version) &&
+        cJSON_AddStringToObject(root, "board", running->board) && cJSON_AddStringToObject(root, "layout", running->layout) &&
+        cJSON_AddStringToObject(root, "source", running->source) && cJSON_AddBoolToObject(root, "test_only", running->security_profile == 1) &&
+        cJSON_AddBoolToObject(root, "available", update.available) && cJSON_AddBoolToObject(root, "busy", update.busy) &&
+        cJSON_AddBoolToObject(root, "trial_boot", update.trial_boot) && cJSON_AddNumberToObject(root, "max_bytes", UPDATE_IMAGE_LIMIT);
+    if (job) valid = valid && cJSON_AddNumberToObject(root, "job_id", update.policy.job_id) &&
+        cJSON_AddStringToObject(root, "phase", phases[update.policy.phase]) &&
+        cJSON_AddNumberToObject(root, "received", update.policy.received) && cJSON_AddNumberToObject(root, "expected", update.policy.expected) &&
+        cJSON_AddStringToObject(root, "candidate_version", update.candidate_version) &&
+        cJSON_AddStringToObject(root, "sha256", update.digest) && cJSON_AddStringToObject(root, "error", update.error);
+    char *json = valid ? cJSON_PrintUnformatted(root) : NULL;
+    cJSON_Delete(root);
+    if (json == NULL) return problem(request, "503 Service Unavailable", "unavailable");
+    response_headers(request);
+    httpd_resp_set_type(request, "application/json");
+    esp_err_t result = httpd_resp_sendstr(request, json);
+    cJSON_free(json);
+    return result;
+}
+
+static bool update_owned(httpd_req_t *request, access_session_t *session)
+{
+    return session == update_owner && session->generation == update_owner_generation &&
+        local_address(request) == update_owner_address;
+}
+
+typedef struct {
+    httpd_req_t *request;
+    uint32_t job_id;
+    uint8_t buffer[4096];
+} update_upload_t;
+
+static void update_upload_worker(void *argument)
+{
+    update_upload_t *upload = argument;
+    esp_err_t result = firmware_update_open(upload->job_id);
+    size_t received = 0;
+    while (result == ESP_OK && received < upload->request->content_len) {
+        firmware_update_status_t current = firmware_update_status();
+        if (current.policy.job_id != upload->job_id || current.policy.phase != UPDATE_RECEIVING ||
+            update_policy_expired(&current.policy, esp_timer_get_time())) {
+            result = ESP_ERR_TIMEOUT;
+            break;
+        }
+        size_t count = upload->request->content_len - received;
+        if (count > sizeof(upload->buffer)) count = sizeof(upload->buffer);
+        int length = httpd_req_recv(upload->request, (char *)upload->buffer, count);
+        if (length == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (length <= 0) { result = ESP_FAIL; break; }
+        result = firmware_update_write(upload->job_id, upload->buffer, (size_t)length);
+        received += (size_t)length;
+    }
+    if (result == ESP_OK) result = firmware_update_finish(upload->job_id);
+    if (result != ESP_OK) firmware_update_fail(upload->job_id, result == ESP_ERR_TIMEOUT ? "update_timeout" : "invalid_or_incomplete_image");
+    firmware_update_worker_done(upload->job_id);
+    if (result == ESP_OK) {
+        update_reply(upload->request, true, upload->job_id);
+    } else {
+        httpd_resp_set_hdr(upload->request, "Connection", "close");
+        problem(upload->request, "400 Bad Request", "update_failed");
+        httpd_sess_trigger_close(server, httpd_req_to_sockfd(upload->request));
+    }
+    httpd_req_async_handler_complete(upload->request);
+    free(upload);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t update_upload_handler(httpd_req_t *request)
+{
+    if (!request_allowed(request, true)) return ESP_FAIL;
+    access_session_t *session = request_session(request, true);
+    if (session == NULL) return ESP_FAIL;
+    expire_control(NULL);
+    if (active_client != NULL || pending_owner != NULL) {
+        problem(request, "409 Conflict", "release_control_first");
+        return ESP_FAIL;
+    }
+    char type[48];
+    if (!update_image_size_valid(request->content_len) || httpd_req_get_hdr_value_len(request, "Transfer-Encoding") != 0 ||
+        !header(request, "Content-Type", type, sizeof(type)) || strcmp(type, "application/octet-stream") != 0) {
+        problem(request, "400 Bad Request", "invalid_update_request");
+        return ESP_FAIL;
+    }
+    update_upload_t *upload = calloc(1, sizeof(*upload));
+    if (upload == NULL) return problem(request, "503 Service Unavailable", "unavailable");
+    esp_err_t result = firmware_update_reserve(request->content_len, local_address(request), &upload->job_id);
+    if (result != ESP_OK) {
+        free(upload);
+        problem(request, "409 Conflict", "update_unavailable_or_busy");
+        return ESP_FAIL;
+    }
+    update_owner = session;
+    update_owner_generation = session->generation;
+    update_owner_address = local_address(request);
+    result = httpd_req_async_handler_begin(request, &upload->request);
+    if (result == ESP_OK && xTaskCreate(update_upload_worker, "ota_upload", 12288, upload, 2, NULL) == pdPASS) return ESP_OK;
+    firmware_update_fail(upload->job_id, "unavailable");
+    firmware_update_worker_done(upload->job_id);
+    httpd_req_t *reply = upload->request != NULL ? upload->request : request;
+    problem(reply, "503 Service Unavailable", "unavailable");
+    if (upload->request != NULL) httpd_req_async_handler_complete(upload->request);
+    free(upload);
+    return ESP_FAIL;
+}
+
+static bool update_command(httpd_req_t *request, bool activation, uint32_t *job_id, char digest[65])
+{
+    char type[48];
+    if (request->content_len == 0 || request->content_len > 192 || !header(request, "Content-Type", type, sizeof(type)) ||
+        strcmp(type, "application/json") != 0) return false;
+    char payload[193];
+    size_t received = 0;
+    while (received < request->content_len) {
+        int count = httpd_req_recv(request, payload + received, request->content_len - received);
+        if (count <= 0) return false;
+        received += (size_t)count;
+    }
+    if (memchr(payload, '\0', received) != NULL) return false;
+    payload[received] = '\0';
+    cJSON *root = cJSON_ParseWithLengthOpts(payload, received + 1, NULL, true);
+    cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "job_id");
+    cJSON *hash_value = cJSON_GetObjectItemCaseSensitive(root, "sha256");
+    bool valid = cJSON_IsObject(root) && cJSON_GetArraySize(root) == (activation ? 2 : 1) && cJSON_IsNumber(id) &&
+        id->valuedouble >= 1 && id->valuedouble <= UINT32_MAX && id->valuedouble == (uint32_t)id->valuedouble;
+    if (activation) valid = valid && cJSON_IsString(hash_value) && strlen(hash_value->valuestring) == 64;
+    if (valid) {
+        *job_id = (uint32_t)id->valuedouble;
+        if (activation) memcpy(digest, hash_value->valuestring, 65);
+    }
+    cJSON_Delete(root);
+    return valid;
+}
+
+static esp_err_t update_management_handler(httpd_req_t *request)
+{
+    bool mutation = request->method != HTTP_GET;
+    if (!request_allowed(request, mutation)) return ESP_OK;
+    access_session_t *session = request_session(request, mutation);
+    if (session == NULL) return ESP_OK;
+    firmware_update_tick();
+    bool firmware = strcmp(request->uri, "/api/v1/firmware") == 0;
+    if (firmware) return update_reply(request, false, 0);
+    if (firmware_update_status().busy && !update_owned(request, session)) {
+        return problem(request, "403 Forbidden", "update_owner_required");
+    }
+    if (!mutation) return update_reply(request, true, 0);
+    bool activation = request->method == HTTP_POST;
+    uint32_t job_id = 0;
+    char digest[65] = {0};
+    if (!update_command(request, activation, &job_id, digest)) return problem(request, "400 Bad Request", "invalid_update_request");
+    bool accepted = activation ? firmware_update_activate(job_id, digest) == ESP_OK : firmware_update_cancel(job_id);
+    if (!accepted) return problem(request, "409 Conflict", "update_not_ready");
+    httpd_resp_set_status(request, "202 Accepted");
+    esp_err_t result = update_reply(request, true, job_id);
+    if (activation) firmware_update_restart();
+    return result;
 }
 
 static esp_err_t session_reply(httpd_req_t *request, access_session_t *session)
@@ -627,6 +820,7 @@ static esp_err_t session_handler(httpd_req_t *request)
         access_session_t *session = request_session(request, true);
         if (session == NULL) return ESP_OK;
         if ((active_client != NULL && active_client->owner == session) || pending_owner == session) release_control();
+        if (update_owner == session && update_owner_generation == session->generation) firmware_update_cancel(firmware_update_status().policy.job_id);
         access_session_revoke(session);
         httpd_resp_set_hdr(request, "Set-Cookie", "kb_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
         return session_reply(request, NULL);
@@ -665,6 +859,8 @@ static esp_err_t control_handler(httpd_req_t *request)
     if (strcmp(request->uri, "/api/v1/control/stop") == 0) {
         release_control();
     } else {
+        if (firmware_update_status().busy) return problem(request, "409 Conflict", "update_busy");
+        if (!firmware_update_status().available) return problem(request, "503 Service Unavailable", "device_starting");
         if (active_client != NULL || pending_owner != NULL) return problem(request, "409 Conflict", "busy");
         if (!usb_keyboard_status().ready) return problem(request, "503 Service Unavailable", "usb_unavailable");
         uint32_t generation = usb_keyboard_status().generation;
@@ -686,7 +882,7 @@ esp_err_t web_server_start(void)
 #endif
     if (!device_identity_ready()) return ESP_ERR_INVALID_STATE;
     httpd_config_t configuration = HTTPD_DEFAULT_CONFIG();
-    configuration.max_uri_handlers = sizeof(assets) / sizeof(assets[0]) + 11;
+    configuration.max_uri_handlers = sizeof(assets) / sizeof(assets[0]) + 16;
     configuration.max_open_sockets = 7;
     configuration.stack_size = 8192;
     configuration.recv_wait_timeout = 2;
@@ -728,6 +924,11 @@ esp_err_t web_server_start(void)
         {.uri = "/api/v1/network", .method = HTTP_POST, .handler = network_handler},
         {.uri = "/api/v1/network/scan", .method = HTTP_POST, .handler = network_handler},
         {.uri = "/api/v1/network/job", .method = HTTP_GET, .handler = network_handler},
+        {.uri = "/api/v1/firmware", .method = HTTP_GET, .handler = update_management_handler},
+        {.uri = "/api/v1/update", .method = HTTP_POST, .handler = update_upload_handler},
+        {.uri = "/api/v1/update/job", .method = HTTP_GET, .handler = update_management_handler},
+        {.uri = "/api/v1/update/job", .method = HTTP_DELETE, .handler = update_management_handler},
+        {.uri = "/api/v1/update/activate", .method = HTTP_POST, .handler = update_management_handler},
     };
     for (size_t index = 0; index < sizeof(management_routes) / sizeof(management_routes[0]); index++) {
         result = httpd_register_uri_handler(server, &management_routes[index]);

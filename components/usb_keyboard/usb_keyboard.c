@@ -19,6 +19,7 @@ static keyboard_report_t submitted_report;
 static keyboard_report_t completed_report;
 static bool leds_known;
 static bool caps_lock;
+static int64_t worker_seen_at;
 static char serial_number[13];
 static const char *string_descriptors[] = {
     (const char[]){0x09, 0x04},
@@ -126,6 +127,7 @@ static void keyboard_worker(void *argument)
             memset(&completed_report, 0, sizeof(completed_report));
         }
         int64_t now = esp_timer_get_time();
+        worker_seen_at = now;
         keyboard_state_tick(&keyboard, now);
         if (online && tud_hid_ready() && keyboard_state_next(&keyboard, now, &submitted_report)) {
             if (!tud_hid_report(0, &submitted_report, sizeof(submitted_report))) {
@@ -174,6 +176,32 @@ void usb_keyboard_release(uint32_t generation)
         keyboard_state_release(&keyboard);
     }
     xSemaphoreGive(state_mutex);
+}
+
+bool usb_keyboard_begin_maintenance(void)
+{
+    if (state_mutex == NULL || xSemaphoreTake(state_mutex, pdMS_TO_TICKS(25)) != pdTRUE) return false;
+    keyboard_state_release(&keyboard);
+    xSemaphoreGive(state_mutex);
+    return true;
+}
+
+bool usb_keyboard_quiescent(void)
+{
+    if (state_mutex == NULL || xSemaphoreTake(state_mutex, pdMS_TO_TICKS(25)) != pdTRUE) return false;
+    const keyboard_report_t empty = {0};
+    bool released = !keyboard.online || (!keyboard.neutral_pending && !keyboard.in_flight && keyboard.count == 0 &&
+        memcmp(&completed_report, &empty, sizeof(empty)) == 0 && memcmp(&keyboard.desired_report, &empty, sizeof(empty)) == 0);
+    xSemaphoreGive(state_mutex);
+    return released;
+}
+
+bool usb_keyboard_service_healthy(void)
+{
+    if (state_mutex == NULL || xSemaphoreTake(state_mutex, pdMS_TO_TICKS(25)) != pdTRUE) return false;
+    bool healthy = worker_seen_at != 0 && esp_timer_get_time() - worker_seen_at < INT64_C(1000000);
+    xSemaphoreGive(state_mutex);
+    return healthy;
 }
 
 esp_err_t usb_keyboard_start(void)

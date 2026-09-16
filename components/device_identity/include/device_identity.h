@@ -5,7 +5,7 @@
 
 #define DEVICE_PASSWORD_MIN 12
 #define DEVICE_PASSWORD_MAX 128
-#define DEVICE_KDF_ITERATIONS 100000
+#define DEVICE_KDF_ITERATIONS 10
 
 esp_err_t device_identity_init(void);
 bool device_identity_ready(void);

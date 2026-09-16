@@ -12,6 +12,7 @@ import { createIdentity, identityCsv, passwordIterations, wifiPayload, writeIden
 test("identity generation uses independent device-bound AP and claim credentials", () => {
   const first = createIdentity("001122aAbBcC");
   const second = createIdentity("001122aabbcc");
+  assert.equal(passwordIterations, 10);
   assert.equal(first.deviceId, "001122aabbcc");
   assert.equal(first.ssid, "WiFiKeyboard-AABBCC");
   assert.notEqual(first.apPassword, second.apPassword);
@@ -20,12 +21,27 @@ test("identity generation uses independent device-bound AP and claim credentials
   assert.equal(first.verifier, pbkdf2Sync(first.setupCode, Buffer.from(first.salt, "hex"), passwordIterations, 32, "sha256").toString("hex"));
   const csv = identityCsv(first);
   assert.ok(csv.includes("kb_identity,namespace,,\n"));
+  assert.ok(csv.includes("claim_cost,data,u32,10\n"));
+  assert.throws(() => identityCsv({ ...first, iterations: 100000 }));
   assert.ok(csv.includes(`claim_hash,data,hex2bin,${first.verifier}\n`));
   assert.ok(!csv.includes(first.setupCode));
   assert.equal(wifiPayload(first), `WIFI:T:WPA;S:${first.ssid};P:${first.apPassword};;`);
   for (const invalid of ["", "00:11:22:33:44:55", "001122aabbc", "001122aabbc;", "001122aabbcc\n"]) {
     assert.throws(() => createIdentity(invalid));
   }
+});
+
+test("provisioning and firmware agree on the personal-use credential cost", async () => {
+  const header = await readFile(new URL("../components/device_identity/include/device_identity.h", import.meta.url), "utf8");
+  assert.equal(Number(header.match(/^#define DEVICE_KDF_ITERATIONS (\d+)$/m)?.[1]), passwordIterations);
+});
+
+test("legacy artifact provisioning keeps its cost without accepting legacy records in the new policy", () => {
+  const legacy = createIdentity("001122334455", 100000);
+  assert.throws(() => identityCsv(legacy));
+  assert.ok(identityCsv(legacy, 100000).includes("claim_cost,data,u32,100000\n"));
+  assert.equal(legacy.verifier, pbkdf2Sync(legacy.setupCode, Buffer.from(legacy.salt, "hex"), 100000, 32, "sha256").toString("hex"));
+  assert.throws(() => createIdentity("001122334455", 1));
 });
 
 test("private setup files are outside Git, contain a PNG/card, and never overwrite", async context => {
@@ -208,6 +224,13 @@ test("private-package synchronization flushes each file and its containing direc
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
+});
+
+test("installer help distinguishes legacy backups from fresh OTA installation", async () => {
+  const messages = [];
+  assert.deepEqual(await runInstaller(["--help"], { log: message => messages.push(message) }), { mode: "help" });
+  assert.match(messages.join("\n"), /Only legacy factory installations include a full-flash backup/);
+  assert.match(messages.join("\n"), /OTA --reset-layout creates no old-flash backup/);
 });
 
 test("installer CLI requires explicit execution, device identity, and private output", () => {

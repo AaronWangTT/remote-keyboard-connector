@@ -14,3 +14,4 @@ typedef struct {
 esp_err_t web_server_start(void);
 esp_err_t web_server_status_start(void);
 web_server_status_t web_server_status(void);
+bool web_server_service_healthy(void);

@@ -1,8 +1,10 @@
 import { createServer } from "node:http";
-import { pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { parseTree } from "jsonc-parser";
 import { WebSocket, WebSocketServer } from "ws";
+import { passwordIterations } from "./provision-device.mjs";
 
 const usbReady = process.env.PREVIEW_USB_READY !== "0";
 const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 256 });
@@ -11,7 +13,7 @@ let controller = null;
 const receipts = { down: 0, up: 0, stop: 0, queued: 0, forced_release: 0 };
 let claimed = process.env.PREVIEW_CLAIMED !== "0";
 const ownerSalt = randomBytes(16);
-const passwordHash = password => pbkdf2Sync(password, ownerSalt, 100000, 32, "sha256");
+const passwordHash = password => pbkdf2Sync(password, ownerSalt, passwordIterations, 32, "sha256");
 let ownerHash = passwordHash(process.env.PREVIEW_OWNER_PASSWORD ?? "preview-owner-password");
 const setupCode = "0123456789abcdef01234567";
 const sessions = new Map();
@@ -21,7 +23,7 @@ let loginWindow = 0;
 let loginAttempts = 0;
 const network = { available: true, ap_active: true, station_online: false, desired_station: false,
   has_profile: false, busy: false, mdns: true,
-  get can_control() { return this.available && !this.busy && pendingControl === null && controller?.readyState !== WebSocket.OPEN; },
+  get can_control() { return this.available && !this.busy && !updateBusy() && pendingControl === null && controller?.readyState !== WebSocket.OPEN; },
   job_id: 0, phase: "ap", job: "idle", error: "",
   hostname: "kb", requested_hostname: "kb", ap_ssid: "WiFiKeyboard-123456", saved_ssid: "", saved_ssid_hex: "", station_ssid: "",
   ap_ip: "192.168.4.1", ap_reconnect_ip: "", station_ip: "", scan: [] };
@@ -32,6 +34,121 @@ const confirmationTtl = Math.max(100, Number(process.env.PREVIEW_CONFIRM_TTL_MS)
 const storageFault = process.env.PREVIEW_STORAGE_FAULT === "1";
 let confirmationUntil = 0;
 let managementUntil = 0;
+let firmwareVersion = "0.1.0";
+let updateJob = { job_id: 0, phase: "idle", received: 0, expected: 0, candidate_version: "", sha256: "", error: "" };
+let updateOwner = null;
+let activeUpload = null;
+let updateDeadline = 0;
+let updateLastProgress = 0;
+const updateDelay = Math.max(10, Number(process.env.PREVIEW_UPDATE_DELAY_MS) || 200);
+const updateStagedTtl = Math.max(100, Number(process.env.PREVIEW_UPDATE_STAGED_MS) || 120000);
+const updateIdleTtl = Math.max(100, Number(process.env.PREVIEW_UPDATE_IDLE_MS) || 10000);
+if (process.env.PREVIEW_NETWORK_MODE === "station") Object.assign(network, {
+  ap_active: false, ap_ip: "", station_online: true, station_ip: "192.168.1.50", desired_station: true,
+  has_profile: true, phase: "station", saved_ssid: "Home Wi-Fi", station_ssid: "Home Wi-Fi" });
+
+function updateBusy() {
+  return activeUpload !== null || ["receiving", "verifying", "staged", "activating"].includes(updateJob.phase);
+}
+
+function firmwareInfo() {
+  return { version: firmwareVersion, board: "esp32s3-generic-16m", layout: "kb16-ab6-nvs64-v1", source: "0".repeat(40),
+    test_only: true, available: true, trial_boot: false, busy: updateBusy(), max_bytes: 0x4cc000 };
+}
+
+function releaseUpload(job, abort = false) {
+  if (activeUpload?.job !== job) return;
+  const upload = activeUpload;
+  activeUpload = null;
+  if (abort) {
+    upload.controller.abort();
+    if (!upload.response.destroyed && !upload.response.headersSent) {
+      upload.response.setHeader("Connection", "close");
+      upload.response.once("finish", () => upload.request.destroy());
+      sendJson(upload.response, 400, { error: "update_failed" });
+    } else upload.request.destroy();
+  }
+}
+
+function cancelUpdate() {
+  if (!["receiving", "verifying", "staged"].includes(updateJob.phase)) return false;
+  Object.assign(updateJob, { phase: "cancelled", error: "cancelled" });
+  releaseUpload(updateJob, true);
+  return true;
+}
+
+async function updateRequest(request, response) {
+  const session = authorized(request, response, request.method !== "GET");
+  if (!session) return;
+  if (request.url === "/api/v1/firmware" && request.method === "GET") return sendJson(response, 200, firmwareInfo());
+  if (request.url === "/api/v1/update" && request.method === "POST") {
+    if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "release_control_first" });
+    if (updateBusy() || network.busy || !network.available) return sendJson(response, 409, { error: "update_unavailable_or_busy" });
+    const expected = Number(request.headers["content-length"]);
+    if (request.headers["content-type"] !== "application/octet-stream" || request.headers["transfer-encoding"] ||
+        !Number.isSafeInteger(expected) || expected < 8192 || expected > 0x4cc000 || expected % 4096) {
+      return sendJson(response, 400, { error: "invalid_update_request" });
+    }
+    const current = updateJob = { job_id: updateJob.job_id + 1, phase: "receiving", received: 0, expected,
+      candidate_version: "", sha256: "", error: "" };
+    updateOwner = session;
+    const uploadController = new AbortController();
+    activeUpload = { job: current, request, response, controller: uploadController };
+    updateDeadline = performance.now() + 300000;
+    updateLastProgress = performance.now();
+    const chunks = [];
+    try {
+      for await (const chunk of request) {
+        if (current !== updateJob || current.phase !== "receiving" || current.received + chunk.length > expected) throw new Error("cancelled");
+        current.received += chunk.length;
+        updateLastProgress = performance.now();
+        chunks.push(chunk);
+      }
+      if (current.received !== expected || current.phase !== "receiving") throw new Error("incomplete");
+      current.phase = "verifying";
+      await delay(updateDelay, undefined, { signal: uploadController.signal });
+      const data = Buffer.concat(chunks);
+      const field = offset => data.subarray(offset, offset + 32).toString("ascii").split("\0")[0];
+      const version = field(0x120 + 184);
+      const parts = value => value.split(".").map(Number);
+      const next = parts(version), previous = parts(firmwareVersion);
+      const difference = next.findIndex((value, index) => value !== previous[index]);
+      if (current !== updateJob || current.phase !== "verifying" || process.env.PREVIEW_UPDATE_FAIL === "signature" || data[0] !== 0xe9 ||
+          data.subarray(0x120, 0x128).toString() !== "KBOTA001" || field(0x120 + 72) !== firmwareInfo().board ||
+          field(0x120 + 104) !== firmwareInfo().layout ||
+          !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version) || next.some(value => value > 65535) ||
+          difference < 0 || next[difference] <= previous[difference] || data[expected - 4096] !== 0xe7) throw new Error("invalid_image");
+      Object.assign(current, { phase: "staged", candidate_version: version, sha256: createHash("sha256").update(data).digest("hex") });
+      updateDeadline = performance.now() + updateStagedTtl;
+      releaseUpload(current);
+      return sendJson(response, 200, { ...firmwareInfo(), ...current });
+    } catch {
+      if (["receiving", "verifying"].includes(current.phase)) Object.assign(current, { phase: "failed", error: "invalid_or_incomplete_image" });
+      releaseUpload(current);
+      if (!response.destroyed && !response.writableEnded) sendJson(response, 400, { error: "update_failed" });
+      return;
+    }
+  }
+  if (updateBusy() && session !== updateOwner) return sendJson(response, 403, { error: "update_owner_required" });
+  if (request.url === "/api/v1/update/job" && request.method === "GET") return sendJson(response, 200, { ...firmwareInfo(), ...updateJob });
+  const activation = request.url === "/api/v1/update/activate" && request.method === "POST";
+  if (!activation && !(request.url === "/api/v1/update/job" && request.method === "DELETE")) return sendJson(response, 405, {});
+  const command = await jsonBody(request, { numbers: true, maximum: 192 });
+  if (!command || Object.keys(command).length !== (activation ? 2 : 1) || !Number.isInteger(command.job_id) ||
+      command.job_id < 1 || (activation && !/^[a-f0-9]{64}$/.test(command.sha256 ?? ""))) return sendJson(response, 400, { error: "invalid_update_request" });
+  if (command.job_id !== updateJob.job_id || (activation ? activeUpload !== null || updateJob.phase !== "staged" ||
+      command.sha256 !== updateJob.sha256 : !cancelUpdate())) return sendJson(response, 409, { error: "update_not_ready" });
+  if (activation) {
+    updateJob.phase = "activating";
+    setTimeout(() => {
+      if (process.env.PREVIEW_UPDATE_FAIL !== "boot") firmwareVersion = updateJob.candidate_version;
+      sessions.clear();
+      updateOwner = null;
+      updateJob = { job_id: 0, phase: "idle", received: 0, expected: 0, candidate_version: "", sha256: "", error: "" };
+    }, updateDelay).unref();
+  }
+  return sendJson(response, 202, { ...firmwareInfo(), ...updateJob });
+}
 
 function ssidDisplay(hex) {
   const bytes = Buffer.from(hex, "hex");
@@ -63,6 +180,7 @@ function finishNetwork(job, error = "") {
 async function networkRequest(request, response) {
   if (!authorized(request, response, request.method !== "GET")) return;
   if (request.method === "GET") return sendJson(response, 200, network);
+  if (updateBusy()) return sendJson(response, 409, { error: "update_busy" });
   if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "release_control_first" });
   const scan = request.url === "/api/v1/network/scan";
   if (scan) {
@@ -247,7 +365,7 @@ function releaseController() {
   }
 }
 
-async function jsonBody(request) {
+async function jsonBody(request, { numbers = false, maximum = 1024 } = {}) {
   if (!/^application\/json(?:; charset=utf-8)?$/.test(request.headers["content-type"] ?? "")) {
     drainRequest(request);
     return null;
@@ -256,7 +374,7 @@ async function jsonBody(request) {
   let length = 0;
   for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     length += chunk.length;
-    if (length > 1024) {
+    if (length > maximum) {
       drainRequest(request);
       return null;
     }
@@ -272,6 +390,10 @@ async function jsonBody(request) {
   const value = Object.create(null);
   for (const property of tree.children ?? []) {
     const [key, field] = property.children;
+    if (numbers && field.type === "number" && Number.isFinite(field.value) && !Object.hasOwn(value, key.value)) {
+      value[key.value] = field.value;
+      continue;
+    }
     if (field.type !== "string" || !key.value.isWellFormed() || !field.value.isWellFormed() ||
         key.value.includes("\0") || field.value.includes("\0") || Object.hasOwn(value, key.value)) return null;
     value[key.value] = field.value;
@@ -321,6 +443,8 @@ function validReport(message) {
 
 const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
+  ["/ota", ["ota.html", "text/html; charset=utf-8"]],
+  ["/ota.mjs", ["ota.mjs", "text/javascript; charset=utf-8"]],
   ["/app.css", ["app.css", "text/css; charset=utf-8"]],
   ["/app.mjs", ["app.mjs", "text/javascript; charset=utf-8"]],
   ["/keyboard.mjs", ["keyboard.mjs", "text/javascript; charset=utf-8"]],
@@ -344,6 +468,7 @@ const server = createServer(async (request, response) => {
     const session = authorized(request, response, true);
     if (!session) return;
     if (controller?.session === session || pendingControl?.session === session) releaseController();
+    if (updateOwner === session) cancelUpdate();
     sessions.delete(session.token);
     response.setHeader("Set-Cookie", "kb_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
     sendJson(response, 200, sessionStatus(null));
@@ -371,6 +496,7 @@ const server = createServer(async (request, response) => {
     if (!session) return;
     if (request.url.endsWith("/stop")) releaseController();
     else {
+      if (updateBusy()) return sendJson(response, 409, { error: "update_busy" });
       if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "busy" });
       if (!usbReady) return sendJson(response, 503, { error: "usb_unavailable" });
       if (!network.can_control || network.busy) return sendJson(response, 409, { error: "network_busy" });
@@ -382,6 +508,10 @@ const server = createServer(async (request, response) => {
   if ((request.url === "/api/v1/network/job" && request.method === "GET") ||
       (["/api/v1/network", "/api/v1/network/scan"].includes(request.url) && request.method === "POST")) {
     await networkRequest(request, response).catch(() => { if (!response.headersSent) sendJson(response, 400, { error: "invalid_network_request" }); });
+    return;
+  }
+  if (["/api/v1/firmware", "/api/v1/update", "/api/v1/update/job", "/api/v1/update/activate"].includes(request.url)) {
+    await updateRequest(request, response).catch(() => { if (!response.headersSent) sendJson(response, 400, { error: "invalid_update_request" }); });
     return;
   }
   if (request.method !== "GET") {
@@ -494,9 +624,17 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 setInterval(() => {
+  if (updateBusy() && updateJob.phase !== "activating") {
+    const now = performance.now();
+    if (!sessions.has(updateOwner?.token) || now - updateOwner.lastSeen >= 900000 || now - updateOwner.createdAt >= 28800000) cancelUpdate();
+    else if (now >= updateDeadline || (updateJob.phase === "receiving" && now - updateLastProgress >= updateIdleTtl)) {
+      Object.assign(updateJob, { phase: "failed", error: "update_timeout" });
+      releaseUpload(updateJob, true);
+    }
+  }
   if (pendingControl && (performance.now() >= pendingControl.until || !sessions.has(pendingControl.session.token))) pendingControl = null;
   if (controller !== null && performance.now() - controller.lastSeen >= 1000) controller.terminate();
-  if (performance.now() >= confirmationUntil && performance.now() >= managementUntil) {
+  if (!updateBusy() && performance.now() >= confirmationUntil && performance.now() >= managementUntil) {
     if (network.job === "awaiting_confirmation") {
       Object.assign(network, { ap_active: false, ap_ip: "", phase: "station" });
       finishNetwork("succeeded");
@@ -518,6 +656,7 @@ server.listen(port, "127.0.0.1", () => {
 
 function shutdown() {
   console.log("Preview receipts:", JSON.stringify(inputSnapshot()));
+  releaseUpload(updateJob, true);
   for (const connection of websocketServer.clients) connection.terminate();
   websocketServer.close();
   server.close();

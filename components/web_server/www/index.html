@@ -105,7 +105,9 @@
           <div class="field"><label for="network-hostname">Local hostname</label><div class="hostname-field"><input id="network-hostname" value="kb" maxlength="32" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" autocomplete="off" spellcheck="false" required><span>.local</span></div></div>
           <button class="command-button secondary" type="submit">Save name</button>
         </form>
-        <div class="network-footer"><button id="forget-network" class="command-button danger" type="button" hidden>Forget network</button></div>
+        <div class="network-footer network-job-actions">
+          <button id="forget-network" class="command-button danger" type="button" hidden>Forget network</button>
+        </div>
       </section>
     <section id="keyboard" class="keyboard-surface" aria-label="Remote keyboard" tabindex="0" hidden>
         <div class="keyboard-meta">

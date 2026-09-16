@@ -20,6 +20,11 @@ const boardDriver = {
   sources: ["components/board/board_status_logic.c", "components/board/board_status.c", "components/board/test/board_driver_test.c"],
 };
 const suites = {
+  update_service: { includes: [".cache/tests/update-stubs", ".cache/tests", "components/firmware_update/test", "components/firmware_update/include",
+      "components/network/include", "components/usb_keyboard/include"],
+    sources: ["components/firmware_update/update_policy.c", "components/firmware_update/test/update_service_test.c"] },
+  update_policy: { includes: ["components/firmware_update/include"],
+    sources: ["components/firmware_update/update_policy.c", "components/firmware_update/test/update_policy_test.c"] },
   board_status: { includes: ["components/board/include"],
     sources: ["components/board/board_status_logic.c", "components/board/test/board_status_test.c"] },
   board_driver: { ...boardDriver, flags: ["-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1", "-DCONFIG_IDF_TARGET_ESP32S3=1"] },
@@ -27,7 +32,7 @@ const suites = {
   board_unsupported: { ...boardDriver, flags: ["-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1"] },
   runtime_status: {
     includes: [...boardDriver.includes, ".cache/tests", "components/web_server", "components/web_server/include",
-      "components/network/include", "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON"],
+      "components/network", "components/network/include", "components/firmware_update/include", "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/web_server/access_control.c",
       "components/board/board_status_logic.c", "components/board/test/runtime_status_test.c"],
     flags: ["-DCJSON_NESTING_LIMIT=4"], linkFlags: ["-lm"] },
@@ -63,6 +68,12 @@ for (const header of ["sdkconfig.h", "esp_err.h", "esp_log.h", "esp_timer.h", "d
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, '#include "idf_stubs.h"\n');
 }
+for (const header of ["sdkconfig.h", "esp_err.h", "esp_log.h", "esp_timer.h", "esp_flash.h", "esp_ota_ops.h", "esp_system.h", "esp_image_format.h",
+  "freertos/FreeRTOS.h", "freertos/task.h", "hal/wdt_hal.h", "psa/crypto.h"]) {
+  const path = resolve(".cache/tests/update-stubs", header);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, '#include "update_stubs.h"\n');
+}
 const section = (source, start, end) => {
   const first = source.indexOf(start);
   assert.ok(first >= 0 && first === source.lastIndexOf(start), `Expected unique source anchor: ${start}`);
@@ -72,13 +83,43 @@ const section = (source, start, end) => {
 };
 const network = await readFile("components/network/network.c", "utf8");
 const web = await readFile("components/web_server/web_server.c", "utf8");
+const skippedSdkBootloader = selected.includes("update_service") && !process.env.IDF_PATH;
+let bootloaderFixture = "";
+let signatureFixture = "";
+if (process.env.IDF_PATH) {
+  const bootloader = await readFile(resolve(process.env.IDF_PATH, "components/bootloader_support/src/bootloader_utility.c"), "utf8");
+  bootloaderFixture = "#define UPDATE_TEST_SDK_BOOTLOADER 1\nstatic bool ota_has_initial_contents;\n" +
+    section(bootloader, "int bootloader_utility_get_selected_boot_partition(const bootloader_state_t *bs)", "\n}\n") + "\n}\n" +
+    section(bootloader, "static void set_actual_ota_seq(const bootloader_state_t *bs, int index)", "\n}\n") + "\n}\n";
+  assert.equal(bootloader.match(/set_actual_ota_seq\(bs, index\);\s*load_image\(&image_data\);/g)?.length, 2,
+    "SDK must initialize selected OTA metadata before both normal and fallback image entry paths");
+  const signatures = await readFile(resolve(process.env.IDF_PATH,
+    "components/bootloader_support/src/secure_boot_v2/secure_boot_signatures_app.c"), "utf8");
+  signatureFixture = "#define UPDATE_TEST_SDK_SIGNATURE 1\n" + [
+    "esp_err_t esp_secure_boot_get_signature_blocks_for_running_app(bool digest_public_keys, esp_image_sig_public_key_digests_t *public_key_digests)",
+    "static esp_err_t get_secure_boot_key_digests(esp_image_sig_public_key_digests_t *public_key_digests)",
+    "esp_err_t esp_secure_boot_verify_sbv2_signature_block(const ets_secure_boot_signature_t *sig_block, const uint8_t *image_digest, uint8_t *verified_digest)",
+  ].map(anchor => section(signatures, anchor, "\n}\n") + "\n}\n").join("");
+}
+await writeFile(".cache/tests/sdk_bootloader.inc", bootloaderFixture);
+await writeFile(".cache/tests/sdk_signature_verifier.inc", signatureFixture);
 await writeFile(".cache/tests/network_observer.inc",
   section(network, "network_control_status_t network_control_status(uint32_t generation)", "\nvoid network_management_touch") +
-  section(network, "bool network_control_begin(uint32_t local_address, uint32_t generation)", "\nstatic bool recovery_held"));
+  section(network, "bool network_control_begin(uint32_t local_address, uint32_t generation)", "\nstatic bool recovery_held") +
+  section(network, "bool network_service_healthy(void)", "\nesp_err_t network_submit"));
+await writeFile(".cache/tests/network_effect_decision.inc",
+  `static network_effect_t network_test_effect(int64_t now)\n{\n${
+    section(network, "        bool was_testing = testing;", "\n        if (effect == NETWORK_OPEN_AP)")
+  }\n    (void)was_testing;\n    return effect;\n}\n`);
 await writeFile(".cache/tests/input_client.inc",
   section(web, "typedef struct {\n    int socket;", "\nstatic input_client_t *active_client;"));
 await writeFile(".cache/tests/web_observer.inc",
   section(web, "web_server_status_t web_server_status(void)", "\nstatic esp_err_t problem"));
+await writeFile(".cache/tests/update_owner_expiry.inc",
+  `static void expire_update_owner_for_test(int64_t now)\n{\n${section(
+    section(web, "static void expire_control(void *argument)", "\nstatic void control_tick"),
+    "    firmware_update_tick();", "\n    if (pending_owner != NULL")
+  }\n}\n`);
 await writeFile(".cache/tests/compile_commands.json", `${JSON.stringify(compilationDatabase, null, 2)}\n`);
 for (const name of selected) {
   assert.ok(Object.hasOwn(suites, name), `Unknown native suite: ${name}`);
@@ -89,3 +130,6 @@ for (const name of selected) {
   execFileSync(output, [], { stdio: "inherit" });
 }
 console.log(`PASS: ${selected.length} native suite(s) executed${process.platform === "win32" ? " (Windows, without sanitizers)" : " with ASan/UBSan"}.`);
+if (skippedSdkBootloader) {
+  console.warn("SKIP: SDK erased-otadata first-boot and running-image trust-key checks (IDF_PATH unset). Run from an activated ESP-IDF terminal for this coverage.");
+}

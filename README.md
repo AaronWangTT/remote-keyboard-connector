@@ -23,6 +23,7 @@ encrypted credential storage remain lower-priority follow-up work.
 - [CI workflow setup proposal](docs/ci-workflow-proposal.md)
 - [Board status LED design, software validation, and remaining hardware gates](docs/board-status-led-proposal.md)
 - [Sender installation and firmware artifact guide](docs/sender-installation.md)
+- [OTA design, implementation, and hardware acceptance gates](docs/ota-proposal.md)
 - [Wi-Fi enhancement plan, implementation record, and remaining gates](docs/wifi-enhancement-plan.md)
 - [Keyboard enhancement plan and validation results](docs/keyboard-enhancement-plan.md)
 - [Minimal implementation plan and validation results](docs/minimal-implementation-plan.md)
@@ -44,10 +45,25 @@ with `ESP-IDF: Set Espressif Device Target`, then run
 idf.py build
 ```
 
-The target defaults to `esp32s3`. A successful build produces
-`build/esp32s3_starter.bin`. Microsoft C/C++ IntelliSense is configured locally
+The target defaults to `esp32s3` with 16 MiB flash, two 6 MiB OTA app slots, and
+64 KiB NVS. Every normal build produces `build/firmware-install.zip` for wired
+replacement and `build/firmware-ota.bin` for browser updates, containing identical
+RSA-signed application bytes. Default builds use a local ignored test key,
+not a trusted release key. Microsoft C/C++ IntelliSense is configured locally
 to use the generated compilation database; the setup guide explains how to
 apply that setting after a fresh clone.
+
+An older ignored `sdkconfig` keeps the old layout and unsigned settings. Use a
+fresh build/configuration directory to adopt the new defaults without changing
+the board or overwriting your local configuration:
+
+```bash
+idf.py -B .cache/ota-build -D SDKCONFIG=.cache/ota-build/sdkconfig build
+```
+
+The build generates a test-only RSA-3072 key at `.cache/ota-test-signing-key.pem`
+if absent. Keep it across development updates and never publish it. Build and
+packaging perform no erase, flash, or per-device provisioning operation.
 
 Tracked defaults select compiler size optimization for deployable firmware.
 An existing generated `sdkconfig` retains its previous optimization choice;
@@ -97,34 +113,51 @@ install the Node.js tools dependencies and validate the firmware offline:
 
 ```bash
 npm ci --prefix tools --ignore-scripts
-node tools/install-device.mjs --firmware build
+node tools/install-device.mjs --firmware build --verification-key build/firmware-signing-public.pem
 ```
 
-Without `--execute`, the installer checks the three separate firmware images,
-their digests, the partition table, and the build's security configuration.
+Without `--execute`, the installer checks the four public firmware images,
+their signatures/digests, the partition table, and the build's security profile.
 It does not generate credentials or open a serial port. For downloaded CI
 artifacts, extract the complete artifact (including its build manifest) and
-pass its `build` directory to `--firmware`.
+pass the extracted install directory to `--firmware`. The generated public key
+above is for local test inspection; actual installation needs a trusted public
+key obtained independently and stored outside the candidate directory.
 
 After verifying the board's factory base MAC, flash settings, power, and ROM
 recovery procedure, one explicit command performs initial installation:
 
 ```text
-node tools/install-device.mjs --firmware build --device-id <12-hex-digit-base-MAC> --output <new-private-directory-outside-repo> --port <COMx> --execute
+node tools/install-device.mjs --firmware build --verification-key <trusted-public-PEM-outside-bundle> --device-id <12-hex-digit-base-MAC> --output <new-private-directory-outside-repo> --port <COMx> --execute --reset-layout
 ```
 
 The command creates a private firmware snapshot, per-device AP/setup credentials,
 NVS image, Wi-Fi QR, and setup card. It checks the connected chip, expected MAC,
-security state, and flash capacity; saves and verifies a full-flash backup;
-then writes bootloader, partition table, application, and NVS in one sparse
-esptool operation. All four images are verified before resetting the board.
+security state, and 16 MiB flash capacity; explicitly erases the old installation;
+then writes bootloader, partition table, OTA metadata, application, and fresh NVS.
+Every written range and the application signature are verified before reset.
+An intentionally installed test-key build also requires `--allow-test-firmware`.
 
-**Existing partition tables must match, and non-empty NVS is refused by default.**
-Only add `--replace-nvs` when deliberately discarding all existing NVS settings
-and ownership after backup. It replaces the shared partition, not just the
-`kb_identity` namespace. There is no automatic partition migration, whole-chip
-erase, or eFuse change. Normal firmware updates must preserve NVS instead of
-running this initial-install command again.
+**Wired replacement assumes a fresh installation with full layout reset.**
+Repeat ownership claim and Wi-Fi setup afterward. There is no dedicated migration
+tool or old-NVS conversion, and no eFuse change. Optional old-flash backups are
+private user precautions, not installation inputs.
+
+For routine OTA, use either AP or station mode and open `http://kb.local/ota`
+directly, or append `/ota` to the device's current hostname/IP address. This
+is a separate page with no links or buttons connecting it to the keyboard or
+network settings pages. Sign in with the owner password if needed; the existing
+owner session is also accepted. Upload `firmware-ota.bin`, wait for verification,
+then choose Install and restart. Sign in again on `/ota` and confirm the running
+version. The inactive
+slot is written, a failed trial boot rolls back, and credentials/settings are
+preserved. Uploads require a higher `major.minor.patch` version, matching
+board/layout, and the same signing key. USB host enumeration is not required.
+
+The personal-use profile uses 10 PBKDF2-HMAC-SHA-256 iterations for responsive
+login, deliberately sacrificing most offline password-guessing resistance.
+Salted verifiers, owner authentication, CSRF checks, and rate limits remain;
+this is not an Internet-exposed or hardened security profile.
 
 See the [sender guide](docs/sender-installation.md) for prerequisites, private
 artifacts, and failure handling. The original

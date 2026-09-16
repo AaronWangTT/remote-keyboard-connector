@@ -77,7 +77,9 @@ function errorMessage(error) {
     usb_unavailable: "USB is not ready.", csrf_denied: "Session changed. Reload and sign in again.",
     provisioning_required: "This keyboard needs sender provisioning.", claim_failed: "Owner setup could not be saved. Reconnect before trying again.",
     network_busy: "Network operation in progress. Refresh its status before trying again.",
-    release_control_first: "Release keyboard control before changing the network.",
+    release_control_first: "Release keyboard control before continuing.",
+    update_busy: "A firmware update is in progress.",
+    device_starting: "The keyboard is checking startup. Try again shortly.",
     storage_failed: "Settings storage is unavailable. Restart the keyboard before retrying.",
     invalid_network_request: "Check the network name, password, and hostname.",
     login_required: "Sign in to continue." })[error.code] ?? "Cannot reach the keyboard. Check the connection and try again.";

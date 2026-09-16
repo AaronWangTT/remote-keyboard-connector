@@ -42,7 +42,22 @@ def image_bytes(image):
     return data
 
 
-def inspect_firmware(firmware, sdk):
+def inspect_verified_ota(firmware, sdk, verification_key):
+    from ota_artifacts import inspect_ota_firmware, public_key, verify_manifest
+
+    require(isinstance(verification_key, str) and
+        any(label in verification_key for label in ("-----BEGIN PUBLIC KEY-----", "-----BEGIN RSA PUBLIC KEY-----")) and
+        "PRIVATE KEY" not in verification_key, "An independently trusted public verification key is required")
+    key = public_key(verification_key.encode())
+    verify_manifest(firmware, key)
+    plan = inspect_ota_firmware(firmware, sdk, key)
+    require(plan["descriptor"] == firmware["manifest"].get("descriptor"), "Manifest and signed application descriptor differ")
+    return plan
+
+
+def inspect_firmware(firmware, sdk, verification_key=None):
+    if firmware.get("security", {}).get("signedApps") is True:
+        return inspect_verified_ota(firmware, sdk, verification_key)
     require(firmware.get("security") == {"secureBoot": False, "flashEncryption": False,
                                         "signedApps": False, "antiRollback": False, "httpDevelopment": True} and
             firmware["security"]["httpDevelopment"] is True,
@@ -132,7 +147,8 @@ def private_write(directory, name, data):
     sync_directory(directory)
 
 
-def validate_identity(contents, device_id):
+def validate_identity(contents, device_id, iterations=10):
+    require(iterations in (10, 100000), "Unsupported credential policy")
     rows = list(csv.DictReader(io.StringIO(contents)))
     expected = [
         ("kb_identity", "namespace", "", ""),
@@ -141,7 +157,7 @@ def validate_identity(contents, device_id):
         ("ap_password", "data", "string", r"[A-Za-z0-9_-]{24}"),
         ("claim_salt", "data", "hex2bin", r"[0-9a-f]{32}"),
         ("claim_hash", "data", "hex2bin", r"[0-9a-f]{64}"),
-        ("claim_cost", "data", "u32", "100000"),
+        ("claim_cost", "data", "u32", str(iterations)),
     ]
     require(len(rows) == len(expected), "Unexpected identity CSV records")
     for row, (key, kind, encoding, pattern) in zip(rows, expected):
@@ -151,10 +167,10 @@ def validate_identity(contents, device_id):
                 f"Invalid identity CSV field: {key}")
 
 
-def generate_nvs(directory, device_id, size):
+def generate_nvs(directory, device_id, size, iterations=10):
     source = directory / "identity.csv"
     target = directory / "identity.bin"
-    validate_identity(source.read_text(encoding="utf-8"), device_id)
+    validate_identity(source.read_text(encoding="utf-8"), device_id, iterations)
     require(not target.exists(), "Private NVS image already exists; do not regenerate an installation in place")
     generated = subprocess.run(
         [sys.executable, "-m", "esp_idf_nvs_partition_gen", "generate", str(source), str(target),
@@ -186,13 +202,16 @@ def install(request, sdk):
     require(request["baud"] in (115200, 230400, 460800, 921600), "Unsupported serial baud rate")
     identity_csv = request["identityCsv"]
     require(isinstance(identity_csv, str), "A MAC-bound identity CSV is required")
-    validate_identity(identity_csv, device_id)
     firmware = request["firmware"]
-    plan = inspect_firmware(firmware, sdk)
+    plan = inspect_firmware(firmware, sdk, request.get("verificationKey"))
+    validate_identity(identity_csv, device_id, 10 if firmware["security"]["signedApps"] else 100000)
+    if firmware["security"]["signedApps"]:
+        return install_ota(request, sdk, plan)
+    require(request.get("resetLayout") is not True, "Layout reset requires a validated OTA build")
     require(flash_capacity(plan["settings"]["flash_size"]) == plan["flashBytes"], "Inconsistent flash capacity")
     directory = create_private_directory(request["directory"])
     private_write(directory, "identity.csv", identity_csv.encode("utf-8"))
-    nvs_data = generate_nvs(directory, device_id, plan["nvs"]["size"])
+    nvs_data = generate_nvs(directory, device_id, plan["nvs"]["size"], 100000)
     payloads = [(image["offset"], image_bytes(image)) for image in firmware["images"]]
     payloads.append((plan["nvs"]["offset"], nvs_data))
     payloads.sort(key=lambda item: item[0])
@@ -252,6 +271,55 @@ def install(request, sdk):
     return result
 
 
+def install_ota(request, sdk, plan):
+    require(request.get("resetLayout") is True and request.get("replaceNvs") is not True,
+        "OTA baseline requires explicit full layout reset, not migration")
+    require(not plan["descriptor"]["testOnly"] or request.get("allowTestFirmware") is True,
+        "Test-key firmware installation requires --allow-test-firmware")
+    directory = create_private_directory(request["directory"])
+    private_write(directory, "identity.csv", request["identityCsv"].encode())
+    nvs_data = generate_nvs(directory, request["deviceId"], plan["nvs"]["size"])
+    payloads = [(image["offset"], image_bytes(image)) for image in request["firmware"]["images"]]
+    payloads.append((plan["nvs"]["offset"], nvs_data))
+    payloads.sort(key=lambda item: item[0])
+    manifest = {"formatVersion": 2, "deviceId": request["deviceId"], "resetLayout": True, "layout": plan,
+        "images": [{"offset": offset, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+               for offset, data in payloads]}
+    private_write(directory, "install-plan.json", (json.dumps(manifest, indent=2) + "\n").encode())
+    with sdk.esptool.detect_chip(port=request["port"]) as connection:
+        return write_ota(request, sdk, plan, directory, payloads, manifest, connection)
+
+
+def write_ota(request, sdk, plan, directory, payloads, manifest, connection):
+    require(connection.CHIP_NAME == "ESP32-S3" and connection.secure_download_mode is False,
+        "Only normal ESP32-S3 ROM download mode is supported")
+    secure = connection.get_secure_boot_enabled()
+    require(type(secure) in (bool, int) and secure == 0 and connection.get_flash_encryption_enabled() is False,
+        "Secure/encrypted boards require a separately reviewed workflow")
+    require(bytes(connection.read_mac(mac_type="BASE_MAC")).hex() == request["deviceId"], "Device MAC mismatch")
+    device = sdk.esptool.run_stub(connection)
+    device.change_baud(request["baud"])
+    sdk.esptool.attach_flash(device)
+    detected_bytes = flash_capacity(sdk.esptool.detect_flash_size(device))
+    require(detected_bytes == plan["flashBytes"], "OTA target requires a detected 16 MiB flash")
+    sdk.esptool.erase_flash(device, force=False)
+    sdk.esptool.write_flash(device, payloads, **plan["settings"], erase_all=False, force=False, no_progress=True)
+    sdk.esptool.verify_flash(device, payloads, **plan["settings"])
+    from ota_artifacts import public_key, verify_application
+
+    app = next(image for image in request["firmware"]["images"] if image["role"] == "app")
+    installed = sdk.esptool.read_flash(device, app["offset"], app["bytes"], no_progress=True)
+    require(installed == image_bytes(app), "Installed application readback differs")
+    verify_application(installed, public_key(request["verificationKey"].encode()))
+    result = {"deviceId": request["deviceId"], "verified": True, "resetLayout": True,
+          "flashBytes": detected_bytes, "images": manifest["images"]}
+    try:
+        private_write(directory, "install-result.json", (json.dumps(result, indent=2) + "\n").encode())
+    finally:
+        sdk.esptool.reset_chip(device, "hard-reset")
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("operation", choices=["inspect", "install"])
@@ -260,7 +328,7 @@ def main():
     with contextlib.redirect_stdout(sys.stderr):
         sdk = load_sdk(request["idfPath"])
         if arguments.operation == "inspect":
-            result = inspect_firmware(request["firmware"], sdk)
+            result = inspect_firmware(request["firmware"], sdk, request.get("verificationKey"))
         else:
             result = install(request, sdk)
     print(json.dumps(result))
