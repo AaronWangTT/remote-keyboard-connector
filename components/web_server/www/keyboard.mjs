@@ -78,7 +78,7 @@ export function updateLocalEcho(text, previous, report, capsLock) {
   for (const usage of report.keys) {
     if (previous.keys.includes(usage)) continue;
     const key = usageKeys.get(usage);
-    if (key?.code === "Enter") text = "";
+    if (key?.code === "Enter") return "";
     else if (key?.code === "Backspace") text = text.slice(0, -1);
     else if (key?.label.length === 1) {
       const uppercase = key.code.startsWith("Key") ? shifted !== (capsLock === true) : shifted;

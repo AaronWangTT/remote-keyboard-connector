@@ -121,6 +121,7 @@ dialog p { overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; }
 .echo-toggle:has(input:focus-visible) { outline: 3px solid var(--accent); outline-offset: 2px; }
 .local-echo-window { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: center; gap: 8px; height: 68px; margin-bottom: 12px; padding: 5px 6px 5px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 5px; background: #fff; }
 .local-echo-text { min-width: 0; height: 48px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 17px/24px Verdana, Geneva, sans-serif; letter-spacing: 0; scrollbar-width: thin; }
+.local-echo-text:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .local-echo-text:empty::before { content: "Local echo"; color: var(--muted); }
 #local-echo-clear { border-color: transparent; }
 .host-profile-toggle { display: flex; height: 32px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }

@@ -236,3 +236,15 @@ test("local echo Backspace and Return edit only the bounded local tail", () => {
   assert.equal(updateLocalEcho("hello", enter, neutral, false), "hello");
   assert.equal(updateLocalEcho("a".repeat(256), neutral, { modifiers: 0, keys: [5] }, false), `${"a".repeat(255)}b`);
 });
+
+test("new Return clears the whole local echo report even with simultaneous printable keys", () => {
+  for (const modifiers of [0, SHIFT_LEFT, SHIFT_RIGHT]) {
+    for (const keys of [[40, 44], [40, 56], [4, 40, 42, 44, 56]]) {
+      assert.equal(updateLocalEcho("existing", neutral, { modifiers, keys }, false), "");
+    }
+  }
+  assert.equal(updateLocalEcho("existing ", { modifiers: 0, keys: [44] },
+    { modifiers: 0, keys: [40, 44] }, false), "");
+  assert.equal(updateLocalEcho("next", { modifiers: 0, keys: [40] },
+    { modifiers: 0, keys: [40, 56] }, false), "next/");
+});

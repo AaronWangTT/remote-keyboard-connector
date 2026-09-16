@@ -1267,6 +1267,50 @@ test("local echo applies only acknowledged edits and never revives cleared pendi
 });
 
 for (const [engineName, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
+  test(`${engineName} local echo supports keyboard-only scrolling without remote input`, { timeout: 25000 }, async context => {
+    const url = await startPreview(context);
+    const browser = await engine.launch(engineName === "WebKit" ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+    context.after(() => browser.close());
+    const page = await browser.newPage({ hasTouch: true, viewport: { width: 844, height: 390 } });
+    page.setDefaultTimeout(5000);
+    const counters = async () => (await (await fetch(new URL("/__test__/input", url))).json());
+    await page.goto(url);
+    await signIn(page);
+    const toggle = page.getByRole("switch", { name: "Local echo", exact: true });
+    const echo = page.locator("#local-echo-text");
+    await toggle.check();
+    await page.locator("#keyboard").focus();
+    const text = "abcdefghij".repeat(8);
+    await page.keyboard.type(text, { delay: 20 });
+    await expect(echo).toHaveText(text);
+    await expect.poll(counters).toMatchObject({ down: text.length, up: text.length, queued: text.length * 2 });
+    const before = await counters();
+    await toggle.focus();
+    await page.keyboard.press("Tab");
+    await expect(echo).toBeFocused();
+    assert.equal(await echo.evaluate(element => element.isContentEditable), false);
+    assert.equal(await echo.evaluate(element => getComputedStyle(element).outlineStyle), "solid");
+    const scrollLeft = await echo.evaluate(element => element.scrollLeft);
+    assert.ok(scrollLeft > 0);
+    await page.keyboard.press("ArrowLeft");
+    await expect.poll(() => echo.evaluate(element => element.scrollLeft)).toBeLessThan(scrollLeft);
+    await page.keyboard.press("Space");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("local", { delay: 20 });
+    await expect(echo).toHaveText(text);
+    assert.deepEqual(await counters(), before);
+    const screenshots = new URL("../.cache/tests/", import.meta.url);
+    await mkdir(screenshots, { recursive: true });
+    await page.screenshot({ path: fileURLToPath(new URL(`local-echo-${engineName.toLowerCase()}-focus.png`, screenshots)) });
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name: "Clear local echo", exact: true })).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(echo).toHaveText("");
+    assert.deepEqual(await counters(), before);
+    await page.getByRole("button", { name: "A", exact: true }).tap();
+    await expect(echo).toHaveText("a");
+  });
+
   test(`${engineName} local echo preserves input semantics and erases text on lifecycle exits`, { timeout: 25000 }, async context => {
     const url = await startPreview(context);
     const browser = await engine.launch(engineName === "WebKit" ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});

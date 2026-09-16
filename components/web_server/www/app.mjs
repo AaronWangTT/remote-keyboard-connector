@@ -540,7 +540,7 @@ surface.addEventListener("click", event => {
 });
 
 surface.addEventListener("keydown", event => {
-  if (event.isComposing || event.target.closest("input, textarea, select, [contenteditable], button:not([data-key])")) return;
+  if (event.isComposing || event.target.closest("#local-echo-text, input, textarea, select, [contenteditable], button:not([data-key])")) return;
   const button = event.target.closest("button[data-key]");
   if (button && (event.code === "Enter" || event.code === "Space")) {
     const key = definitions.get(button.dataset.key);

@@ -217,7 +217,7 @@ indicator stays unknown. Globe never implies knowledge of the active language.
 | Release, duplicate state, second source holding the same key, or physical repeat | Add nothing. Do not simulate the host's auto-repeat. |
 | Space | Append a space. |
 | Backspace | Remove the last local character, if any; no attempt to inspect the remote caret or deletion result. |
-| Return | Clear after the Return key-down is acknowledged; Return is still sent immediately through the normal key path. |
+| Return | A newly pressed Return clears the whole acknowledged report, even with simultaneous Space or punctuation. Return is still sent immediately through the normal key path. |
 | Shift/Caps, Globe, Cancel/Escape | Add no text; Globe's modifier+Space is not an echoed space. |
 | Clear local echo | Erase the local buffer and all pending echo updates without sending any host key. |
 | Off, disarm, connection failure, logout, settings navigation, blur, or page hiding | Erase visible text and pending echo updates. A later reply or reconnection cannot restore them. |
@@ -248,8 +248,10 @@ Layout approved in the local preview on 2026-09-15:
   alongside the compact host/key-map/Caps metadata. The keyboard remains below,
   including the existing inline Globe and Cancel controls.
 - No editable textarea, native mobile keyboard, automatic text announcement, or
-  caret suggesting a compose field. Scrolling the readout does not disarm input;
-  pointer cancellation for captured keyboard holds still releases normally.
+  caret suggesting a compose field. The readout is tabbable with a visible focus
+  outline; its keyboard navigation and typing stay local and do not send host
+  keys. Scrolling the readout does not disarm input; pointer cancellation for
+  captured keyboard holds still releases normally.
 - With echo off, remove the strip and retain the switch. Account and network
   forms remain isolated from remote keyboard capture.
 
@@ -259,7 +261,7 @@ keyboard pages with echo both on and off at the existing viewport/safe-area
 matrix; inspected screenshots; and an ESP-IDF build recording image headroom.
 No hardware flashing or partition/flash/PSRAM change is authorized by this work.
 
-Software validation recorded 2026-09-15:
+Initial software validation recorded 2026-09-15 (pre-review commit `d8ccd8f`):
 
 - All 18 keyboard-model tests and ten ASan/UBSan native suites pass. The model
   covers every printable US-ANSI character, Shift/Caps, deduplicated holds,
@@ -283,6 +285,20 @@ Software validation recorded 2026-09-15:
 - Editor diagnostics and whitespace checks pass. No hardware was accessed;
   real controller/USB-host acceptance remains pending. The approved mock layout
   and software checks cannot establish the remote text's contents.
+
+PR #12 Copilot review follow-up, 2026-09-16:
+
+- Added an explicit non-editable focus target and local-only key handling for
+  the readout. Chromium and WebKit tests verify Tab order, visible focus,
+  horizontal arrow-key scrolling, no remote reports from readout key presses,
+  keyboard activation of Clear, and normal typing afterward.
+- Made a newly pressed Return terminal for the entire echo report. Model
+  regressions cover simultaneous Space/punctuation/Backspace, Shift, and a
+  previously held Return that must not clear later typing again.
+- All ten native sanitizer suites, 19 model tests, and 40 browser/API tests
+  pass locally. Both browser focus screenshots were inspected and editor
+  diagnostics are clean. The initial image sizes above predate these fixes;
+  the required PR checks validate both firmware profiles again before merge.
 
 ### 2. Relative Mouse/Trackpad Proposal
 
