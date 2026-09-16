@@ -411,6 +411,13 @@ explicit user action and reuses that value for a lost-response retry. The server
 requires valid owner/CSRF/Origin checks, actual AP ingress and destination,
 matching current context, committed portal-router mode, a healthy confirmed
 station lease, configured IPv4 DNS, and no conflicting network/OTA operation.
+Reject with 409 `control_active` if any USB controller lease or pending control
+acquisition exists; the browser must explicitly stop/release control first.
+Reserve admission atomically with the control-acquisition guard, verify the
+required all-keys-up release has completed, and block new control acquisition
+through DNS validation and portal handoff. A direct API caller cannot bypass
+this guard. No failure or browser return restores an old controller generation;
+require a fresh **Take Control** after the owner returns to the keyboard view.
 Reject malformed/extra/duplicate fields with 400, missing/expired sessions with
 401, failed Origin/CSRF checks with 403, and stale context or busy/not-ready
 state with 409 and bounded `transit_context_stale`, `network_busy`, or
@@ -544,6 +551,11 @@ For the proof of concept, follow the ESP-IDF SoftAP+STA example:
 1. Read the main station DNS server after IPv4 DHCP completes and require a
   usable, nonzero unicast IPv4 resolver reachable through the station. Missing
   DNS or an IPv6-only resolver leaves DNS unavailable and transit disabled.
+  Reject either of the board's own addresses and any resolver in the current
+  or proposed AP subnet. Verify the selected route exits through the station,
+  not a local/AP interface, before advertising it or enabling validation
+  transit. Repeat this check on lease, route, resolver, or AP-subnet changes;
+  Stage B's upstream resolver uses the same checks.
 2. Stop the AP DHCP server long enough to update its DNS option.
 3. Set the AP interface DNS information and enable the DHCP DNS offer.
 4. Restart the AP DHCP server.
@@ -618,14 +630,20 @@ Origin/CSRF, and strict-parser rules. This report only acknowledges that the
 browser started the attempt: fetch success, CORS failure, or a browser-supplied
 claim of DNS success is never authoritative evidence.
 
-The current page CSP is `connect-src 'self'`, so `no-cors` alone cannot enable
-this fetch. For the AP document containing the portal Network view, add only
+The current shared keyboard/Network `index.html` uses `connect-src 'self'`, so
+`no-cors` alone cannot enable this fetch and a static global header change is
+incorrect. Make the document response mode-aware: only when the network snapshot
+is committed portal-router mode, served on the validated AP ingress/destination,
+and has an approved challenge zone, add only
 `http://*.<approved-dns-check-zone>:80` to `connect-src` alongside `'self'`, using
 the dedicated product-controlled zone selected in the endpoint decision. Never
 allow a blanket `http:`, `*`, or a zone derived from SSID, upstream DHCP, request
 headers, or browser input. Keep script/style/image/default sources and all other
-CSP directives unchanged; non-portal and OTA documents retain their existing
-policy. Validate each issued URL as HTTP port 80, one 32-lowercase-hex label under
+CSP directives unchanged; Standalone AP, Personal STA, open-candidate setup, and
+OTA document responses retain `connect-src 'self'`. Derive both CSP and a
+non-executable document bootstrap policy-generation marker from the same network
+snapshot; API or asset responses must not widen the shared policy. Validate each
+issued URL as HTTP port 80, one 32-lowercase-hex label under
 that exact zone, path `/`, and no userinfo, query, or fragment before fetching.
 Redirects remain blocked by the fetch contract. A missing approved zone must not
 produce a permissive CSP or enable transit.
@@ -633,7 +651,12 @@ produce a permissive CSP or enable transit.
 CSP applies to the loaded document, not later API responses. If the Network view
 was loaded before portal mode supplied the challenge-zone policy, reload the
 current AP document before offering the grant action; do not automatically grant
-on reload. Browser acceptance must use the actual response CSP and demonstrate
+on reload. Keep the grant control unavailable unless that document's bootstrap
+policy generation matches the generation required by current authenticated
+status. On entering or leaving portal mode, invalidate that marker/context and
+reload the current AP document so a former portal page does not continue as the
+non-portal UI with its old CSP. The marker is a document-coherence check, not a
+replacement for server authorization. Browser acceptance must use the actual response CSP and demonstrate
 that the challenge emits a DNS attempt, an unrelated host is blocked, and a stale
 self-only document cannot start validation transit. Do not weaken CSP after a
 failed check merely to force it to pass.
@@ -775,8 +798,10 @@ not weaken the existing control boundary.
 - Release and revoke keyboard control before network selection and portal
   handoff. Require a fresh **Take Control** after the owner returns to the
   keyboard page.
-- Keep the per-device WPA2 AP password, owner authentication, CSRF/Origin/Host
-  validation, session timeout values, and controller lease rules unchanged.
+- Keep the per-device WPA2 AP password, owner authentication, CSRF validation
+  mechanisms, session timeout values, and controller lease rules unchanged.
+  Preserve strict Host/Origin validation mechanisms while changing their
+  portal-mode allowlist and adding the ingress/destination ACL specified below.
   Apply the explicitly defined non-touching portal lookup policy above so
   automatic polling cannot postpone idle expiry.
 - In portal-router mode, reject HTTP and WebSocket service requests received on
@@ -953,6 +978,8 @@ Omitting the browser start entirely must expire the same grant-opening deadline
 and close transit; reservation/observer/timer failures must never open it.
 HTTP blocked/redirected by a captive gateway must not fail otherwise valid DNS
 evidence; encrypted-DNS-only clients must be reported as unverified, not passed.
+Reject a DHCP resolver equal to the AP IP, station IP, any AP-subnet address, or
+one whose route is not the station, before transit opens; repeat after renumbering.
 Packet tests prove
 bidirectional default-deny behavior in other modes and during candidate testing,
 established-only return traffic, no STA local-service exposure, and no port
@@ -1006,6 +1033,10 @@ touch separately. Test upstream portal expiry with a still-live local grant and
 local grant expiry with an upstream-authorized gateway as distinct cases; only
 the former may keep NAPT. Browser tests must enforce the real response CSP and
 its narrow challenge-host allowlist, including mode-transition document reload.
+Test grants during active and pending USB control, release failure, and concurrent
+control admission: no rejected grant or validation window may leave input armed.
+Verify portal-mode CSP only on the AP root document, unchanged self-only policy
+in other modes/OTA, and grant unavailability until the matching document reloads.
 
 ### 5. Resource And Physical Acceptance
 
