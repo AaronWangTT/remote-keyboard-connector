@@ -115,7 +115,7 @@ portal workflow with this product's security boundaries:
 | --- | --- | --- |
 | [ESP-IDF 6.1 SoftAP+STA example](https://github.com/espressif/esp-idf/tree/v6.1/examples/wifi/softap_sta) | Official ESP32-S3 AP+STA support, station default routing, public `esp_netif_napt_enable()`, and propagation of station DNS through the AP DHCP offer. | Portal detection, browser handoff, reconnect behavior, or service isolation. |
 | [ESP-IoT-Bridge Wi-Fi Router](https://github.com/espressif/esp-iot-bridge/tree/master/examples/wifi_router) | A maintained Espressif component and ESP32-S3 example for SoftAP-to-station NAPT, DHCP/DNS updates, subnet-conflict handling, and web/BLE provisioning. | Explicit open-network portal login, portal-state reporting, or AP-only exposure of a USB-control service. |
-| [ESP32 NAT Router](https://github.com/martin-ger/esp32_nat_router) | A mature AP-to-STA router with NAPT, upstream DNS propagation, reconnect handling, firewall hooks, and broad deployment history. Its maintainer states in [issue #79](https://github.com/martin-ger/esp32_nat_router/issues/79) that the first downstream client should receive an upstream portal. | A universal success claim: [issue #73](https://github.com/martin-ger/esp32_nat_router/issues/73) reports that the portal did not appear through the ESP32 router even though the same scenario worked for that user with the ESP8266 predecessor. |
+| [ESP32 NAT Router](https://github.com/martin-ger/esp32_nat_router) | A mature AP-to-STA router with NAPT, upstream DNS propagation, reconnect handling, firewall hooks, and broad deployment history. Its maintainer reports in [issue #79](https://github.com/martin-ger/esp32_nat_router/issues/79) that, after upstream connection, the captive portal asks the first downstream client for credentials; this is a reported observation, not a verified compatibility result. | A universal success claim: [issue #73](https://github.com/martin-ger/esp32_nat_router/issues/73) reports that the portal did not appear through the ESP32 router even though the same scenario worked for that user with the ESP8266 predecessor. |
 | [ESP32 NAT Router Extended](https://github.com/dchristl/esp32_nat_router_extended) | Open upstream selection using a blank station password, persistent AP+STA NAPT, upstream DNS propagation, and public-Wi-Fi-oriented operation. | Its documented captive portal primarily redirects to the router's own configuration page; that is different from passing through an upstream portal. |
 | [ESP8266 Wi-Fi Repeater](https://github.com/martin-ger/esp_wifi_repeater) | Open upstream networks, NAPT, and upstream-provided DNS. The reporter in ESP32 NAT Router issue #73 says real portal pass-through worked with this predecessor. | ESP32-S3 or ESP-IDF 6.1 behavior; the portal result is an anecdotal report rather than a compatibility matrix. |
 | [Community Wi-Fi Repeater](https://github.com/benjaminchazelle/Community-WiFi-repeater) | An explicit attempt to join FreeWifi and SFR/FON networks, probe Firefox's portal-detection endpoint, and parse the provider redirect. | A finished authentication implementation: the provider-specific authentication states remain incomplete, and the project has no current maintenance evidence. |
@@ -760,6 +760,17 @@ NAPT allocation, active translations, packet loss, local UI latency, and USB
 release deadlines. Test controlled portals first, then only authorized real
 networks with documented terms and sanitized observations.
 
+Apply the existing [storage and resource budgets](remote-keyboard-design.md#10-storage-and-resource-budgets)
+as release criteria, not merely measurements. Require at least 20% unused space
+in each application/OTA slot for the final signed image with the selected NAPT
+and DNS implementation. Target at least 64 KiB minimum free internal heap under
+the tested combined portal, DNS, and local-keyboard load; record the largest free
+block and task stack high-water marks as well. A below-headroom build or a missed
+heap target keeps this feature development-only until footprint reduction or a
+separately reviewed partition/resource decision resolves it. Do not silently
+relax those budgets, enlarge partitions, or add a PSRAM dependency in this
+increment; a successful build alone cannot satisfy this gate.
+
 Gate: one supported client can complete representative simple-form,
 JavaScript-heavy, HTTPS, OAuth/MFA, and expiration/relogin flows where the portal
 policy permits NAPT. Record failures by portal behavior; do not generalize a
@@ -772,10 +783,10 @@ small compatibility matrix into universal support.
 | Native C | Profile migration/validation and BSSID binding, bounded scan/request parsing and end-to-end BSSID preservation, state transitions, NAPT/DNS ordering and post-enable DNS failure cleanup, grant/revoke generations, probe nonce/deadline/generation checks, rollback, AP-idle retry arbitration, station-IP change, and injected API/cleanup failures. |
 | DNS | Missing/IPv6-only resolvers, upstream changes, UDP and TCP, truncation, malformed replies, timeout, transaction exhaustion, AP-only authorized binding, stale-generation cleanup, and no-query logging. |
 | Browser/API | Owner/CSRF protections, explicit transit authorization and revocation, open-network confirmation, portal states, probe freshness/expiry and always-available manual sign-in on a usable authorized path, trigger endpoint contract, current recovery addresses, idempotent recovery, no secret persistence, and keyboard-input isolation. |
-| ESP-IDF build | Required forwarding/NAPT settings enabled, port mapping disabled, no PSRAM dependency, size/headroom recorded, and release logging reviewed. |
+| ESP-IDF build | Required forwarding/NAPT settings enabled, port mapping disabled, no PSRAM dependency, at least 20% headroom in each app/OTA slot for the final signed image, and release logging reviewed; a budget miss blocks release pending a separately reviewed resource decision. |
 | Packet security | NAPT source identity, bidirectional default-deny in all non-routing/failed states, authorized association/lease enforcement, same-IP replacement with delayed old-client replies, established-only return traffic, no STA access to local HTTP/WebSocket/mDNS, no local control traffic upstream, and no IPv6 forwarding. |
 | Physical network | AP+STA channel changes, subnet overlap, DHCP/DNS renewal, station reconnect/address or BSSID change, duplicate SSIDs, active AP control/setup during recovery, confirmed disruptive retry, client reconnect, portal expiry, and reboot persistence. |
-| Resource behavior | Portal asset bursts, translation-table pressure, heap low-water mark, throughput, local UI responsiveness, and USB all-keys-up deadlines. |
+| Resource behavior | Portal asset bursts, translation-table pressure, 64 KiB minimum free internal heap target under combined load, largest free block and stack high-water marks, throughput, local UI responsiveness, and USB all-keys-up deadlines; a missed heap target keeps the feature development-only pending resolution. |
 
 All automated results must be labeled separately from physical radio, portal,
 and USB observations. Never use a successful build or the upstream appearance
