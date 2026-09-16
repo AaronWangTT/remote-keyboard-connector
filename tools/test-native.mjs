@@ -83,6 +83,7 @@ const section = (source, start, end) => {
 };
 const network = await readFile("components/network/network.c", "utf8");
 const web = await readFile("components/web_server/web_server.c", "utf8");
+const skippedSdkBootloader = selected.includes("update_service") && !process.env.IDF_PATH;
 let bootloaderFixture = "";
 if (process.env.IDF_PATH) {
   const bootloader = await readFile(resolve(process.env.IDF_PATH, "components/bootloader_support/src/bootloader_utility.c"), "utf8");
@@ -114,3 +115,6 @@ for (const name of selected) {
   execFileSync(output, [], { stdio: "inherit" });
 }
 console.log(`PASS: ${selected.length} native suite(s) executed${process.platform === "win32" ? " (Windows, without sanitizers)" : " with ASan/UBSan"}.`);
+if (skippedSdkBootloader) {
+  console.warn("SKIP: 1 SDK erased-otadata first-boot check (IDF_PATH unset). Run from an activated ESP-IDF terminal for this coverage.");
+}

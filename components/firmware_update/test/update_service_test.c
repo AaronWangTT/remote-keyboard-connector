@@ -171,9 +171,13 @@ int main(void)
 #endif
     reset(); boot_state = -1;
     assert(firmware_update_init() == ESP_ERR_INVALID_STATE && !firmware_update_status().available);
+    assert(!watchdog_disabled);
 
     reset(); health_ok = false;
     assert(firmware_update_init() == ESP_OK && !firmware_update_status().trial_boot);
+    assert(watchdog_disabled && !firmware_update_status().available && marks == 0 && boot_entry == NULL);
+    now += INT64_C(60000000);
+    assert(watchdog_disabled && rollbacks == 0 && !firmware_update_status().available);
     assert(firmware_update_validate_boot(healthy) == ESP_OK);
     assert(boot_entry == NULL && health_calls == 0 && marks == 0 && rollbacks == 0);
     assert(watchdog_disabled && firmware_update_status().available);
@@ -182,6 +186,7 @@ int main(void)
     reset();
     boot_state = ESP_OTA_IMG_PENDING_VERIFY;
     assert(firmware_update_init() == ESP_OK && !firmware_update_status().available);
+    assert(!watchdog_disabled && marks == 0 && boot_entry == NULL);
     assert(firmware_update_validate_boot(healthy) == ESP_OK);
     if (setjmp(task_exit) == 0) boot_entry(NULL);
     assert(watchdog_disabled && marks == 1 && firmware_update_status().available);
@@ -237,5 +242,5 @@ int main(void)
 
     reset(); status.available = true; allow_network = false;
     assert(firmware_update_reserve(8192, 2, &job) != ESP_OK && begins == 0 && !firmware_update_status().busy);
-    puts("update_service: fresh/trial boots, inactive writes, signatures, cancellation, expiry and activation failures passed");
+    puts("update_service: confirmed/trial boots, inactive writes, signatures, cancellation, expiry and activation failures passed");
 }

@@ -45,7 +45,8 @@ def image_bytes(image):
 def inspect_verified_ota(firmware, sdk, verification_key):
     from ota_artifacts import inspect_ota_firmware, public_key, verify_manifest
 
-    require(isinstance(verification_key, str) and "BEGIN PUBLIC KEY" in verification_key and
+    require(isinstance(verification_key, str) and
+        any(label in verification_key for label in ("-----BEGIN PUBLIC KEY-----", "-----BEGIN RSA PUBLIC KEY-----")) and
         "PRIVATE KEY" not in verification_key, "An independently trusted public verification key is required")
     key = public_key(verification_key.encode())
     verify_manifest(firmware, key)

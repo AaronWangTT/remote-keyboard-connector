@@ -737,6 +737,21 @@ class OtaArtifactTests(unittest.TestCase):
         self.assertEqual((self.build / "firmware-ota.bin").read_bytes(), (self.build / "app.bin").read_bytes())
         self.assertEqual(inspect_ota_firmware(self.firmware, self.sdk, self.key.public_key())["nvs"]["size"], 65536)
 
+    def test_installer_public_pem_formats_and_private_key_rejection(self):
+        for form in (serialization.PublicFormat.SubjectPublicKeyInfo, serialization.PublicFormat.PKCS1):
+            with self.subTest(public_format=form):
+                pem = self.key.public_key().public_bytes(serialization.Encoding.PEM, form).decode()
+                self.assertEqual(inspect_firmware(self.firmware, self.sdk, pem)["nvs"]["size"], 65536)
+        for form in (serialization.PrivateFormat.PKCS8, serialization.PrivateFormat.TraditionalOpenSSL):
+            with self.subTest(private_format=form):
+                pem = self.key.private_bytes(serialization.Encoding.PEM, form, serialization.NoEncryption()).decode()
+                with self.assertRaisesRegex(ValueError, "public verification key"):
+                    inspect_firmware(self.firmware, self.sdk, pem)
+                with self.assertRaisesRegex(ValueError, "public verification key"):
+                    inspect_firmware(self.firmware, self.sdk, self.request["verificationKey"] + pem)
+        with self.assertRaises(ValueError):
+            inspect_firmware(self.firmware, self.sdk, "-----BEGIN RSA PUBLIC KEY-----\ninvalid\n-----END RSA PUBLIC KEY-----")
+
     def test_changed_manifest_is_rejected_even_with_matching_image_metadata(self):
         self.firmware["manifest"]["descriptor"]["version"] = "9.9.9"
         with self.assertRaisesRegex(ValueError, "manifest signature"):
@@ -829,15 +844,23 @@ class OtaArtifactTests(unittest.TestCase):
 
     def test_node_inspects_signed_bundle_and_requires_explicit_trusted_key(self):
         public_path = self.root / "trusted-public.pem"
-        public_path.write_text(self.request["verificationKey"])
         script = str(Path(__file__).with_name("install-device.mjs"))
         command = ["node", script, "--firmware", str(self.build), "--idf-path", os.environ["IDF_PATH"], "--python", sys.executable]
         failed = subprocess.run(command, capture_output=True, text=True, check=False)
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn("verification-key", failed.stderr)
-        accepted = subprocess.run(command + ["--verification-key", str(public_path)], capture_output=True, text=True, check=False)
-        self.assertEqual(accepted.returncode, 0, accepted.stderr)
-        self.assertIn("Offline check only", accepted.stdout)
+        for form in (serialization.PublicFormat.SubjectPublicKeyInfo, serialization.PublicFormat.PKCS1):
+            with self.subTest(public_format=form):
+                public_path.write_bytes(self.key.public_key().public_bytes(serialization.Encoding.PEM, form))
+                accepted = subprocess.run(command + ["--verification-key", str(public_path)], capture_output=True, text=True, check=False)
+                self.assertEqual(accepted.returncode, 0, accepted.stderr)
+                self.assertIn("Offline check only", accepted.stdout)
+        for form in (serialization.PrivateFormat.PKCS8, serialization.PrivateFormat.TraditionalOpenSSL):
+            with self.subTest(private_format=form):
+                public_path.write_bytes(self.key.private_bytes(serialization.Encoding.PEM, form, serialization.NoEncryption()))
+                rejected = subprocess.run(command + ["--verification-key", str(public_path)], capture_output=True, text=True, check=False)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("public verification key", rejected.stderr)
 
 
 if __name__ == "__main__":

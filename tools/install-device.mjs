@@ -273,7 +273,8 @@ Private output includes a firmware snapshot, identity, setup card, and backup. N
   if (firmware.security.signedApps) {
     assert.ok(options.verificationKey, "OTA verification requires an independently trusted --verification-key public PEM");
     verificationKey = await readFile(options.verificationKey, "utf8");
-    assert.ok(verificationKey.includes("BEGIN PUBLIC KEY") && !verificationKey.includes("PRIVATE KEY"), "Supply a public verification key, not a private signing key");
+    assert.ok(/-----BEGIN (?:RSA )?PUBLIC KEY-----/.test(verificationKey) && !verificationKey.includes("PRIVATE KEY"),
+      "Supply a public verification key, not a private signing key");
     if (options.execute) {
       assert.ok(options.resetLayout, "OTA installation requires --reset-layout: full erase and fresh provisioning");
       const keyLocation = relative(firmware.root, await realpath(options.verificationKey));

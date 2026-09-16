@@ -96,6 +96,9 @@ For a default local test build only, offline checks may use the generated
 the expected public key through your trusted build/signing process and retain it
 outside the candidate directory. The build now generates the signed manifests
 automatically; `--write-manifest` is not needed for normal OTA-capable outputs.
+Both SubjectPublicKeyInfo (`BEGIN PUBLIC KEY`) and PKCS#1 (`BEGIN RSA PUBLIC KEY`)
+PEM encodings of the same RSA-3072 public key are accepted. Private-key PEMs are
+rejected by the installer; do not supply or distribute the signing private key.
 
 ## One Initial Installation Command
 

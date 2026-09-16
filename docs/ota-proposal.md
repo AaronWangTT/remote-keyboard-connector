@@ -403,7 +403,9 @@ record as `ESP_OTA_IMG_VALID` before entering the application. Missing or unknow
 state after bootloader handoff remains an error, not permission for the updater
 to assume a valid image. The native SDK-backed test exercises the actual
 bootloader selection/initialization functions with mocked storage; CI runs it
-with `IDF_PATH` set. This does not replace physical first-install acceptance.
+with `IDF_PATH` set. The portable native runner explicitly reports this one
+check as skipped when `IDF_PATH` is unset, rather than claiming SDK coverage.
+This does not replace physical first-install acceptance.
 
 Enable `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` in the wired baseline. On a boot
 marked `ESP_OTA_IMG_PENDING_VERIFY`, run bounded diagnostics before calling
@@ -556,8 +558,10 @@ component; no separate migration utility is introduced.
    network-worker progress, readable saved settings, a live HTTP service, and
    USB-task progress without host enumeration. The RTC watchdog stays armed
    until confirmation; a failed trial requests rollback without resetting NVS.
-   Already-confirmed boots stop the startup watchdog after service initialization
-   without repeating the trial task or entering its rollback path.
+   Already-confirmed boots stop the startup watchdog during updater initialization,
+   before USB/network/web startup can fail. Updates remain unavailable until
+   service initialization finishes, without repeating the trial task or entering
+   its rollback path.
 - [Artifact generation](../tools/ota_artifacts.py) runs as part of every normal
    build, verifies the actual RSA signature, signs the install manifest, and
    checks equality between the wired ZIP's application and OTA payload. Private
@@ -572,7 +576,7 @@ component; no separate migration utility is introduced.
    navigation to or from the keyboard/network settings UI. Lost responses are
    resolved through status without repeating activation or keyboard control.
 - Local validation includes 12 ASan/UBSan native suites, 25 keyboard-model tests,
-   60 SDK-backed installer/artifact tests, and Chromium/WebKit browser/API tests.
+   61 SDK-backed installer/artifact tests, and Chromium/WebKit browser/API tests.
    The native harness exercises the actual updater with mocked SDK boundaries;
    the browser preview simulates signature and reboot outcomes. Real signature
    verification is exercised separately with Espressif's SDK. Phone and desktop
