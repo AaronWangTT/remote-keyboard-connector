@@ -13,6 +13,11 @@ static bool extra_bytes;
 static bool check_worker_exit, check_network_release;
 static unsigned cleanup_checks;
 static void expect_cleanup_busy(void);
+static bool check_sdk_signature;
+static bool running_key_readable;
+static unsigned rsa_verifications, running_key_reads;
+static uint8_t running_key_digest[32], candidate_image_digest[32];
+static ets_secure_boot_signature_t candidate_signature;
 static esp_ota_img_states_t boot_state;
 static esp_err_t boot_state_result;
 static esp_ota_select_entry_t boot_metadata[2];
@@ -85,7 +90,13 @@ esp_err_t esp_ota_begin(const esp_partition_t *partition, size_t bytes, esp_ota_
 }
 esp_err_t esp_ota_write(esp_ota_handle_t value, const void *data, size_t bytes)
 { assert(value == 42 && write_offset + bytes <= sizeof(flash) && reserved && enters == 0); writes++; memcpy(flash + write_offset, data, bytes); write_offset += bytes; return ESP_OK; }
-esp_err_t esp_ota_end(esp_ota_handle_t value) { assert(value == 42 && reserved); ends++; return signature_ok ? ESP_OK : ESP_FAIL; }
+esp_err_t esp_ota_end(esp_ota_handle_t value)
+{
+    assert(value == 42 && reserved);
+    ends++;
+    if (!signature_ok) return ESP_FAIL;
+    return check_sdk_signature ? esp_secure_boot_verify_sbv2_signature_block(&candidate_signature, candidate_image_digest, NULL) : ESP_OK;
+}
 esp_err_t esp_image_verify(int mode, const esp_partition_pos_t *position, esp_image_metadata_t *metadata)
 { assert(mode == ESP_IMAGE_VERIFY_SILENT && position->offset == 0x620000); metadata->image_len = extra_bytes ? 4096 : position->size; return ESP_OK; }
 esp_err_t esp_ota_abort(esp_ota_handle_t value) { assert(value == 42); aborts++; return ESP_OK; }
@@ -150,6 +161,47 @@ bool write_otadata(const esp_ota_select_entry_t *record, uint32_t offset, bool e
 
 #include "sdk_bootloader.inc"
 
+#ifdef UPDATE_TEST_SDK_BOOTLOADER
+static uint8_t hashed_key[32];
+bool esp_secure_boot_enabled(void) { return false; }
+esp_err_t esp_secure_boot_read_key_digests(esp_secure_boot_key_digests_t *digests)
+{ (void)digests; assert(false); return ESP_FAIL; }
+static esp_err_t calculate_image_public_key_digests(bool verify_image, bool digest_keys,
+    esp_image_sig_public_key_digests_t *digests, esp_partition_pos_t *position)
+{
+    assert(!verify_image && digest_keys && position->offset == partitions[2].address && position->size == UPDATE_SLOT_BYTES);
+    running_key_reads++;
+    if (!running_key_readable) return ESP_ERR_NOT_FOUND;
+    memcpy(digests->key_digests[0], running_key_digest, sizeof(running_key_digest));
+    digests->num_digests = 1;
+    return ESP_OK;
+}
+static esp_err_t validate_signature_block(const ets_secure_boot_sig_block_t *block)
+{ return block->valid ? ESP_OK : ESP_FAIL; }
+bootloader_sha256_handle_t bootloader_sha256_start(void) { return hashed_key; }
+void bootloader_sha256_data(bootloader_sha256_handle_t output, const void *input, size_t bytes)
+{ assert(output == hashed_key && bytes == sizeof(hashed_key)); memcpy(output, input, bytes); }
+void bootloader_sha256_finish(bootloader_sha256_handle_t input, void *output)
+{ assert(input == hashed_key); memcpy(output, input, sizeof(hashed_key)); }
+static int verify_rsa_signature_block(const ets_secure_boot_signature_t *signature, const uint8_t *digest,
+    const ets_secure_boot_sig_block_t *trusted)
+{
+    assert(signature == &candidate_signature && digest == candidate_image_digest && trusted == &signature->block[0]);
+    rsa_verifications++;
+    return 0;
+}
+
+#include "sdk_signature_verifier.inc"
+#else
+esp_err_t esp_secure_boot_verify_sbv2_signature_block(const ets_secure_boot_signature_t *signature,
+    const uint8_t *digest, uint8_t *verified)
+{
+    (void)signature; (void)digest; (void)verified;
+    assert(false);
+    return ESP_FAIL;
+}
+#endif
+
 static void reset(void)
 {
     memcpy(partitions, valid_partitions, sizeof(partitions));
@@ -165,6 +217,13 @@ static void reset(void)
     boot_metadata_writes = 0;
     check_worker_exit = check_network_release = false;
     cleanup_checks = 0;
+    check_sdk_signature = false;
+    running_key_readable = true;
+    rsa_verifications = running_key_reads = 0;
+    memset(running_key_digest, 0x5a, sizeof(running_key_digest));
+    candidate_signature = (ets_secure_boot_signature_t){0};
+    candidate_signature.block[0].valid = true;
+    memcpy(candidate_signature.block[0].key, running_key_digest, sizeof(running_key_digest));
     running_descriptor = (update_descriptor_t){.magic = {'K','B','O','T','A','0','0','1'}, .format_version = 1,
         .bootstrap_version = 1, .updater_version = 1, .settings_version = 1, .kdf_iterations = 10,
         .flash_bytes = 0x1000000, .slot_bytes = UPDATE_SLOT_BYTES, .security_profile = 1,
@@ -229,6 +288,27 @@ static void upload(uint32_t job)
 int main(void)
 {
     test_layout_validation();
+#ifdef UPDATE_TEST_SDK_SIGNATURE
+    for (unsigned scenario = 0; scenario < 3; scenario++) {
+        reset();
+        uint32_t job = begin();
+        upload(job);
+        check_sdk_signature = true;
+        if (scenario == 1) candidate_signature.block[0].key[0] ^= 1;
+        if (scenario == 2) running_key_readable = false;
+        esp_err_t result = firmware_update_finish(job);
+        assert(running_key_reads == 1);
+        if (scenario == 0) {
+            assert(result == ESP_OK && status.policy.phase == UPDATE_STAGED && rsa_verifications == 1);
+        } else {
+            assert(result != ESP_OK && status.policy.phase != UPDATE_STAGED && rsa_verifications == 0);
+            firmware_update_fail(job, "untrusted_key");
+        }
+        firmware_update_worker_done(job);
+        assert(selections == 0);
+    }
+    puts("PASS: SDK running-image trust lookup rejects wrong or missing key before RSA verification (crypto/storage mocked)");
+#endif
 #ifdef UPDATE_TEST_SDK_BOOTLOADER
     reset();
     memset(boot_metadata, 0xff, sizeof(boot_metadata));

@@ -85,6 +85,7 @@ const network = await readFile("components/network/network.c", "utf8");
 const web = await readFile("components/web_server/web_server.c", "utf8");
 const skippedSdkBootloader = selected.includes("update_service") && !process.env.IDF_PATH;
 let bootloaderFixture = "";
+let signatureFixture = "";
 if (process.env.IDF_PATH) {
   const bootloader = await readFile(resolve(process.env.IDF_PATH, "components/bootloader_support/src/bootloader_utility.c"), "utf8");
   bootloaderFixture = "#define UPDATE_TEST_SDK_BOOTLOADER 1\nstatic bool ota_has_initial_contents;\n" +
@@ -92,8 +93,16 @@ if (process.env.IDF_PATH) {
     section(bootloader, "static void set_actual_ota_seq(const bootloader_state_t *bs, int index)", "\n}\n") + "\n}\n";
   assert.equal(bootloader.match(/set_actual_ota_seq\(bs, index\);\s*load_image\(&image_data\);/g)?.length, 2,
     "SDK must initialize selected OTA metadata before both normal and fallback image entry paths");
+  const signatures = await readFile(resolve(process.env.IDF_PATH,
+    "components/bootloader_support/src/secure_boot_v2/secure_boot_signatures_app.c"), "utf8");
+  signatureFixture = "#define UPDATE_TEST_SDK_SIGNATURE 1\n" + [
+    "esp_err_t esp_secure_boot_get_signature_blocks_for_running_app(bool digest_public_keys, esp_image_sig_public_key_digests_t *public_key_digests)",
+    "static esp_err_t get_secure_boot_key_digests(esp_image_sig_public_key_digests_t *public_key_digests)",
+    "esp_err_t esp_secure_boot_verify_sbv2_signature_block(const ets_secure_boot_signature_t *sig_block, const uint8_t *image_digest, uint8_t *verified_digest)",
+  ].map(anchor => section(signatures, anchor, "\n}\n") + "\n}\n").join("");
 }
 await writeFile(".cache/tests/sdk_bootloader.inc", bootloaderFixture);
+await writeFile(".cache/tests/sdk_signature_verifier.inc", signatureFixture);
 await writeFile(".cache/tests/network_observer.inc",
   section(network, "network_control_status_t network_control_status(uint32_t generation)", "\nvoid network_management_touch") +
   section(network, "bool network_control_begin(uint32_t local_address, uint32_t generation)", "\nstatic bool recovery_held"));
@@ -121,5 +130,5 @@ for (const name of selected) {
 }
 console.log(`PASS: ${selected.length} native suite(s) executed${process.platform === "win32" ? " (Windows, without sanitizers)" : " with ASan/UBSan"}.`);
 if (skippedSdkBootloader) {
-  console.warn("SKIP: 1 SDK erased-otadata first-boot check (IDF_PATH unset). Run from an activated ESP-IDF terminal for this coverage.");
+  console.warn("SKIP: SDK erased-otadata first-boot and running-image trust-key checks (IDF_PATH unset). Run from an activated ESP-IDF terminal for this coverage.");
 }

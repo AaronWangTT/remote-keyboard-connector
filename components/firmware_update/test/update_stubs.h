@@ -16,6 +16,11 @@
 #define ESP_ERR_NO_MEM 5
 #define ESP_ERR_INVALID_VERSION 6
 #define ESP_ERR_NOT_FOUND 7
+#define ESP_ERR_IMAGE_INVALID 8
+#define ESP_SECURE_BOOT_DIGEST_LEN 32
+#define ESP_SECURE_BOOT_KEY_DIGEST_LEN 32
+#define ESP_SECURE_BOOT_KEY_DIGEST_SHA_256_LEN 32
+#define SECURE_BOOT_NUM_BLOCKS 3
 #define ESP_PARTITION_TYPE_APP 0
 #define ESP_PARTITION_TYPE_DATA 1
 #define ESP_PARTITION_SUBTYPE_DATA_NVS 2
@@ -41,6 +46,7 @@
 #define RWDT_HAL_CONTEXT_DEFAULT() {0}
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGD(...) ((void)0)
+#define ESP_LOGV(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
 
 typedef int esp_err_t;
@@ -67,6 +73,12 @@ typedef struct { uint32_t offset; size_t size; } esp_partition_pos_t;
 typedef struct { uint32_t ota_seq; uint8_t seq_label[20]; uint32_t ota_state; uint32_t crc; } esp_ota_select_entry_t;
 typedef struct { esp_partition_pos_t ota_info; esp_partition_pos_t factory; unsigned app_count; } bootloader_state_t;
 typedef struct { size_t image_len; } esp_image_metadata_t;
+typedef struct { uint8_t key[32]; bool valid; } ets_secure_boot_sig_block_t;
+typedef struct { ets_secure_boot_sig_block_t block[3]; } ets_secure_boot_signature_t;
+typedef struct { uint8_t key_digests[3][32]; unsigned num_digests; } esp_image_sig_public_key_digests_t;
+typedef struct { const uint8_t *key_digests[3]; } esp_secure_boot_key_digests_t;
+typedef uint8_t *bootloader_sha256_handle_t;
+esp_err_t esp_secure_boot_verify_sbv2_signature_block(const ets_secure_boot_signature_t *signature, const uint8_t *digest, uint8_t *verified);
 esp_err_t esp_image_verify(int mode, const esp_partition_pos_t *position, esp_image_metadata_t *metadata);
 
 void test_update_enter(portMUX_TYPE *mutex);

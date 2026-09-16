@@ -304,6 +304,14 @@ only by the bundle being verified. Record the expected and observed fingerprints
 in the private installation report so the bootstrap establishes the key that later
 OTA verification derives from the running application.
 
+In the pinned device SDK, `esp_ota_end()` calls image verification, which calls
+`esp_secure_boot_verify_sbv2_signature_block()`. With hardware Secure Boot off,
+that verifier reads the running application's key digest and compares it with
+the candidate signature block before RSA verification. The native SDK fixture
+executes this trust lookup and comparison with mocked crypto/storage boundaries;
+wrong or missing running-image trust cannot stage an update. Host-side bootstrap
+verification still needs its separate explicit embedded-key check described above.
+
 Keep the private signing key outside Git, public artifacts, the device, and
 ordinary PR jobs. Plan its backup and custody before distributing the first
 signed baseline. Multi-key rotation is not assumed to work by appending
@@ -410,8 +418,9 @@ record as `ESP_OTA_IMG_VALID` before entering the application. Missing or unknow
 state after bootloader handoff remains an error, not permission for the updater
 to assume a valid image. The native SDK-backed test exercises the actual
 bootloader selection/initialization functions with mocked storage; CI runs it
-with `IDF_PATH` set. The portable native runner explicitly reports this one
-check as skipped when `IDF_PATH` is unset, rather than claiming SDK coverage.
+with `IDF_PATH` set. The portable native runner explicitly reports the SDK
+first-boot and running-key checks as skipped when `IDF_PATH` is unset, rather
+than claiming SDK coverage.
 This does not replace physical first-install acceptance.
 
 Enable `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` in the wired baseline. On a boot
@@ -439,7 +448,9 @@ without USB enumeration and reject stale or invalid publication.
 Commit `CONFIG_BOOTLOADER_WDT_ENABLE=y` and
 `CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE=y` for the OTA profile so the RTC
 watchdog remains armed from the bootloader into earliest application startup.
-The current `CONFIG_BOOTLOADER_WDT_TIME_MS` is 60,000 ms. Keep that watchdog
+The current `CONFIG_BOOTLOADER_WDT_TIME_MS` is 60,000 ms, and packaging rejects
+missing or different values before loading the signing key or writing artifacts.
+Keep that watchdog
 armed without feeding it during the bounded 45-second validation window and
 do not disable it before the image is confirmed. An application timer may coordinate a responsive
 failure path, but it cannot replace this watchdog because stopped startup or a
@@ -589,7 +600,7 @@ component; no separate migration utility is introduced.
    navigation to or from the keyboard/network settings UI. Lost responses are
    resolved through status without repeating activation or keyboard control.
 - Local validation includes 12 ASan/UBSan native suites, 25 keyboard-model tests,
-   65 SDK-backed installer/artifact tests, and Chromium/WebKit browser/API tests.
+   66 SDK-backed installer/artifact tests, and Chromium/WebKit browser/API tests.
    The native harness exercises the actual updater with mocked SDK boundaries;
    the browser preview simulates signature and reboot outcomes. Real signature
    verification is exercised separately with Espressif's SDK. Phone and desktop

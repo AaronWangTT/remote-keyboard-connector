@@ -713,7 +713,8 @@ class OtaArtifactTests(unittest.TestCase):
                          "SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT", "SECURE_BOOT_BUILD_SIGNED_BINARIES",
                          "BOOTLOADER_APP_ROLLBACK_ENABLE", "BOOTLOADER_WDT_ENABLE", "BOOTLOADER_WDT_DISABLE_IN_USER_CODE",
                          "ESP_PHY_CALIBRATION_AND_DATA_STORAGE", "KEYBOARD_HTTP_DEVELOPMENT")}
-        configuration.update(ESPTOOLPY_FLASHSIZE="16MB", SECURE_BOOT_SIGNING_KEY=str(self.key_path))
+        configuration.update(ESPTOOLPY_FLASHSIZE="16MB", SECURE_BOOT_SIGNING_KEY=str(self.key_path),
+                     BOOTLOADER_WDT_TIME_MS=60000)
         (self.build / "config").mkdir()
         (self.build / "config/sdkconfig.json").write_text(json.dumps(configuration))
         self.firmware = build_artifacts(self.build, self.sdk, self.root)
@@ -841,6 +842,22 @@ class OtaArtifactTests(unittest.TestCase):
             with self.subTest(flag=flag), patch("ota_artifacts.serialization.load_pem_private_key") as load_key:
                 config_path.write_text(json.dumps({**original, flag: True}))
                 with self.assertRaisesRegex(ValueError, "Unsupported OTA hardware security"):
+                    build_artifacts(self.build, self.sdk, self.root)
+                load_key.assert_not_called()
+                self.assertEqual(before, {name: (self.build / name).read_bytes() for name in before})
+
+    def test_packaging_rejects_unvalidated_watchdog_timeout_before_key_access(self):
+        config_path = self.build / "config/sdkconfig.json"
+        original = json.loads(config_path.read_text())
+        before = {name: (self.build / name).read_bytes() for name in (
+            "firmware-manifest.json", "firmware-manifest.sig", "firmware-install.zip", "firmware-ota.bin")}
+        for timeout in (None, 0, 1000, 45000, 59999, 60001, "60000", 60000.0, True):
+            with self.subTest(timeout=timeout), patch("ota_artifacts.serialization.load_pem_private_key") as load_key:
+                changed = {**original, "BOOTLOADER_WDT_TIME_MS": timeout}
+                if timeout is None:
+                    del changed["BOOTLOADER_WDT_TIME_MS"]
+                config_path.write_text(json.dumps(changed))
+                with self.assertRaisesRegex(ValueError, "watchdog.*60000 ms"):
                     build_artifacts(self.build, self.sdk, self.root)
                 load_key.assert_not_called()
                 self.assertEqual(before, {name: (self.build / name).read_bytes() for name in before})
