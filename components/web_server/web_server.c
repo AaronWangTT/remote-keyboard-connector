@@ -297,8 +297,13 @@ static void expire_control(void *argument)
     (void)argument;
     int64_t now = esp_timer_get_time();
     firmware_update_tick();
-    if (update_owner != NULL && !access_session_valid(update_owner, update_owner_generation, now, false)) {
-        firmware_update_cancel(firmware_update_status().policy.job_id);
+    firmware_update_status_t update = firmware_update_status();
+    if (!update.busy) {
+        update_owner = NULL;
+        update_owner_generation = 0;
+        update_owner_address = 0;
+    } else if (update_owner != NULL && !access_session_current(update_owner, update_owner_generation, now)) {
+        firmware_update_cancel(update.policy.job_id);
     }
     if (pending_owner != NULL && (now >= pending_until || pending_usb_generation != usb_keyboard_status().generation ||
         !access_session_valid(pending_owner, pending_generation, now, false))) {

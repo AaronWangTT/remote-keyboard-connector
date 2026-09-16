@@ -32,7 +32,7 @@ const suites = {
   board_unsupported: { ...boardDriver, flags: ["-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1"] },
   runtime_status: {
     includes: [...boardDriver.includes, ".cache/tests", "components/web_server", "components/web_server/include",
-      "components/network", "components/network/include", "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON"],
+      "components/network", "components/network/include", "components/firmware_update/include", "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/web_server/access_control.c",
       "components/board/board_status_logic.c", "components/board/test/runtime_status_test.c"],
     flags: ["-DCJSON_NESTING_LIMIT=4"], linkFlags: ["-lm"] },
@@ -105,6 +105,11 @@ await writeFile(".cache/tests/input_client.inc",
   section(web, "typedef struct {\n    int socket;", "\nstatic input_client_t *active_client;"));
 await writeFile(".cache/tests/web_observer.inc",
   section(web, "web_server_status_t web_server_status(void)", "\nstatic esp_err_t problem"));
+await writeFile(".cache/tests/update_owner_expiry.inc",
+  `static void expire_update_owner_for_test(int64_t now)\n{\n${section(
+    section(web, "static void expire_control(void *argument)", "\nstatic void control_tick"),
+    "    firmware_update_tick();", "\n    if (pending_owner != NULL")
+  }\n}\n`);
 await writeFile(".cache/tests/compile_commands.json", `${JSON.stringify(compilationDatabase, null, 2)}\n`);
 for (const name of selected) {
   assert.ok(Object.hasOwn(suites, name), `Unknown native suite: ${name}`);

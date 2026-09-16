@@ -1,6 +1,7 @@
 #include "idf_stubs.h"
 #include "access_control.h"
 #include "board_status_logic.h"
+#include "firmware_update.h"
 #include "network.h"
 #include "network_state.h"
 #include "usb_keyboard.h"
@@ -171,6 +172,72 @@ int httpd_ws_get_fd_info(httpd_handle_t handle, int socket)
 }
 
 #include "web_observer.inc"
+
+static access_session_t *update_owner;
+static uint32_t update_owner_generation;
+static uint32_t update_owner_address;
+static firmware_update_status_t test_update_status;
+static unsigned cancelled_updates;
+
+void firmware_update_tick(void) {}
+firmware_update_status_t firmware_update_status(void) { return test_update_status; }
+bool firmware_update_cancel(uint32_t job_id)
+{
+    assert(job_id == test_update_status.policy.job_id);
+    cancelled_updates++;
+    return test_update_status.busy;
+}
+
+#include "update_owner_expiry.inc"
+
+static void test_update_owner_lifecycle(void)
+{
+    const char *token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    for (unsigned expired = 0; expired < 2; expired++) {
+        access_control_t control = {0};
+        update_owner = access_session_create(&control, token, token, now_us);
+        assert(update_owner != NULL);
+        update_owner_generation = update_owner->generation;
+        update_owner_address = 1;
+        test_update_status = (firmware_update_status_t){.policy = {.job_id = 7,
+            .phase = expired ? UPDATE_FAILED : UPDATE_CANCELLED}};
+        int64_t created_at = now_us + 1;
+        if (expired) created_at += ACCESS_IDLE_US;
+        else access_session_revoke(update_owner);
+        access_session_t *renewed = access_session_create(&control, token, token, created_at);
+        assert(renewed == update_owner && renewed->generation != update_owner_generation);
+        access_session_t before = *renewed;
+        assert(!access_session_valid(update_owner, update_owner_generation, created_at, false));
+        assert(memcmp(renewed, &before, sizeof(before)) == 0);
+        cancelled_updates = 0;
+        expire_update_owner_for_test(created_at);
+        assert(update_owner == NULL && update_owner_generation == 0 && update_owner_address == 0);
+        assert(cancelled_updates == 0 && memcmp(renewed, &before, sizeof(before)) == 0);
+    }
+
+    access_control_t control = {0};
+    update_owner = access_session_create(&control, token, token, now_us);
+    assert(update_owner != NULL);
+    update_owner_generation = update_owner->generation;
+    update_owner_address = 2;
+    test_update_status = (firmware_update_status_t){.busy = true, .policy = {.job_id = 8, .phase = UPDATE_RECEIVING}};
+    access_session_t before = *update_owner;
+    cancelled_updates = 0;
+    expire_update_owner_for_test(now_us);
+    assert(cancelled_updates == 0 && update_owner_generation == before.generation);
+    expire_update_owner_for_test(now_us + ACCESS_IDLE_US);
+    assert(cancelled_updates == 1 && memcmp(update_owner, &before, sizeof(before)) == 0);
+    access_session_revoke(update_owner);
+    access_session_t *renewed = access_session_create(&control, token, token, now_us + 1);
+    assert(renewed == update_owner && renewed->generation != update_owner_generation);
+    before = *renewed;
+    expire_update_owner_for_test(now_us + 1);
+    assert(cancelled_updates == 2 && memcmp(renewed, &before, sizeof(before)) == 0);
+    test_update_status.busy = false;
+    test_update_status.policy.phase = UPDATE_CANCELLED;
+    expire_update_owner_for_test(now_us + 1);
+    assert(update_owner == NULL && cancelled_updates == 2);
+}
 
 static void reset_network(void)
 {
@@ -413,6 +480,7 @@ static void test_http_observation(void)
 
 int main(void)
 {
+    test_update_owner_lifecycle();
     test_network_observation();
     test_http_observation();
     puts("PASS: AP-only capability, reservations, HTTP-owner snapshots, USB races, expiry, bounded queues and stale status");
