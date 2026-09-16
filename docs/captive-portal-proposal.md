@@ -101,6 +101,38 @@ isolation still require controlled and physical tests. The current build does
 not enable PSRAM; this increment must not require it unless measurements lead to
 a separately reviewed board-profile change.
 
+## Related Work And Lessons
+
+Research on 2026-09-16 found substantial prior art for the routing data path but
+no maintained reference that demonstrates a reliable, generic upstream captive-
+portal workflow with this product's security boundaries:
+
+| Reference | What it demonstrates | What it does not establish |
+| --- | --- | --- |
+| [ESP-IDF SoftAP+STA example](https://github.com/espressif/esp-idf/tree/master/examples/wifi/softap_sta) | Official ESP32-S3 AP+STA support, station default routing, public `esp_netif_napt_enable()`, and propagation of station DNS through the AP DHCP offer. | Portal detection, browser handoff, reconnect behavior, or service isolation. |
+| [ESP-IoT-Bridge Wi-Fi Router](https://github.com/espressif/esp-iot-bridge/tree/master/examples/wifi_router) | A maintained Espressif component and ESP32-S3 example for SoftAP-to-station NAPT, DHCP/DNS updates, subnet-conflict handling, and web/BLE provisioning. | Explicit open-network portal login, portal-state reporting, or AP-only exposure of a USB-control service. |
+| [ESP32 NAT Router](https://github.com/martin-ger/esp32_nat_router) | A mature AP-to-STA router with NAPT, upstream DNS propagation, reconnect handling, firewall hooks, and broad deployment history. Its maintainer states in [issue #79](https://github.com/martin-ger/esp32_nat_router/issues/79) that the first downstream client should receive an upstream portal. | A universal success claim: [issue #73](https://github.com/martin-ger/esp32_nat_router/issues/73) reports that the portal did not appear through the ESP32 router even though the same scenario worked for that user with the ESP8266 predecessor. |
+| [ESP32 NAT Router Extended](https://github.com/dchristl/esp32_nat_router_extended) | Open upstream selection using a blank station password, persistent AP+STA NAPT, upstream DNS propagation, and public-Wi-Fi-oriented operation. | Its documented captive portal primarily redirects to the router's own configuration page; that is different from passing through an upstream portal. |
+| [ESP8266 Wi-Fi Repeater](https://github.com/martin-ger/esp_wifi_repeater) | Open upstream networks, NAPT, and upstream-provided DNS. The reporter in ESP32 NAT Router issue #73 says real portal pass-through worked with this predecessor. | ESP32-S3 or ESP-IDF 6.1 behavior; the portal result is an anecdotal report rather than a compatibility matrix. |
+| [Community Wi-Fi Repeater](https://github.com/benjaminchazelle/Community-WiFi-repeater) | An explicit attempt to join FreeWifi and SFR/FON networks, probe Firefox's portal-detection endpoint, and parse the provider redirect. | A finished authentication implementation: the provider-specific authentication states remain incomplete, and the project has no current maintenance evidence. |
+
+These references make the basic NAPT/DHCP/DNS path low architectural risk, but
+they disprove the stronger assumption that enabling NAPT automatically produces
+a dependable portal popup. Client lease timing, cached DNS configuration, OS
+connectivity-check behavior, portal allowlists, HTTPS/HSTS, and the gateway's
+authorization model can each change the result. A manual full-browser entry
+point must remain available even when the operating system does not open its
+portal assistant.
+
+Use the public ESP-IDF 6.1 `esp_netif` APIs in the existing network component,
+with ESP-IoT-Bridge and the official example as implementation references. Do
+not import a complete router firmware or copy older private
+`ip_napt_enable()`-based integration into this product. The other projects have
+different persistence, credential-logging, local-service, firewall, update, and
+recovery contracts and therefore provide test ideas rather than product safety
+evidence. No source reuse is proposed; any later reuse requires a separate
+license and security review.
+
 ## Selected Architecture
 
 ```mermaid
@@ -411,6 +443,14 @@ Enable the pinned ESP-IDF forwarding/NAPT configuration, retain the protected
 device AP, advertise the lab DHCP resolver, and route one test client. Prove
 HTTP redirect, HTTPS portal assets, DNS UDP/TCP, and post-login access without
 copying portal content.
+
+Exercise both manual navigation to a known plain-HTTP trigger and the supported
+operating systems' connectivity-check flow. The manual route is required; an
+automatic portal popup is an optional convenience. Repeat the test when the AP
+client obtains its lease before station DNS is ready and after it is ready, then
+compare direct upstream-DNS advertisement with the bounded local forwarder. This
+must reproduce or explain the failure class reported in ESP32 NAT Router issue
+#73 before selecting the release DNS design.
 
 Capture both interfaces and verify that upstream traffic uses the board station
 MAC/IP, local keyboard traffic is absent upstream, and unsolicited station-side
