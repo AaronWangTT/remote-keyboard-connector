@@ -172,8 +172,16 @@ but it is not a guaranteed autocorrection undo and the page does not claim one.
 Both controls clear held input and one-shot Shift before their host action.
 
 Tap Shift for the next chord, hold for simultaneous typing, or double-tap for
-Caps Lock. Caps state comes from USB host LED feedback, not a local guess. The
-release button, focus loss, cancellation, disconnect, and safety deadlines clear
+Caps Lock. With Host set to Win, short on-screen Shift taps do not send a
+standalone Shift: the modifier is sent with typing keys, avoiding the Chinese
+IME mode toggle caused by a bare Shift tap. To request an IME mode toggle,
+hold Shift alone for at least one second and release it. This sends one Left
+Shift tap and clears the one-shot latch. Other input during the hold or
+cancellation suppresses that gesture. The IME must have Shift mode switching
+enabled; the page cannot observe its mode. iOS and physical Shift are unchanged.
+
+Caps state comes from USB host LED feedback, not a local guess. The release
+button, focus loss, cancellation, disconnect, and safety deadlines clear
 input. Reconnection never replays a hold, and page changes release hidden keys.
 Host layout, Caps Lock, and auto-repeat determine the actual text produced.
 

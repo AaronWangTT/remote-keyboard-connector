@@ -510,7 +510,7 @@ surface.addEventListener("pointerdown", event => {
   if (key.action === "page") { switchPage(key.page); return; }
   if (key.action === "globe" || key.action === "cancel") { activateCommand(key.action); return; }
   try { surface.setPointerCapture(event.pointerId); } catch { disconnect(); return; }
-  changeInput(() => keyboard.press(`pointer:${event.pointerId}`, key, performance.now()));
+  changeInput(() => keyboard.press(`pointer:${event.pointerId}`, key, performance.now(), hostProfile));
 });
 
 surface.addEventListener("pointerup", event => {
@@ -535,7 +535,7 @@ surface.addEventListener("click", event => {
   surface.focus({ preventScroll: true });
   if (key.action === "page") { switchPage(key.page); return; }
   if (key.action === "globe" || key.action === "cancel") { activateCommand(key.action); return; }
-  changeInput(() => keyboard.press("accessible", key, performance.now()));
+  changeInput(() => keyboard.press("accessible", key, performance.now(), hostProfile));
   changeInput(() => keyboard.release("accessible", performance.now()));
 });
 

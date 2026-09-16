@@ -940,6 +940,86 @@ test("iPhone Shift, Caps feedback, symbols and typing controls send the expected
   await expect.poll(report).toEqual(neutral);
 });
 
+for (const browserType of [chromium, webkit]) {
+  test(`${browserType.name()} Windows Shift separates capitalization from the IME hold gesture`, { timeout: 30000 }, async context => {
+    const url = await startPreview(context);
+    const browser = await browserType.launch(browserType === webkit ?
+      { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+    context.after(() => browser.close());
+    const page = await browser.newPage({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+    const errors = [];
+    const states = [];
+    page.on("pageerror", error => errors.push(error.message));
+    page.on("websocket", socket => socket.on("framesent", frame => {
+      const message = JSON.parse(String(frame.payload));
+      if (message.type === "state") states.push({ modifiers: message.modifiers, keys: message.keys });
+    }));
+    const counters = async () => (await fetch(new URL("/__test__/input", url))).json();
+    const neutral = { modifiers: 0, keys: [] };
+    const expectReports = async (activate, expected) => {
+      const start = states.length;
+      await activate();
+      await expect.poll(() => states.slice(start)).toEqual(expected);
+      await expect.poll(counters).toMatchObject({ report: neutral, pressed: false });
+    };
+    await page.goto(url);
+    await page.bringToFront();
+    await signIn(page);
+    await page.getByRole("radio", { name: "Win", exact: true }).tap();
+    const shift = page.getByRole("button", { name: "Shift", exact: true });
+    const letter = page.getByRole("button", { name: "A", exact: true });
+
+    for (const activate of [() => shift.tap(), () => shift.evaluate(button => button.click())]) {
+      await expectReports(async () => {
+        const start = states.length;
+        await activate();
+        await expect(shift).toHaveAttribute("data-shift", "latched");
+        assert.equal(states.length, start);
+        await letter.tap();
+      }, [{ modifiers: 2, keys: [4] }, neutral]);
+      await expect(shift).toHaveAttribute("data-shift", "off");
+    }
+
+    await expectReports(() => shift.click({ delay: 1100 }), [{ modifiers: 2, keys: [] }, neutral]);
+    await expect(shift).toHaveAttribute("data-shift", "off");
+    await expectReports(() => letter.tap(), [{ modifiers: 0, keys: [4] }, neutral]);
+
+    await expectReports(async () => {
+      await shift.hover();
+      await page.mouse.down();
+      await expect(letter).toHaveText("A");
+      await page.keyboard.press("a", { delay: 1100 });
+      await page.mouse.up();
+    }, [{ modifiers: 2, keys: [4] }, neutral]);
+    await expect(shift).toHaveAttribute("data-shift", "off");
+
+    await expectReports(() => shift.dblclick({ delay: 60 }), [{ modifiers: 0, keys: [57] }, neutral]);
+    await expect(page.locator("#caps-status")).toHaveText("Caps on");
+    await expectReports(() => shift.tap(), [{ modifiers: 0, keys: [57] }, neutral]);
+    await expect(page.locator("#caps-status")).toHaveText("Caps off");
+
+    await page.locator("#keyboard").focus();
+    await expectReports(() => page.keyboard.press("ShiftLeft"), [{ modifiers: 2, keys: [] }, neutral]);
+    await page.getByRole("radio", { name: "iOS", exact: true }).tap();
+    await expectReports(() => shift.tap(), [{ modifiers: 2, keys: [] }, neutral]);
+    await expect(shift).toHaveAttribute("data-shift", "latched");
+    await expectReports(() => letter.tap(), [{ modifiers: 2, keys: [4] }, neutral]);
+    await page.getByRole("radio", { name: "Win", exact: true }).tap();
+
+    const beforeCancel = states.length;
+    await shift.hover();
+    await page.mouse.down();
+    const heldSince = Date.now();
+    await expect.poll(() => Date.now() - heldSince).toBeGreaterThanOrEqual(1000);
+    await shift.dispatchEvent("pointercancel", { pointerId: 1, pointerType: "mouse" });
+    await page.mouse.up();
+    await expect(letter).toBeDisabled();
+    await expect.poll(counters).toMatchObject({ report: neutral, pressed: false });
+    assert.equal(states.slice(beforeCancel).some(state => state.modifiers === 2 && state.keys.length === 0), false);
+    assert.deepEqual(errors, []);
+  });
+}
+
 test("Globe and Cancel preserve profiles and send isolated report sequences", { timeout: 20000 }, async context => {
   const url = await startPreview(context);
   const browser = await chromium.launch();

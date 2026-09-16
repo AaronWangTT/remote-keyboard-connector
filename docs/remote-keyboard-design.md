@@ -519,8 +519,10 @@ be updated when the board moves to a different host type. USB-enumeration
 fingerprinting is heuristic and is not part of this design.
 
 The code cannot determine the host's current input language, installed language
-list, or active IME from keyboard HID. Host type selects only the shortcut to
-send, not a language. Keep Globe stateless: do not track an assumed language,
+list, or active IME from keyboard HID. For Globe, host type selects the shortcut
+to send, not a language. The Windows profile also defines the on-screen Shift
+gestures in [Typing Behavior](keyboard-enhancement-plan.md#typing-behavior).
+Keep Globe stateless: do not track an assumed language,
 toggle an English/Chinese label, count taps to predict the host's input source,
 or change the visible key map after a switch request. The host may change its
 input source independently, and its shortcuts may be customized or unavailable.
