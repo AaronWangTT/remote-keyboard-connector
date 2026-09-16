@@ -264,6 +264,45 @@ Commit portal-router mode only after the owner explicitly accepts the selected
 network and the AP recovery path remains available. Switching modes or forgetting
 the profile uses the existing guarded storage pattern and releases active input.
 
+### Bounded Scan And Connect Contract
+
+Extend the existing network API without changing the Personal STA `connect`
+contract. Keep `NETWORK_SCAN_LIMIT = 12` and `NETWORK_REQUEST_MAX = 1024` bytes.
+Each scan entry retains display `ssid`, `ssid_hex`, `rssi`, and `supported`, and
+adds these explicit fields:
+
+| Field | Wire contract |
+| --- | --- |
+| `ssid` | Display-only text, at most 128 bytes; never an association key. |
+| `ssid_hex` | Canonical lowercase hex for up to 32 SSID bytes, at most 64 characters. Empty hidden-network results are not connectable until directed discovery supplies the exact SSID bytes. |
+| `bssid_hex` | Exactly 12 lowercase hex characters encoding six bytes; reject zero, broadcast, and multicast addresses. |
+| `security` | Observed security classification: `open`, `wpa2_personal`, `wpa_wpa2_personal`, `enterprise`, `wep`, or `other`. All unrecognized/remaining SDK auth modes map to `other`, never `open`. |
+| `supported` | Preserve the legacy Personal STA compatibility boolean; do not use it as authorization or as the portal-mode selector. Only `security: "open"` is eligible for the explicit portal action. |
+
+Key scan entries and browser selection by SSID bytes plus BSSID, not display text
+or SSID alone; duplicate SSIDs with different BSSIDs remain distinct within the
+12-entry limit. The authenticated network command accepts exactly these four
+string fields for the new action:
+
+```json
+{"action":"portal_connect","ssid_hex":"4775657374","bssid_hex":"02aabbccddee","security":"open"}
+```
+
+Require 1-32 decoded non-NUL SSID bytes under the existing SSID policy, the exact
+six-byte BSSID, and `security: "open"`. Reject missing, duplicate, unknown,
+incorrectly typed, malformed, or oversized fields, including any `password`
+field, even empty, and any alternative plain `ssid` field. Retain existing
+UTF-8/NUL, owner-session, Origin/CSRF, and request-size checks. Legacy `connect`
+continues to require its protected-network password and never falls through to
+`portal_connect` because that password is absent.
+
+Carry the selected BSSID and observed security from the driver scan record through
+`network_scan_item_t`, HTTP JSON, the browser's selected record, request parsing
+into `network_request_t`, the candidate/profile, and the station driver
+configuration. Every association result must match that confirmed candidate's
+BSSID/SSID/security and current job generation before subsequent setup is accepted.
+No layer may discard the BSSID and reconstruct selection from SSID alone.
+
 ## NAPT Lifecycle
 
 NAPT belongs to portal-router runtime state, not merely to AP+STA mode. Use the
@@ -284,9 +323,13 @@ After the station receives a valid IPv4 lease:
 5. Verify the AP-client DNS path through the now-enabled data path, then mark
   DNS and routing ready. Forwarding during this validation is already authorized;
   `routing_ready` must not be a prerequisite for the DNS test itself.
+   A timeout, unusable resolver/response, or other DNS-validation error is a setup
+   failure: run the block/revoke/disable/flush and DNS-cancellation sequence below
+   before reporting `limited` with `dns_unavailable`. Merely leaving
+   `routing_ready` false is not cleanup and must not leave authorized transit open.
 
 On station address loss, station or AP-client disconnect, mode change, AP
-renumbering, authorization loss, or routing failure:
+renumbering, authorization loss, DNS-validation failure, or routing failure:
 
 1. Block both forwarding directions and mark transit unavailable immediately.
 2. Revoke the transit authorization and disable NAPT. Clear all translations
@@ -460,8 +503,12 @@ identity, or disable an otherwise healthy local keyboard path.
 This device can inject keyboard input into a USB host, so enabling routing must
 not weaken the existing control boundary.
 
-- Require an authenticated owner session and explicit confirmation before
-  joining an open network or enabling portal-router mode.
+- Require a fresh authenticated owner session and explicit confirmation for
+  initial open-network selection, a new/replacement BSSID profile, or enabling
+  portal-router mode. Prior confirmation of a committed, BSSID-pinned profile
+  permits association to that same profile at reboot or an AP-idle retry without
+  an owner present. This authorizes upstream association only: start client
+  transit blocked and require the fresh owner-session grant below before routing.
 - Treat the AP credential as permission to associate, not permission to route.
   Require an explicit authenticated **Enable browser access** action on the AP
   path, bound to the requesting client's current Wi-Fi association generation,
@@ -546,6 +593,7 @@ responses.
 | Upstream recovery while an AP controller or setup window is active | Defer firmware-initiated scans/reassociation/channel changes until the AP-idle guard allows them or the owner confirms an explicit disruptive retry. Release/revoke before retry and require fresh grants after any AP reconnect. |
 | AP and station subnets overlap | Keep routing disabled and use the existing confirmed AP-renumbering workflow before retrying. |
 | No usable IPv4 station DNS server, including IPv6-only DNS | Report DNS unavailable and keep transit disabled; do not silently substitute a public resolver. |
+| AP-client DNS validation times out or fails after NAPT enablement | Block both directions, revoke the grant, disable and flush NAPT, cancel DNS transactions, and report `limited`/`dns_unavailable`. Readiness flags alone are not cleanup; fresh authorization and successful setup are required before restoring transit. |
 | DHCP DNS update does not reach client | Ask for one bounded reconnect in the proof of concept; require the local forwarder before release if the supported-client gate still fails. |
 | NAPT enable or ingress-policy failure | Mark `routing_failed`, disable forwarding, and keep local AP operation. |
 | Portal redirect or sign-in fails | Keep NAPT and the AP available for retry; do not erase the SSID or classify every failure as bad credentials. |
@@ -594,6 +642,10 @@ whole committed record. Test absent/malformed BSSIDs, duplicate SSIDs with
 different BSSIDs, an association mismatch, hidden-network discovery, and a changed
 BSSID after reconnect/reboot. No unconfirmed replacement may reach DHCP/probe/
 routing setup or replace the saved record; cancellation preserves the old profile.
+Test the bounded scan/JSON/parser contract end to end, including same-SSID records
+with different BSSIDs, the explicit open-security action, malformed/duplicate/
+missing BSSID fields, passwords on `portal_connect`, unchanged Personal STA
+requests, and late association results from a superseded job.
 
 ### 3. Routing, DNS, And Isolation
 
@@ -604,7 +656,11 @@ mode in a release UI.
 
 Gate: transition/failure tests prove DNS configuration precedes authorized NAPT
 enablement and DNS verification follows it. Test IPv6-only/missing resolvers,
-every partial failure, and verified translation/DNS cleanup. Packet tests prove
+every partial failure, and verified translation/DNS cleanup. In particular, inject
+DNS validation timeout and unusable responses after authorized NAPT enablement;
+assert both forwarding directions close, the grant is revoked, translations and
+DNS transactions are cleared, and no late validation can reopen the path.
+Packet tests prove
 bidirectional default-deny behavior in other modes and during candidate testing,
 established-only return traffic, no STA local-service exposure, and no port
 mapping. Disconnect the sole AP client, give a replacement the same IP, inject
@@ -649,7 +705,7 @@ small compatibility matrix into universal support.
 
 | Layer | Minimum evidence |
 | --- | --- |
-| Native C | Profile migration/validation and BSSID binding, state transitions, NAPT/DNS configuration/verification ordering, grant/revoke generations, probe nonce/deadline/generation checks, rollback, AP-idle retry arbitration, station-IP change, and injected API/cleanup failures. |
+| Native C | Profile migration/validation and BSSID binding, bounded scan/request parsing and end-to-end BSSID preservation, state transitions, NAPT/DNS ordering and post-enable DNS failure cleanup, grant/revoke generations, probe nonce/deadline/generation checks, rollback, AP-idle retry arbitration, station-IP change, and injected API/cleanup failures. |
 | DNS | Missing/IPv6-only resolvers, upstream changes, UDP and TCP, truncation, malformed replies, timeout, transaction exhaustion, AP-only authorized binding, stale-generation cleanup, and no-query logging. |
 | Browser/API | Owner/CSRF protections, explicit transit authorization and revocation, open-network confirmation, portal states, probe freshness/expiry and always-available manual sign-in on a usable authorized path, trigger endpoint contract, current recovery addresses, idempotent recovery, no secret persistence, and keyboard-input isolation. |
 | ESP-IDF build | Required forwarding/NAPT settings enabled, port mapping disabled, no PSRAM dependency, size/headroom recorded, and release logging reviewed. |
