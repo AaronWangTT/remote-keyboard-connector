@@ -107,17 +107,20 @@ test("Windows held touch Shift has no standalone report in either release order"
   }
 });
 
-test("Windows long Shift holds toggle IME once on release without a capitalization latch", () => {
-  for (const duration of [999, 1000, 2500]) {
+test("Windows Shift duration boundaries separate capitalization from IME switching", () => {
+  for (const duration of [400, 401, 999, 1000, 2500]) {
     const keyboard = new KeyboardInput();
     assert.deepEqual(keyboard.press("shift", shift, 0, "windows"), [neutral]);
     assert.deepEqual(keyboard.release("shift", duration), duration >= 1000 ?
       [neutral, { modifiers: SHIFT_LEFT, keys: [] }, neutral] : [neutral]);
-    assert.equal(keyboard.shiftLatched, false);
-    assert.equal(keyboard.shiftActive, false);
+    assert.equal(keyboard.shiftLatched, duration <= 400);
+    assert.equal(keyboard.shiftActive, duration <= 400);
     assert.deepEqual(keyboard.release("shift", duration + 10), []);
     assert.deepEqual(keyboard.press("a", characterKey("a"), duration + 20, "windows"),
-      [{ modifiers: 0, keys: [4] }]);
+      [{ modifiers: duration <= 400 ? SHIFT_LEFT : 0, keys: [4] }]);
+    assert.equal(keyboard.shiftLatched, false);
+    assert.deepEqual(keyboard.release("a", duration + 30), [neutral]);
+    assert.equal(keyboard.shiftActive, false);
   }
   const keyboard = new KeyboardInput();
   keyboard.press("shift", shift, 0, "windows");
