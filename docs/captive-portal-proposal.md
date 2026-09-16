@@ -3,9 +3,10 @@
 Date: 2026-09-16
 Status: draft for discussion; not implemented or approved for device installation.
 
-This change adds only this proposal. It does not change firmware, network
-configuration, packaging, CI, or other documentation, and it does not authorize
-a device write. The existing [Wi-Fi implementation record](wifi-enhancement-plan.md)
+This change adds this proposal and a link in the
+[documentation index](../README.md#documentation). It does not change firmware,
+network configuration, packaging, or CI, and it does not authorize a device
+write. The existing [Wi-Fi implementation record](wifi-enhancement-plan.md)
 deliberately limits station mode to WPA2-Personal networks; this document
 proposes a separate, later increment.
 
@@ -367,11 +368,27 @@ keyboard operation. Association plus DHCP can produce these states:
 Use a rate-limited plain-HTTP probe with an exact expected status and body so a
 portal can redirect it. A build must not silently adopt a third-party tracking
 endpoint. Before release, document the endpoint owner, request contents,
-retention policy, expected response, timeout, retry rate, and behavior when the
-endpoint is unavailable. Lab and automated tests use a controlled local probe.
+retention policy, expected response, timeout, retry rate, success lifetime, and
+behavior when the endpoint is unavailable. Lab and automated tests use a controlled local probe.
 If no acceptable production endpoint is available, leave status `limited` and
 allow the owner to run the browser flow manually rather than making a false
 authorization claim.
+
+Every probe attempt sends a fresh unpredictable 128-bit nonce as an ephemeral
+query parameter with request `Cache-Control: no-cache, no-store, max-age=0`.
+Require response `Cache-Control: no-store` and an exact expected success body
+that echoes that nonce. Never reuse a nonce across retries or log/persist it.
+Accept success only once for the matching outstanding attempt, current
+station/routing generation, and documented request deadline. A missing,
+mismatched, expired, or replayed nonce yields `limited`, never `authorized`.
+Expire the advisory success after its documented bounded lifetime and invalidate
+it immediately on a routing-generation change. Plain HTTP remains untrusted;
+freshness prevents cached-success replay, not deliberate gateway impersonation
+or a gateway allowlisting only the probe destination.
+
+Keep **Open network sign-in** available whenever the owner's local transit grant
+and routing path permit it, including when the advisory state is `authorized`.
+Probe success neither grants client transit nor proves arbitrary Internet access.
 
 Do not fetch or store the redirected portal on behalf of the browser. The UI's
 **Open network sign-in** command should navigate a new full-browser page to the
@@ -562,7 +579,10 @@ handoff, reconnect, login-required/authorized/limited states, lost responses,
 mode exit, and management-field USB isolation on phone and desktop layouts.
 Cover explicit transit grants and revocation on disconnect/logout/expiry/reboot,
 the trigger URL's request/privacy contract and outage state, and recovery links
-before and after AP renumbering.
+before and after AP renumbering. Probe tests must replay an earlier cached success
+for a new nonce, return missing/mismatched nonces, and deliver late responses after
+timeout or a routing-generation change; none may enter `authorized`. Test advisory
+success expiry and continued manual sign-in availability even after probe success.
 
 ### 5. Resource And Physical Acceptance
 
@@ -580,9 +600,9 @@ small compatibility matrix into universal support.
 
 | Layer | Minimum evidence |
 | --- | --- |
-| Native C | Profile migration/validation, state transitions, NAPT/DNS configuration/verification ordering, grant/revoke generations, rollback, retry, station-IP change, and injected API/cleanup failures. |
+| Native C | Profile migration/validation, state transitions, NAPT/DNS configuration/verification ordering, grant/revoke generations, probe nonce/deadline/generation checks, rollback, retry, station-IP change, and injected API/cleanup failures. |
 | DNS | Missing/IPv6-only resolvers, upstream changes, UDP and TCP, truncation, malformed replies, timeout, transaction exhaustion, AP-only authorized binding, stale-generation cleanup, and no-query logging. |
-| Browser/API | Owner/CSRF protections, explicit transit authorization and revocation, open-network confirmation, portal states, trigger endpoint contract, current recovery addresses, idempotent recovery, no secret persistence, and keyboard-input isolation. |
+| Browser/API | Owner/CSRF protections, explicit transit authorization and revocation, open-network confirmation, portal states, probe freshness/expiry and always-available manual sign-in on a usable authorized path, trigger endpoint contract, current recovery addresses, idempotent recovery, no secret persistence, and keyboard-input isolation. |
 | ESP-IDF build | Required forwarding/NAPT settings enabled, port mapping disabled, no PSRAM dependency, size/headroom recorded, and release logging reviewed. |
 | Packet security | NAPT source identity, bidirectional default-deny in all non-routing/failed states, authorized association/lease enforcement, same-IP replacement with delayed old-client replies, established-only return traffic, no STA access to local HTTP/WebSocket/mDNS, no local control traffic upstream, and no IPv6 forwarding. |
 | Physical network | AP+STA channel changes, subnet overlap, DHCP/DNS renewal, station reconnect/address change, client reconnect, portal expiry, and reboot persistence. |
