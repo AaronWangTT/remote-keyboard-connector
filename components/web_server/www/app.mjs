@@ -1,5 +1,5 @@
 import { KeyboardInput, layouts, bottomRow, physicalKeys, utilityKeys,
-  DEFAULT_HOST_PROFILE, validHostProfile } from "./keyboard.mjs";
+  DEFAULT_HOST_PROFILE, validHostProfile, updateLocalEcho } from "./keyboard.mjs";
 
 const surface = document.querySelector("#keyboard");
 const rows = document.querySelector("#key-rows");
@@ -8,10 +8,17 @@ const usbStatus = document.querySelector("#usb-status");
 const capsStatus = document.querySelector("#caps-status");
 const keyState = document.querySelector("#key-state");
 const hostProfileToggle = document.querySelector("#host-profile");
+const localEchoToggle = document.querySelector("#local-echo-toggle");
+const localEchoWindow = document.querySelector("#local-echo-window");
+const localEchoText = document.querySelector("#local-echo-text");
 const keyboard = new KeyboardInput();
 const definitions = new Map();
 const pending = new Map();
 const hostProfileStorageKey = "keyboard.host-profile.v1";
+const localEchoStorageKey = "keyboard.local-echo.v1";
+let localEchoEnabled = false;
+let localEcho = "";
+try { localEchoEnabled = localStorage.getItem(localEchoStorageKey) === "true"; } catch {}
 let hostProfile = DEFAULT_HOST_PROFILE;
 try {
   const savedProfile = localStorage.getItem(hostProfileStorageKey);
@@ -39,6 +46,23 @@ let networkFieldsInitialized = false;
 let networkFieldsJob = 0;
 let renderedProfile = "";
 let renderedScan = "";
+
+function renderLocalEcho() {
+  surface.dataset.localEcho = String(localEchoEnabled);
+  localEchoToggle.checked = localEchoEnabled;
+  localEchoToggle.parentElement.title = localEchoEnabled ? "Hide local echo" : "Show local echo";
+  localEchoToggle.nextElementSibling.dataset.icon = localEchoEnabled ? "eye" : "eye-off";
+  localEchoWindow.hidden = !localEchoEnabled;
+  localEchoText.textContent = localEcho;
+  localEchoText.scrollTop = localEchoText.scrollHeight;
+  localEchoText.scrollLeft = localEchoText.scrollWidth;
+}
+
+function clearLocalEcho() {
+  localEcho = "";
+  for (const entry of pending.values()) entry.echo = null;
+  renderLocalEcho();
+}
 
 function notify(message = "") {
   const output = document.querySelector("#ui-message");
@@ -349,6 +373,7 @@ function disconnect() {
   keyboard.clear();
   keyboard.setCapsLock(null);
   pending.clear();
+  clearLocalEcho();
   sequence = 0;
   lastReport = JSON.stringify(keyboard.report);
   connectionStatus.textContent = account.authenticated ? "Released" : "Signed out";
@@ -396,7 +421,8 @@ function publish(reports, forceFirst = false) {
   for (const { report, serialized } of outgoing) {
     const next = ++sequence;
     if (!transmit({ v: 1, type: "state", seq: next, ...report })) return;
-    pending.set(next, performance.now());
+    pending.set(next, { sentAt: performance.now(), echo: localEchoEnabled ?
+      { previous: JSON.parse(lastReport), report, capsLock: keyboard.capsLock } : null });
     lastReport = serialized;
   }
   render();
@@ -452,7 +478,12 @@ function connect() {
     try { message = JSON.parse(event.data); } catch { disconnect(); return; }
     if (!message || message.v !== 1) { disconnect(); return; }
     if (message.type === "queued" && pending.size && message.seq === pending.keys().next().value) {
+      const echo = pending.get(message.seq).echo;
       pending.delete(message.seq);
+      if (localEchoEnabled && echo) {
+        localEcho = updateLocalEcho(localEcho, echo.previous, echo.report, echo.capsLock);
+        renderLocalEcho();
+      }
     } else if (message.type === "status" && typeof message.usb_ready === "boolean" &&
                (message.caps_lock === null || typeof message.caps_lock === "boolean")) {
       if (!message.usb_ready && ready) { disconnect(); return; }
@@ -509,7 +540,7 @@ surface.addEventListener("click", event => {
 });
 
 surface.addEventListener("keydown", event => {
-  if (event.isComposing || event.target.closest("input, textarea, select, [contenteditable]")) return;
+  if (event.isComposing || event.target.closest("input, textarea, select, [contenteditable], button:not([data-key])")) return;
   const button = event.target.closest("button[data-key]");
   if (button && (event.code === "Enter" || event.code === "Space")) {
     const key = definitions.get(button.dataset.key);
@@ -539,6 +570,17 @@ window.addEventListener("keyup", event => {
 });
 
 surface.addEventListener("focusout", event => { if (!surface.contains(event.relatedTarget)) disconnect(); });
+localEchoWindow.addEventListener("pointercancel", event => event.stopPropagation());
+localEchoToggle.addEventListener("change", () => {
+  localEchoEnabled = localEchoToggle.checked;
+  clearLocalEcho();
+  try { localStorage.setItem(localEchoStorageKey, String(localEchoEnabled)); }
+  catch { notify("Local echo preference could not be saved."); }
+});
+document.querySelector("#local-echo-clear").addEventListener("click", () => {
+  clearLocalEcho();
+  surface.focus({ preventScroll: true });
+});
 document.querySelector("#release").addEventListener("click", () => {
   disconnect();
   api("/api/v1/control/stop", "POST").catch(error => notify(errorMessage(error)));
@@ -701,7 +743,7 @@ setInterval(() => {
   if (document.hidden || !document.hasFocus() ||
       (socket.readyState === WebSocket.CONNECTING && now - connectedAt >= 3000) ||
       (socket.readyState === WebSocket.OPEN && now - lastReply >= 1000) ||
-      (pending.size && now - pending.values().next().value >= 250)) {
+      (pending.size && now - pending.values().next().value.sentAt >= 250)) {
     disconnect();
     return;
   }
@@ -710,6 +752,7 @@ setInterval(() => {
   if (socket.readyState === WebSocket.OPEN) transmit({ v: 1, type: "ping" });
 }, 250);
 
+renderLocalEcho();
 drawLayout();
 renderAccount();
 loadSession();

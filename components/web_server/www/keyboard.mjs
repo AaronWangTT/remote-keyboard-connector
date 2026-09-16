@@ -15,10 +15,12 @@ export function validHostProfile(profile) {
 
 export const physicalKeys = new Map();
 const characters = new Map();
+const usageKeys = new Map();
 
 function register(code, usage, lower, upper = lower) {
   const key = Object.freeze({ code, usage, label: lower, upper, modifiers: 0 });
   physicalKeys.set(code, key);
+  usageKeys.set(usage, key);
   if (lower.length === 1) characters.set(lower, key);
   if (upper !== lower) characters.set(upper, Object.freeze({ ...key, label: upper, modifiers: SHIFT_LEFT }));
 }
@@ -69,6 +71,22 @@ export const utilityKeys = Object.freeze([
   Object.freeze({ action: "globe", label: "Switch input source", icon: "globe" }),
   Object.freeze({ action: "cancel", label: "Cancel (Escape)", icon: "x" }),
 ]);
+
+export function updateLocalEcho(text, previous, report, capsLock) {
+  if (report.modifiers & ~(SHIFT_LEFT | SHIFT_RIGHT)) return text;
+  const shifted = (report.modifiers & (SHIFT_LEFT | SHIFT_RIGHT)) !== 0;
+  for (const usage of report.keys) {
+    if (previous.keys.includes(usage)) continue;
+    const key = usageKeys.get(usage);
+    if (key?.code === "Enter") text = "";
+    else if (key?.code === "Backspace") text = text.slice(0, -1);
+    else if (key?.label.length === 1) {
+      const uppercase = key.code.startsWith("Key") ? shifted !== (capsLock === true) : shifted;
+      text += uppercase ? key.upper : key.label;
+    }
+  }
+  return text.slice(-256);
+}
 
 export class KeyboardInput {
   constructor() {

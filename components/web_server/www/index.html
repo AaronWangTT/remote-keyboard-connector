@@ -109,7 +109,7 @@
       </section>
     <section id="keyboard" class="keyboard-surface" aria-label="Remote keyboard" tabindex="0" hidden>
         <div class="keyboard-meta">
-          <span>Key map: US ANSI</span>
+          <span class="key-map">Key map: US ANSI</span>
           <div class="host-profile-field">
             <span id="host-profile-label">Host</span>
             <div id="host-profile" class="host-profile-toggle" role="radiogroup" aria-labelledby="host-profile-label" aria-required="true">
@@ -118,7 +118,15 @@
             </div>
           </div>
           <span id="caps-status" role="status">Caps unknown</span>
+          <label class="echo-toggle tool-button neutral" title="Show local echo">
+            <input id="local-echo-toggle" type="checkbox" role="switch" aria-label="Local echo" aria-controls="local-echo-window">
+            <span class="icon" data-icon="eye-off" aria-hidden="true"></span>
+          </label>
         </div>
+      <div id="local-echo-window" class="local-echo-window" hidden>
+        <div id="local-echo-text" class="local-echo-text" role="region" aria-label="Local echo text" aria-live="off"></div>
+        <button id="local-echo-clear" class="tool-button neutral" type="button" aria-label="Clear local echo" title="Clear local echo"><span class="icon" data-icon="x" aria-hidden="true"></span></button>
+      </div>
       <div id="key-rows" data-page="letters"></div>
     </section>
     </div>

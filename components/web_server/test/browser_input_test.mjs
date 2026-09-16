@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { KeyboardInput, characterKey, physicalKeys, layouts, bottomRow,
   SHIFT_LEFT, SHIFT_RIGHT, CAPS_LOCK, DEFAULT_HOST_PROFILE, validHostProfile,
-  utilityKeys } from "../www/keyboard.mjs";
+  utilityKeys, updateLocalEcho } from "../www/keyboard.mjs";
 
 const neutral = { modifiers: 0, keys: [] };
 const shift = layouts.letters[2][0];
@@ -191,4 +191,48 @@ test("1000 letter and symbol taps preserve report pairs", () => {
     assert.deepEqual(keyboard.press("tap", key, tap * 20 + 1), []);
     assert.deepEqual(keyboard.release("tap", tap * 20 + 10), [neutral]);
   }
+});
+
+test("local echo derives every printable character from US-ANSI reports", () => {
+  for (let code = 32; code < 127; code++) {
+    const character = String.fromCharCode(code);
+    const key = characterKey(character);
+    const report = { modifiers: key.modifiers, keys: [key.usage] };
+    assert.equal(updateLocalEcho("", neutral, report, false), character);
+  }
+  assert.equal(updateLocalEcho("", neutral, { modifiers: 0, keys: [4] }, true), "A");
+  assert.equal(updateLocalEcho("", neutral, { modifiers: SHIFT_RIGHT, keys: [4] }, true), "a");
+  assert.equal(updateLocalEcho("", neutral, { modifiers: 0, keys: [30] }, true), "1");
+  assert.equal(updateLocalEcho("", neutral, { modifiers: SHIFT_LEFT, keys: [30] }, true), "!");
+  assert.equal(updateLocalEcho("", neutral, { modifiers: 0, keys: [4] }, null), "a");
+});
+
+test("local echo counts new usages only, not releases, holds or modifier changes", () => {
+  const held = { modifiers: 0, keys: [4] };
+  assert.equal(updateLocalEcho("a", held, held, false), "a");
+  assert.equal(updateLocalEcho("a", held, neutral, false), "a");
+  assert.equal(updateLocalEcho("a", held, { modifiers: SHIFT_LEFT, keys: [4] }, false), "a");
+  assert.equal(updateLocalEcho("a", held, { modifiers: SHIFT_LEFT, keys: [4, 5] }, false), "aB");
+  assert.equal(updateLocalEcho("a", neutral, held, false), "aa");
+  const keyboard = new KeyboardInput();
+  for (const action of ["globe", "cancel"]) {
+    let previous = neutral;
+    for (const report of keyboard.activateCommand(action, "ios")) {
+      assert.equal(updateLocalEcho("existing", previous, report, false), "existing");
+      previous = report;
+    }
+  }
+  assert.equal(updateLocalEcho("existing", neutral, { modifiers: 8, keys: [44] }, false), "existing");
+  assert.equal(updateLocalEcho("existing", neutral, { modifiers: 0, keys: [CAPS_LOCK] }, false), "existing");
+});
+
+test("local echo Backspace and Return edit only the bounded local tail", () => {
+  const backspace = { modifiers: 0, keys: [42] };
+  const enter = { modifiers: 0, keys: [40] };
+  assert.equal(updateLocalEcho("hello ", neutral, backspace, false), "hello");
+  assert.equal(updateLocalEcho("", neutral, backspace, false), "");
+  assert.equal(updateLocalEcho("hello", backspace, backspace, false), "hello");
+  assert.equal(updateLocalEcho("hello", neutral, enter, false), "");
+  assert.equal(updateLocalEcho("hello", enter, neutral, false), "hello");
+  assert.equal(updateLocalEcho("a".repeat(256), neutral, { modifiers: 0, keys: [5] }, false), `${"a".repeat(255)}b`);
 });

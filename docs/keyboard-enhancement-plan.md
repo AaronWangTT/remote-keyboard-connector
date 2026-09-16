@@ -185,6 +185,142 @@ outstanding states to 16, and disconnects on stalled acknowledgements or buffers
 The firmware retains its independent one-second input deadline and 250-ms report
 age limit. No authentication, controller lease, or network setup is added.
 
+## Follow-Up: Local Echo And Pointer
+
+Decision recorded 2026-09-15, after the historical keyboard increment above and
+the Wi-Fi and Globe/Cancel work. These are separate follow-up increments:
+
+| Order | Feature | Scope |
+| --- | --- | --- |
+| 1 | Passive local echo | Implemented on `feature/keyboard-local-echo`; user approved the preview layout on 2026-09-15. |
+| 2 | Relative mouse/trackpad | Document the proposal only; implementation and host validation are deferred. |
+
+### 1. Passive Local Echo
+
+The local text window is intentionally passive, not compose-and-send. Every key
+continues through the existing complete-state protocol immediately. There is no
+editable draft, Send button, paste-to-HID path, or replay of the displayed text.
+The browser alone holds the echo; the firmware still receives key reports, never
+text strings. USB descriptors, authorization, queues, deadlines, and host repeat
+remain unchanged.
+
+The window shows the browser's US-ANSI interpretation of outgoing key presses,
+not the remote document. Host layout, IME, autocorrection, focus, cursor movement,
+other input devices, and repeat settings are invisible. `queued` confirms only
+acceptance into the board's queue, not USB completion or application rendering.
+Unknown Caps Lock follows the current keycap estimate while the existing Caps
+indicator stays unknown. Globe never implies knowledge of the active language.
+
+| Action | Local echo behavior |
+| --- | --- |
+| New printable key-down | Append once after its ordered `queued` reply, using the report's effective Shift and the Caps snapshot at send time. |
+| Release, duplicate state, second source holding the same key, or physical repeat | Add nothing. Do not simulate the host's auto-repeat. |
+| Space | Append a space. |
+| Backspace | Remove the last local character, if any; no attempt to inspect the remote caret or deletion result. |
+| Return | Clear after the Return key-down is acknowledged; Return is still sent immediately through the normal key path. |
+| Shift/Caps, Globe, Cancel/Escape | Add no text; Globe's modifier+Space is not an echoed space. |
+| Clear local echo | Erase the local buffer and all pending echo updates without sending any host key. |
+| Off, disarm, connection failure, logout, settings navigation, blur, or page hiding | Erase visible text and pending echo updates. A later reply or reconnection cannot restore them. |
+| Keyboard page change or rotation | Preserve the echo, while keeping the existing release of held keys and one-shot modifiers. |
+
+Keep only the latest 256 printable ASCII characters, in memory. Simultaneous new
+usages have the deterministic order of the report; this is not a guarantee about
+host chord interpretation. Backspace at the local boundary does nothing locally,
+even if the host could delete earlier text. No input history, telemetry, console
+logging, browser storage, or firmware storage is added for text.
+
+The on/off setting is opt-in and defaults to off because the browser cannot know
+when a remote password field is focused. An eye switch beside the host controls
+enables it; turning it off also discards pending text rather than merely masking
+the display. Only the boolean preference is saved in browser local storage under
+`keyboard.local-echo.v1`. Invalid/unavailable stored values default to off; a
+storage write failure leaves the current-session switch usable. Enable only for
+non-sensitive text, especially in the existing HTTP/WS development profile.
+
+Layout approved in the local preview on 2026-09-15:
+
+- A read-only strip immediately above the keys, with two fixed-height lines in
+  portrait and ordinary desktop layouts. It follows the latest text and wraps
+  long words without expanding the keyboard or changing key sizes.
+- A 44-by-44 eye switch with an accessible `Local echo` label and Show/Hide
+  tooltip. A separate 44-by-44 clear icon acts only on this strip.
+- Short landscape viewports use a single-line, horizontally scrolling strip
+  alongside the compact host/key-map/Caps metadata. The keyboard remains below,
+  including the existing inline Globe and Cancel controls.
+- No editable textarea, native mobile keyboard, automatic text announcement, or
+  caret suggesting a compose field. Scrolling the readout does not disarm input;
+  pointer cancellation for captured keyboard holds still releases normally.
+- With echo off, remove the strip and retain the switch. Account and network
+  forms remain isolated from remote keyboard capture.
+
+Software gates: focused model tests; real Chromium/WebKit input and settings
+checks; delayed/dropped acknowledgements, clearing and lifecycle tests; all three
+keyboard pages with echo both on and off at the existing viewport/safe-area
+matrix; inspected screenshots; and an ESP-IDF build recording image headroom.
+No hardware flashing or partition/flash/PSRAM change is authorized by this work.
+
+Software validation recorded 2026-09-15:
+
+- All 18 keyboard-model tests and ten ASan/UBSan native suites pass. The model
+  covers every printable US-ANSI character, Shift/Caps, deduplicated holds,
+  command isolation, Backspace, Return, and the 256-character limit.
+- All 38 browser/API/provisioning tests pass. Echo tests cover preference-only
+  persistence, invalid or unavailable storage, delayed acknowledgements,
+  clearing pending edits, exact input semantics, transport failures, and
+  lifecycle erasure in Chromium and WebKit. After the final readout-scroll
+  guard, both engines' echo lifecycle tests and the existing mixed-input
+  cancellation test were rerun and pass.
+- Chromium checks all three keyboard pages with echo on and off across the
+  existing ten-viewport matrix and portrait/landscape safe areas. Screenshots
+  were inspected at phone portrait, short landscape, and desktop sizes. Long
+  unbroken text stays bounded; controls do not overlap and keys retain their
+  minimum sizes. WebKit also exercises echo-preserving rotation and touch.
+- Fresh size-optimized ESP-IDF v6.1 builds pass from committed defaults:
+  generic image `0xe2fb0` (929,712 bytes), free `0x1d050` (118,864 bytes);
+  XinluCity image `0xe4480` (935,040 bytes), free `0x1bb80` (113,536 bytes).
+  Both retain the existing 1 MiB app partition, about 11% free. This is below
+  the broader 20% headroom target, not an operational-release signoff.
+- Editor diagnostics and whitespace checks pass. No hardware was accessed;
+  real controller/USB-host acceptance remains pending. The approved mock layout
+  and software checks cannot establish the remote text's contents.
+
+### 2. Relative Mouse/Trackpad Proposal
+
+Mouse emulation is a later firmware/protocol increment, not a visual cursor added
+to this page. Prefer a Keyboard/Pointer mode switch so a usable trackpad does not
+permanently displace typing keys on short phone screens. Retain the local echo
+above the active mode when space permits. No mouse UI, messages, or descriptors
+are implemented in the local-echo branch.
+
+The proposed first pointer surface provides relative movement, explicit left and
+right buttons, hold-left-and-move dragging, and vertical scrolling. Defer
+tap-to-click until accidental-click behavior has been tested. Do not require
+Pointer Lock, predict remote cursor coordinates, or claim click success. The
+remote screen is still needed to aim and observe results.
+
+Keep the existing report-ID-free boot keyboard as HID interface 0 and add a
+separate mouse interface through the pinned TinyUSB stack's multi-instance APIs.
+The configuration would require two HID instances, descriptor/callback routing,
+and verified boot/report-mode handling. Installing that firmware requires USB
+re-enumeration and named Windows/macOS/iPadOS/iOS host tests; support or accessory
+settings on one host must not be inferred from another.
+
+Proposed pointer messages carry bounded relative deltas and complete button
+state under the existing authenticated controller lease. Coalesce movement only
+within an unchanged button state; preserve every button transition and its order
+relative to typing. Bound accumulated movement and queue age, and respect the
+selected HID report's numeric range. Never replay motion after reconnect or let
+high-rate movement starve typing, heartbeats, or priority release. Stop, timeout,
+cancel, blur, USB loss, and lease loss must release both keyboard keys and mouse
+buttons and invalidate pending work. Button-hold ceilings and mixed-input safety
+tests must be defined and implemented, not assumed from the current keyboard.
+
+A future mouse click may move focus or the remote caret. Clearing the local echo
+on a click is the proposed default for that increment, not a claim to detect the
+remote change. Pointer-only movement would leave it intact. Final gestures,
+cross-input ordering, resource budgets, and real-host acceptance remain deferred
+decisions before mouse implementation.
+
 ## Reproducing Validation
 
 Build with the configured ESP-IDF v6.1 environment first so the locked managed
