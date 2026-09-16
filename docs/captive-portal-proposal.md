@@ -228,6 +228,27 @@ or adding a BSSID restriction to existing Personal STA profiles. Unknown modes
 and malformed combinations fail closed into the protected recovery AP without
 erasing the prior record.
 
+Migration must decode the released v1 storage format before applying any v2-size
+check. Query the active NVS blob length first, bound it to the supported version
+sizes, then inspect its little-endian version prefix with a version-specific
+decoder. Do not read a legacy slot into the enlarged `network_config_t` or compare
+its length to `sizeof` that new struct. The ESP32-S3 v1 blob is 136 bytes: version
+at offset 0 (4 bytes), station at 4 (1), hostname at 5 (33), SSID at 38 (33),
+password at 71 (64), and one trailing ABI-padding byte that is not a field.
+Freeze these offsets with a dedicated legacy layout and golden-blob tests;
+validate the original string padding, hostname, station flag, and password rules.
+
+Map v1 `station=1` to Personal STA and `station=0` to Standalone AP, preserving
+any retained protected SSID/password and hostname in either case. Keep the
+existing WPA2/mixed-WPA2 association predicate; do not invent a legacy BSSID or
+observed security subtype. Encode v2 with its own fixed-width versioned codec,
+stage it in the inactive slot, commit, read back and validate it, then commit the
+active-slot pointer. Do not overwrite/erase the active v1 slot before that final
+commit. On write/readback/activation failure, latch the storage failure and keep
+the protected recovery AP without discarding the old slot. Reboot must load
+either the intact v1 record and retry migration or the complete active v2 record,
+never a mixed-size struct or partially migrated configuration.
+
 Persisting portal-router mode authorizes restoring the upstream profile, not
 restoring client transit. Transit authorization, association/lease bindings,
 NAPT entries, and DNS transactions are runtime-only and start empty after reboot.
@@ -237,11 +258,16 @@ as permission to join an open network. For scan results, show the observed
 security type and selected BSSID, distinguish same-name access points, and require
 owner confirmation. A hidden open SSID requires explicit Open selection and
 directed discovery of a concrete BSSID for confirmation before association.
-Constrain every initial connection, retry, and reboot restore to the saved or
-explicitly confirmed candidate BSSID. At association time verify the actual
+For portal-router profiles only, constrain every initial connection, retry, and
+reboot restore to the saved or explicitly confirmed candidate BSSID. At
+association time verify the actual
 BSSID, SSID bytes, and `WIFI_AUTH_OPEN` before accepting DHCP results, probing,
 or setting up DNS/NAPT; do not silently accept a different access point,
 protected-to-open downgrade, or different SSID representation.
+Personal STA, including all migrated legacy profiles, continues to use its
+existing password-protected WPA2/mixed-WPA2 validation without BSSID pinning or
+any `WIFI_AUTH_OPEN` requirement. The new portal scan/connect actions below do
+not replace that path.
 
 If the saved BSSID is unavailable or a different BSSID is observed, keep transit
 blocked and the prior profile intact. Present the old and proposed BSSID through
@@ -352,6 +378,70 @@ not from untrusted browser claims. Every association result must match that
 confirmed candidate's BSSID/SSID/security and current job generation before
 subsequent setup is accepted. No layer may discard the BSSID and reconstruct
 selection from SSID alone.
+
+### Transit Grant API
+
+**Enable browser access** is a separate authenticated AP-only network command,
+not **Take Control**, scan/profile confirmation, login, or status polling. Those
+other operations never grant transit. Authenticated network status exposes one
+server-generated `transit_context` (32 lowercase random hex characters), bound
+to the current owner-session, AP association/lease, committed portal profile,
+and station/routing generations. Rotate it on any bound change, grant expiry, or
+revocation. It is an admission context, not an authentication credential; status
+reads may expose it but never extend session/grant deadlines or enable forwarding.
+
+The enable request contains exactly three strings:
+`{"action":"portal_grant","request_id":"<32-lowercase-hex>","transit_context":"<issued-context>"}`.
+The browser creates a fresh unpredictable 128-bit `request_id` only for an
+explicit user action and reuses that value for a lost-response retry. The server
+requires valid owner/CSRF/Origin checks, actual AP ingress and destination,
+matching current context, committed portal-router mode, a healthy confirmed
+station lease, configured IPv4 DNS, and no conflicting network/OTA operation.
+Reject malformed/extra/duplicate fields with 400, missing/expired sessions with
+401, failed Origin/CSRF checks with 403, and stale context or busy/not-ready
+state with 409 and bounded `transit_context_stale`, `network_busy`, or
+`transit_unavailable` errors. Ingress/destination ACL violations are dropped
+before dispatch and need not receive an HTTP response. No rejected request may
+create or refresh a grant.
+
+Serialize admission with network transitions and recheck the bindings before
+opening transit. Allocate one random 128-bit `grant_id`, bind it to the server's
+current generations and request, and cap its monotonic lifetime at 900000 ms
+and the owner's idle/absolute deadlines captured at admission, whichever is
+earlier. Subsequent session activity never extends this grant; current session
+invalidation still revokes it immediately. Reserve the DNS observer/check/timer
+and perform the fail-closed NAPT setup before opening validation transit.
+Return 202 with `grant_id`, `request_id`, `state: "validating"`,
+`expires_in_ms`, and the pending DNS `check_id`; successful client-DNS validation
+changes state to `active`, not to a new grant. Neither action acquires USB control.
+
+Retain at most one grant/current-request record. An exact duplicate under the
+same still-valid bindings returns the same grant, check, state, and remaining
+lifetime (202 while validating, 200 while active), without another enable, DNS
+deadline reset, or lifetime extension. Reuse of the request ID with different
+fields or a different enable request while a grant exists returns 409. A revoked,
+expired, or generation-stale request cannot create a replacement; return 409
+`transit_context_stale` (or 401 after session expiry). Rotate the context so even
+an evicted old request cannot be replayed as a new grant. The owner must obtain
+current status and explicitly enable again; no polling or automatic reconnect
+handler may do so.
+
+Provide exactly `{"action":"portal_revoke","grant_id":"<issued-id>"}` for
+explicit revocation. Authenticate it the same way, close transit and fully clean
+up the matching current grant, rotate the context, and return 200 with disabled
+status. Repeating it when no grant exists returns that disabled status without
+side effects; a stale/different ID while a newer grant exists returns 409 and
+must not revoke the newer grant. All commands retain the 1024-byte strict-parser
+limit; IDs/contexts are fixed 32-character lowercase hex and are never logged.
+
+Authenticated status includes `transit.state` (`disabled`, `validating`, `active`,
+`expired`, or `revoked`), current `grant_id`/`request_id` when present,
+`expires_in_ms` from 0 to 900000, and a bounded reason. Terminal states expose
+no reusable grant capability. AP/lease/session/station-generation changes revoke
+and clear the old grant before accepting more packets or mutations. Boot starts
+disabled with new contexts and no persisted request/grant/check. Test grant state
+and expiry independently of the advisory portal `authorized` state and the USB
+controller lease.
 
 ## NAPT Lifecycle
 
@@ -650,6 +740,24 @@ not weaken the existing control boundary.
   the station interface, even when they contain a valid-looking session token.
   Apply this isolation before joining an open candidate and on saved-mode boot,
   not only after committing the candidate profile.
+  Require both actual AP ingress and the current AP destination address; an AP
+  client addressing the board's station IP is also forbidden. Install a local-
+  input ACL at the supported SDK/netif boundary before TCP accept and HTTP/WS
+  dispatch. `getsockname()` supplies only the destination and cannot establish
+  ingress; Host/Origin, a source IP, and an all-interface listener are not an ACL.
+  Enforce this on every route, including static assets, login/claim, network
+  commands/status, OTA pages/uploads/actions, error/default handlers, WS upgrade,
+  and established WS traffic, not only authenticated API handlers. Reject any
+  request/packet whose ingress cannot be established. Close previously admitted
+  station-path connections before entering the open-candidate/portal state, and
+  reevaluate the ACL after AP-address or mode changes. IPv6 local management
+  paths are not an exception in this IPv4-only increment.
+- In portal-router mode, remove the station IP from HTTP Host/Origin admission;
+  allow only the current AP IP and approved AP-local hostname aliases after the
+  ingress/destination ACL passes. An AP client cannot use the station address
+  with an AP Host header, nor the AP address with a station Host/Origin. Normal
+  Personal STA retains its separate existing station-service policy. This is a
+  local-service ACL in addition to, not a substitute for, transit forwarding rules.
 - Advertise the keyboard mDNS service only on the protected AP in this mode. Do
   not reflect mDNS, SSDP, broadcast, or multicast traffic across interfaces.
 - Permit only established NAPT replies toward the AP. Do not enable a DMZ,
@@ -774,6 +882,11 @@ scan records rewritten to `open`, forged/expired/cross-session tokens, changed
 scan/AP generations, and exact lost-response retries without a second job.
 Directed-discovery tests must bind the requested hidden SSID to actual driver
 evidence and reject empty/unmatched results without creating a candidate.
+Migration tests must load actual 136-byte v1 fixtures before v2 size checks,
+cover AP with/without a retained protected profile and Personal STA, preserve
+their original association rules, and inject power loss/failure at each inactive-
+slot write/commit/readback/active-pointer step. Reject malformed and unsupported
+layouts without erasing the original slot.
 
 ### 3. Routing, DNS, And Isolation
 
@@ -809,6 +922,11 @@ retry, with release before disruption and fresh authorization after AP reconnect
 With a healthy station lease, AP-client disconnect, owner logout/expiry, and
 client-DNS validation failure must clear client state without any station scan,
 reassociation, or channel-change effect; intentional station stops cancel retries.
+For every HTTP/WS route, test STA ingress to both local addresses, AP ingress to
+the station address, AP ingress to the AP address with station Host/Origin, and
+valid AP ingress/destination/headers. Valid owner tokens must not bypass rejected
+paths. Include connections opened before the mode transition, OTA/static/login
+routes, WS upgrades/frames, and unknown ingress metadata.
 
 ### 4. Owner Workflow And Detection
 
@@ -832,6 +950,11 @@ protected-result tampering, mismatched discovery records, and reconnect invalida
 Cover DNS-check start/result/status fields, no-credential challenge fetches,
 duplicate-start deadline stability, wrong-session/ID and late reports, check
 cancellation on reconnect, and no readiness from browser claims alone.
+Grant API tests must cover explicit grant/revoke, exact duplicate and changed-
+payload retries, lost responses, stale context after every bound-generation
+change, fixed lifetime despite polling/session activity, timeout/expiry, reboot,
+and old revoke IDs against newer grants. No login, profile action, **Take
+Control**, or authenticated GET may create or extend a transit grant.
 
 ### 5. Resource And Physical Acceptance
 
@@ -903,7 +1026,9 @@ is approved:
   lifecycle sequence verifiably clears NAPT state. Prove these with packet tests
   on the pinned SDK before enabling the global build options in product firmware.
   The same proof must establish AP-client DNS query/reply observation for the
-  selected DNS stage; board-originated resolver success is insufficient.
+  selected DNS stage; board-originated resolver success is insufficient. It must
+  also enforce actual-ingress plus destination local-service ACLs before every
+  HTTP/WS route, including established connections and mode transitions.
 4. The bounded station-connection retention period after the sole AP client
   disconnects. No choice may retain translations, DNS transactions, or transit
   authorization across that disconnect.
