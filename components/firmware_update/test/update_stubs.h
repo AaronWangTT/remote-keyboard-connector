@@ -20,6 +20,7 @@
 #define ESP_PARTITION_TYPE_DATA 1
 #define ESP_PARTITION_SUBTYPE_DATA_NVS 2
 #define ESP_PARTITION_SUBTYPE_DATA_OTA 0
+#define ESP_PARTITION_SUBTYPE_DATA_PHY 1
 #define ESP_PARTITION_SUBTYPE_APP_OTA_0 16
 #define ESP_PARTITION_SUBTYPE_APP_OTA_1 17
 #define ESP_OTA_IMG_NEW 0
@@ -53,7 +54,14 @@ typedef void *esp_timer_handle_t;
 typedef struct { unsigned active; } psa_hash_operation_t;
 typedef struct { unsigned unused; } wdt_hal_context_t;
 typedef struct { void (*callback)(void *); const char *name; } esp_timer_create_args_t;
-typedef struct { uint32_t address; uint32_t size; bool encrypted; } esp_partition_t;
+typedef struct {
+	uint32_t address;
+	uint32_t size;
+	bool encrypted;
+	esp_partition_type_t type;
+	esp_partition_subtype_t subtype;
+	char label[17];
+} esp_partition_t;
 typedef struct { char version[32]; char project_name[32]; } esp_app_desc_t;
 typedef struct { uint32_t offset; size_t size; } esp_partition_pos_t;
 typedef struct { uint32_t ota_seq; uint8_t seq_label[20]; uint32_t ota_state; uint32_t crc; } esp_ota_select_entry_t;

@@ -21,8 +21,16 @@ static unsigned health_calls;
 static void (*boot_entry)(void *);
 static jmp_buf task_exit;
 static uint8_t flash[8192];
-static esp_partition_t partitions[] = {{0x9000, 0x10000, false}, {0x19000, 0x2000, false},
-                                      {0x20000, UPDATE_SLOT_BYTES, false}, {0x620000, UPDATE_SLOT_BYTES, false}};
+static uint32_t flash_capacity;
+static esp_err_t flash_size_result;
+static const esp_partition_t valid_partitions[] = {
+    {.address = 0x9000, .size = 0x10000, .type = ESP_PARTITION_TYPE_DATA, .subtype = ESP_PARTITION_SUBTYPE_DATA_NVS, .label = "nvs"},
+    {.address = 0x19000, .size = 0x2000, .type = ESP_PARTITION_TYPE_DATA, .subtype = ESP_PARTITION_SUBTYPE_DATA_OTA, .label = "otadata"},
+    {.address = 0x20000, .size = UPDATE_SLOT_BYTES, .type = ESP_PARTITION_TYPE_APP, .subtype = ESP_PARTITION_SUBTYPE_APP_OTA_0, .label = "ota_0"},
+    {.address = 0x620000, .size = UPDATE_SLOT_BYTES, .type = ESP_PARTITION_TYPE_APP, .subtype = ESP_PARTITION_SUBTYPE_APP_OTA_1, .label = "ota_1"},
+    {.address = 0x1b000, .size = 0x1000, .type = ESP_PARTITION_TYPE_DATA, .subtype = ESP_PARTITION_SUBTYPE_DATA_PHY, .label = "phy_init"},
+};
+static esp_partition_t partitions[sizeof(valid_partitions) / sizeof(valid_partitions[0])];
 static update_descriptor_t running_descriptor;
 static esp_app_desc_t running_app = {.version = "0.1.0", .project_name = "esp32s3_starter"};
 
@@ -49,12 +57,15 @@ void wdt_hal_write_protect_disable(wdt_hal_context_t *context) { (void)context; 
 void wdt_hal_disable(wdt_hal_context_t *context)
 { (void)context; watchdog_disabled = true; assert(marks > 0 || boot_state == ESP_OTA_IMG_VALID); }
 void wdt_hal_write_protect_enable(wdt_hal_context_t *context) { (void)context; }
-esp_err_t esp_flash_get_size(void *chip, uint32_t *size) { (void)chip; *size = 0x1000000; return ESP_OK; }
+esp_err_t esp_flash_get_size(void *chip, uint32_t *size)
+{ assert(chip == NULL); if (flash_size_result == ESP_OK) *size = flash_capacity; return flash_size_result; }
 const esp_partition_t *esp_partition_find_first(int type, int subtype, const char *name)
 {
-    (void)type; (void)subtype;
-    const char *names[] = {"nvs", "otadata", "ota_0", "ota_1"};
-    for (size_t index = 0; index < 4; index++) if (strcmp(names[index], name) == 0) return &partitions[index];
+    for (size_t index = 0; index < sizeof(partitions) / sizeof(partitions[0]); index++) {
+        if (partitions[index].type == type && partitions[index].subtype == subtype && strcmp(partitions[index].label, name) == 0) {
+            return &partitions[index];
+        }
+    }
     return NULL;
 }
 esp_err_t esp_partition_read(const esp_partition_t *partition, size_t offset, void *data, size_t bytes)
@@ -141,6 +152,9 @@ bool write_otadata(const esp_ota_select_entry_t *record, uint32_t offset, bool e
 
 static void reset(void)
 {
+    memcpy(partitions, valid_partitions, sizeof(partitions));
+    flash_capacity = 0x1000000;
+    flash_size_result = ESP_OK;
     status = (firmware_update_status_t){0}; worker_active = network_held = network_releasing = initialized = handle_open = false;
     boot_task = NULL; boot_entry = NULL; target = NULL; hash = (psa_hash_operation_t)PSA_HASH_OPERATION_INIT;
     now = enters = begins = writes = aborts = ends = selections = releases = marks = rollbacks = 0;
@@ -156,6 +170,38 @@ static void reset(void)
         .flash_bytes = 0x1000000, .slot_bytes = UPDATE_SLOT_BYTES, .security_profile = 1,
         .product = "remote-keyboard", .board = "esp32s3-generic-16m", .layout = "kb16-ab6-nvs64-v1",
         .source = "0123456789abcdef0123456789abcdef01234567", .version = "0.1.0"};
+}
+
+static void test_layout_validation(void)
+{
+    for (size_t index = 0; index < sizeof(partitions) / sizeof(partitions[0]); index++) {
+        for (unsigned field = 0; field < 6; field++) {
+            reset();
+            switch (field) {
+                case 0: strcpy(partitions[index].label, "missing"); break;
+                case 1: partitions[index].type ^= 1; break;
+                case 2: partitions[index].subtype++; break;
+                case 3: partitions[index].address += 4096; break;
+                case 4: partitions[index].size += 4096; break;
+                case 5: partitions[index].encrypted = true; break;
+            }
+            assert(firmware_update_init() == ESP_ERR_INVALID_STATE);
+            assert(!firmware_update_status().available && !initialized && begins == 0);
+        }
+    }
+    const uint32_t capacities[] = {0, 0x800000, 0x2000000};
+    for (size_t index = 0; index < sizeof(capacities) / sizeof(capacities[0]); index++) {
+        reset();
+        flash_capacity = capacities[index];
+        assert(firmware_update_init() == ESP_ERR_INVALID_SIZE);
+        assert(!firmware_update_status().available && !initialized && begins == 0);
+    }
+    reset();
+    flash_size_result = ESP_FAIL;
+    assert(firmware_update_init() == ESP_ERR_INVALID_SIZE && !initialized && !status.available);
+    reset();
+    assert(firmware_update_init() == ESP_OK && initialized);
+    puts("PASS: exact flash capacity and all five partition names, types, subtypes, offsets, sizes and encryption flags");
 }
 
 static uint32_t begin(void)
@@ -182,6 +228,7 @@ static void upload(uint32_t job)
 
 int main(void)
 {
+    test_layout_validation();
 #ifdef UPDATE_TEST_SDK_BOOTLOADER
     reset();
     memset(boot_metadata, 0xff, sizeof(boot_metadata));
