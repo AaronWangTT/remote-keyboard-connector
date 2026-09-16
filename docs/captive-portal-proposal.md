@@ -7,8 +7,8 @@ This change adds this proposal and a link in the
 [documentation index](../README.md#documentation). It does not change firmware,
 network configuration, packaging, or CI, and it does not authorize a device
 write. The existing [Wi-Fi implementation record](wifi-enhancement-plan.md)
-deliberately limits station mode to WPA2-Personal networks; this document
-proposes a separate, later increment.
+deliberately limits station mode to password-protected WPA2 and mixed WPA/WPA2
+Personal networks; this document proposes a separate, later increment.
 
 ## Decision Summary
 
@@ -269,39 +269,89 @@ the profile uses the existing guarded storage pattern and releases active input.
 Extend the existing network API without changing the Personal STA `connect`
 contract. Keep `NETWORK_SCAN_LIMIT = 12` and `NETWORK_REQUEST_MAX = 1024` bytes.
 Each scan entry retains display `ssid`, `ssid_hex`, `rssi`, and `supported`, and
-adds these explicit fields:
+adds bounded security/BSSID and server-issued selection metadata:
 
 | Field | Wire contract |
 | --- | --- |
 | `ssid` | Display-only text, at most 128 bytes; never an association key. |
-| `ssid_hex` | Canonical lowercase hex for up to 32 SSID bytes, at most 64 characters. Empty hidden-network results are not connectable until directed discovery supplies the exact SSID bytes. |
+| `ssid_hex` | Canonical lowercase hex for up to 32 SSID bytes, at most 64 characters. Empty hidden-network results are not connectable; the directed `portal_scan` action below must first return a verified nonempty SSID record. |
 | `bssid_hex` | Exactly 12 lowercase hex characters encoding six bytes; reject zero, broadcast, and multicast addresses. |
 | `security` | Observed security classification: `open`, `wpa2_personal`, `wpa_wpa2_personal`, `enterprise`, `wep`, or `other`. All unrecognized/remaining SDK auth modes map to `other`, never `open`. |
 | `supported` | Preserve the legacy Personal STA compatibility boolean; do not use it as authorization or as the portal-mode selector. Only `security: "open"` is eligible for the explicit portal action. |
+| `selection_token` | A server-generated unpredictable 128-bit token encoded as 32 lowercase hex characters, bound to one retained driver scan record; never issue one for an unresolved empty SSID. |
+| `expires_in_ms` | Remaining server-monotonic token lifetime, an integer from 0 to 60000, for display only; client values cannot set or extend expiry. |
 
 Key scan entries and browser selection by SSID bytes plus BSSID, not display text
 or SSID alone; duplicate SSIDs with different BSSIDs remain distinct within the
-12-entry limit. The authenticated network command accepts exactly these four
-string fields for the new action:
+12-entry limit. Add `portal_scan` to the same authenticated network-command path
+as `connect`. Without `ssid_hex` it requests a normal visible-network scan:
 
 ```json
-{"action":"portal_connect","ssid_hex":"4775657374","bssid_hex":"02aabbccddee","security":"open"}
+{"action":"portal_scan"}
+```
+
+For a hidden network, the Network view requires explicit Open selection and a
+1-32-byte non-NUL SSID entry, then submits its exact bytes for directed discovery:
+
+```json
+{"action":"portal_scan","ssid_hex":"48696464656e"}
+```
+
+These are the only two `portal_scan` forms; reject other or duplicate fields and
+apply the same UTF-8/NUL, owner/Origin/CSRF, AP-path, and 1024-byte limits. Both
+forms use the guarded scan job and status path. An explicit scan may override
+AP-idle deferral only after the same AP-interruption confirmation and input/
+control/transit release required for **Retry upstream**. The server supplies the
+directed SSID to the driver and returns only matching observed SSID/BSSID/security
+records; never relabel an arbitrary empty-SSID beacon with the client's input.
+No verified response means no selectable result and no association attempt. The
+owner selects and confirms one concrete returned BSSID before connecting.
+
+Retain at most 12 immutable driver-derived records in RAM with their tokens,
+SSID bytes, BSSID, observed security, scan generation, requesting owner-session
+and AP-association generations, and a 60-second monotonic expiry from scan
+completion. New scans, AP disconnect, owner logout/session expiry, mode change,
+or reboot invalidate outstanding selections; stale scan completions cannot
+repopulate them. Polling must not refresh expiry. Do not log or persist tokens.
+The UI shows expiry and requires an explicit rescan and new confirmation; it
+must not silently replace an expired selection with another same-name AP.
+
+The authenticated network command accepts exactly these five string fields for
+the new connect action; the illustrative token must be replaced by the actual
+server-issued value:
+
+```json
+{"action":"portal_connect","ssid_hex":"4775657374","bssid_hex":"02aabbccddee","security":"open","selection_token":"0123456789abcdef0123456789abcdef"}
 ```
 
 Require 1-32 decoded non-NUL SSID bytes under the existing SSID policy, the exact
-six-byte BSSID, and `security: "open"`. Reject missing, duplicate, unknown,
-incorrectly typed, malformed, or oversized fields, including any `password`
-field, even empty, and any alternative plain `ssid` field. Retain existing
-UTF-8/NUL, owner-session, Origin/CSRF, and request-size checks. Legacy `connect`
-continues to require its protected-network password and never falls through to
-`portal_connect` because that password is absent.
+six-byte BSSID, `security: "open"`, and a live selection token. Reject missing,
+duplicate, unknown, incorrectly typed, malformed, or oversized fields, including
+any `password` field, even empty, and any alternative plain `ssid` field. Retain
+existing UTF-8/NUL, owner-session, Origin/CSRF, and request-size checks. Legacy
+`connect` continues to require its protected-network password and never falls
+through to `portal_connect` because that password is absent.
 
-Carry the selected BSSID and observed security from the driver scan record through
+Before creating a candidate or performing association, the network owner must
+look up the token and verify its expiry, owner/AP/scan generations, and exact
+SSID/BSSID/security match to the retained driver record. The retained security
+must itself be `open`; the browser's `security` field is an assertion to compare,
+not observed evidence. A protected scan record rewritten to `open` is rejected
+even if that AP later advertises open authentication. Reject stale or mismatched
+selections without starting association or mutating the committed profile.
+Consume an accepted token for one network job; an exact retry under the same
+valid owner/AP binding returns that job's existing result while retained, never
+a second association. Keep at most one consumed-token/current-job record; after
+it expires, read the existing job status instead of silently reconnecting.
+
+Carry the selected BSSID and security assertion from the driver scan record through
 `network_scan_item_t`, HTTP JSON, the browser's selected record, request parsing
-into `network_request_t`, the candidate/profile, and the station driver
-configuration. Every association result must match that confirmed candidate's
-BSSID/SSID/security and current job generation before subsequent setup is accepted.
-No layer may discard the BSSID and reconstruct selection from SSID alone.
+into `network_request_t`, and the server-side token/record comparison. Construct
+the candidate/profile and station configuration from the retained driver record,
+not from untrusted browser claims. Every association result must match that
+confirmed candidate's BSSID/SSID/security and current job generation before
+subsequent setup is accepted. No layer may discard the BSSID and reconstruct
+selection from SSID alone.
 
 ## NAPT Lifecycle
 
@@ -645,7 +695,11 @@ routing setup or replace the saved record; cancellation preserves the old profil
 Test the bounded scan/JSON/parser contract end to end, including same-SSID records
 with different BSSIDs, the explicit open-security action, malformed/duplicate/
 missing BSSID fields, passwords on `portal_connect`, unchanged Personal STA
-requests, and late association results from a superseded job.
+requests, and late association results from a superseded job. Test protected
+scan records rewritten to `open`, forged/expired/cross-session tokens, changed
+scan/AP generations, and exact lost-response retries without a second job.
+Directed-discovery tests must bind the requested hidden SSID to actual driver
+evidence and reject empty/unmatched results without creating a candidate.
 
 ### 3. Routing, DNS, And Isolation
 
@@ -688,6 +742,8 @@ timeout or a routing-generation change; none may enter `authorized`. Test adviso
 success expiry and continued manual sign-in availability even after probe success.
 Cover BSSID replacement confirmation/cancellation, deferred-retry status, and
 explicit retry confirmation without automatic control or transit restoration.
+Cover visible and hidden `portal_scan` requests, selection-token expiry/rescan,
+protected-result tampering, mismatched discovery records, and reconnect invalidation.
 
 ### 5. Resource And Physical Acceptance
 
@@ -752,4 +808,5 @@ is approved:
    browsing metadata.
 
 Until those decisions and gates pass, the protected standalone AP and existing
-WPA2-Personal station mode remain the supported network paths.
+password-protected WPA2 and mixed WPA/WPA2 Personal station mode remain the
+supported network paths.
