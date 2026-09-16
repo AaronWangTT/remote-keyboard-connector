@@ -294,6 +294,100 @@ for (const engine of [chromium, webkit]) for (const rollback of [false, true]) t
   assert.deepEqual(errors, []);
 });
 
+for (const engine of [chromium, webkit]) test(`Firmware activation recovers a lost request without reupload in ${engine.name()}`, { timeout: 20000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_UPDATE_DELAY_MS: "100" });
+  const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+  context.after(() => browser.close());
+  const page = await browser.newPage();
+  let activations = 0;
+  let uploads = 0;
+  page.on("request", request => { if (new URL(request.url()).pathname === "/api/v1/update") uploads++; });
+  await page.route("**/api/v1/update/activate", async route => {
+    if (++activations === 2) assert.equal((await route.fetch()).status(), 202);
+    await route.abort();
+  });
+  await page.goto(new URL("/ota", url).href);
+  const signIn = async () => {
+    await expect(page.locator("#account-submit")).toBeEnabled();
+    await page.locator("#owner-password").fill("preview-owner-password");
+    await page.locator("#account-submit").click();
+    await expect(page.locator("#account-view")).toBeHidden();
+  };
+  await signIn();
+  await expect(page.locator("#firmware-file")).toBeEnabled();
+  await page.locator("#firmware-file").setInputFiles({ name: "test.bin", mimeType: "application/octet-stream", buffer: previewUpdateImage() });
+  await page.locator("#firmware-upload").click();
+  await expect(page.locator("#firmware-activate")).toBeEnabled();
+  const staged = await (await page.request.get(new URL("/api/v1/update/job", url).href)).json();
+  await page.locator("#firmware-activate").click();
+  await expect(page.locator("#firmware-activate")).toBeVisible();
+  await expect(page.locator("#firmware-activate")).toBeEnabled();
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("keyboard.pending-firmware.v1"))).toBe(null);
+  const unchanged = await (await page.request.get(new URL("/api/v1/update/job", url).href)).json();
+  assert.equal(unchanged.phase, "staged");
+  assert.equal(unchanged.job_id, staged.job_id);
+  assert.equal(unchanged.sha256, staged.sha256);
+  assert.equal(activations, 1);
+  assert.equal(uploads, 1);
+  await page.locator("#firmware-activate").click();
+  await expect(page.locator("#account-view")).toBeVisible();
+  await signIn();
+  await expect(page.locator("#firmware-status")).toHaveText("Version 0.1.1 is running");
+  assert.equal(activations, 2);
+  assert.equal(uploads, 1);
+  await expect(page).toHaveURL(new URL("/ota", url).href);
+});
+
+test("Firmware activation ignores a staged poll started before the request", { timeout: 15000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_UPDATE_DELAY_MS: "100" });
+  const browser = await chromium.launch();
+  context.after(() => browser.close());
+  const page = await browser.newPage();
+  let holdPoll = false;
+  let releasePoll, pollCaptured, releaseActivation, activationCaptured;
+  const pollReady = new Promise(resolve => { pollCaptured = resolve; });
+  const activationReady = new Promise(resolve => { activationCaptured = resolve; });
+  const allowPoll = new Promise(resolve => { releasePoll = resolve; });
+  const allowActivation = new Promise(resolve => { releaseActivation = resolve; });
+  context.after(() => { releasePoll(); releaseActivation(); });
+  await page.route("**/api/v1/update/job", async route => {
+    if (holdPoll && route.request().method() === "GET") {
+      holdPoll = false;
+      const response = await route.fetch();
+      pollCaptured();
+      await allowPoll;
+      await route.fulfill({ response });
+    } else await route.continue();
+  });
+  await page.route("**/api/v1/update/activate", async route => {
+    activationCaptured();
+    await allowActivation;
+    await route.abort();
+  });
+  await page.goto(new URL("/ota", url).href);
+  await expect(page.locator("#account-submit")).toBeEnabled();
+  await page.locator("#owner-password").fill("preview-owner-password");
+  await page.locator("#account-submit").click();
+  await expect(page.locator("#firmware-file")).toBeEnabled();
+  await page.locator("#firmware-file").setInputFiles({ name: "test.bin", mimeType: "application/octet-stream", buffer: previewUpdateImage() });
+  await page.locator("#firmware-upload").click();
+  await expect(page.locator("#firmware-activate")).toBeEnabled();
+  holdPoll = true;
+  await page.locator("#firmware-refresh").click();
+  await pollReady;
+  await page.locator("#firmware-activate").click();
+  await activationReady;
+  const stagedResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/update/job");
+  releasePoll();
+  await stagedResponse;
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.evaluate(() => sessionStorage.getItem("keyboard.pending-firmware.v1")), "0.1.1");
+  await expect(page.locator("#firmware-activate")).toBeHidden();
+  releaseActivation();
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem("keyboard.pending-firmware.v1"))).toBe(null);
+  await expect(page.locator("#firmware-activate")).toBeEnabled();
+});
+
 test("Firmware view cancels during verification before the first job poll", { timeout: 15000 }, async context => {
   const url = await startPreview(context, { PREVIEW_UPDATE_DELAY_MS: "1500" });
   const browser = await chromium.launch();

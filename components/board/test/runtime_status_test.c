@@ -15,6 +15,9 @@
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static network_status_t snapshot;
 static bool control_ready;
+static bool saved_configuration_valid;
+static bool storage_fault;
+static int64_t snapshot_seen_at;
 static bool update_reserved;
 static bool command_pending;
 static bool guarded;
@@ -243,6 +246,9 @@ static void reset_network(void)
 {
     snapshot = (network_status_t){.available = true, .ap_active = true, .can_control = true};
     control_ready = true;
+    saved_configuration_valid = true;
+    storage_fault = false;
+    snapshot_seen_at = now_us;
     command_pending = guarded = guard_ap = update_reserved = false;
     ap_address = 1;
     station_address = lease_address = guard_generation = 0;
@@ -339,6 +345,39 @@ static void test_network_observation(void)
             network_update_end();
         }
     }
+    reset_network();
+}
+
+static void test_network_service_health(void)
+{
+    reset_network();
+    saved_configuration_valid = false;
+    strcpy(snapshot.error, "saved_configuration_invalid");
+    network_status_t original = snapshot;
+    assert(network_service_healthy());
+    assert(!saved_configuration_valid && memcmp(&snapshot, &original, sizeof(original)) == 0);
+    storage_fault = true;
+    assert(!network_service_healthy());
+    storage_fault = false;
+    ap_address = 0;
+    assert(!network_service_healthy());
+    ap_address = 1;
+    snapshot.available = false;
+    assert(!network_service_healthy());
+    snapshot.available = true;
+    snapshot_seen_at = 0;
+    assert(!network_service_healthy());
+    snapshot_seen_at = now_us - INT64_C(1000000);
+    assert(!network_service_healthy());
+    snapshot_seen_at = now_us;
+    snapshot.ap_active = false;
+    snapshot.station_online = true;
+    station_address = lease_address = 2;
+    assert(!network_service_healthy());
+    saved_configuration_valid = true;
+    assert(network_service_healthy());
+    lease_address = 0;
+    assert(!network_service_healthy());
     reset_network();
 }
 
@@ -482,6 +521,7 @@ int main(void)
 {
     test_update_owner_lifecycle();
     test_network_observation();
+    test_network_service_health();
     test_http_observation();
     puts("PASS: AP-only capability, reservations, HTTP-owner snapshots, USB races, expiry, bounded queues and stale status");
     return 0;

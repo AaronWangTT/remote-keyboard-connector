@@ -105,7 +105,8 @@ await writeFile(".cache/tests/sdk_bootloader.inc", bootloaderFixture);
 await writeFile(".cache/tests/sdk_signature_verifier.inc", signatureFixture);
 await writeFile(".cache/tests/network_observer.inc",
   section(network, "network_control_status_t network_control_status(uint32_t generation)", "\nvoid network_management_touch") +
-  section(network, "bool network_control_begin(uint32_t local_address, uint32_t generation)", "\nstatic bool recovery_held"));
+  section(network, "bool network_control_begin(uint32_t local_address, uint32_t generation)", "\nstatic bool recovery_held") +
+  section(network, "bool network_service_healthy(void)", "\nesp_err_t network_submit"));
 await writeFile(".cache/tests/network_effect_decision.inc",
   `static network_effect_t network_test_effect(int64_t now)\n{\n${
     section(network, "        bool was_testing = testing;", "\n        if (effect == NETWORK_OPEN_AP)")

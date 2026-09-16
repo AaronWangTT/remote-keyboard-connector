@@ -409,6 +409,9 @@ when the AP is off. A single update reservation covers both interfaces.
 An interrupted transfer restarts from byte zero on explicit retry. A staged
 candidate expires without changing boot selection. A lost response is an unknown
 result until status is checked, not a reason to blindly repeat activation.
+If a fresh post-request status still reports the matching candidate as staged,
+restore its explicit Install action without uploading again. Do not retry
+automatically or let a poll started before the command clear a pending activation.
 
 ## Boot Validation And Rollback
 
@@ -427,8 +430,10 @@ Enable `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` in the wired baseline. On a boot
 marked `ESP_OTA_IMG_PENDING_VERIFY`, run bounded diagnostics before calling
 `esp_ota_mark_app_valid_cancel_rollback()`:
 
-- Read and validate the OTA baseline's identity and settings without erasing or
-   replacing them.
+- Read and validate the OTA baseline's identity without erasing or replacing it.
+   Attempt to read saved station settings; an invalid station record may use the
+   protected recovery AP and must remain untouched. A storage fault still fails
+   health validation, and incompatible signed settings schemas remain rejected.
 - Initialize the USB service with input released and verify service-task health.
 - Establish a usable station interface or protected recovery AP and a functioning
   web-management service.
@@ -575,9 +580,12 @@ component; no separate migration utility is introduced.
    The updater remains busy through network-reservation release; a new job is
    not created until the preceding worker and reservation cleanup have finished.
 - Pending-verification trial boots require eight consecutive healthy samples 250 ms apart, including
-   network-worker progress, readable saved settings, a live HTTP service, and
+   network-worker progress on a usable AP or station interface, no storage fault,
+   a live HTTP service, and
    USB-task progress without host enumeration. The RTC watchdog stays armed
    until confirmation; a failed trial requests rollback without resetting NVS.
+   A usable recovery AP can satisfy network health when saved station settings
+   are invalid; this does not rewrite or discard the saved record.
    Already-confirmed boots stop the startup watchdog during updater initialization,
    before USB/network/web startup can fail. Updates remain unavailable until
    service initialization finishes, without repeating the trial task or entering

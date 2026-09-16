@@ -772,8 +772,11 @@ static void network_worker(void *argument)
 bool network_service_healthy(void)
 {
     portENTER_CRITICAL(&lock);
-    bool healthy = saved_configuration_valid && !storage_fault && snapshot_seen_at != 0 &&
-        esp_timer_get_time() - snapshot_seen_at < INT64_C(1000000);
+    bool ap_ready = snapshot.ap_active && ap_address != 0;
+    bool station_ready = saved_configuration_valid && snapshot.station_online && station_address != 0 && station_address == lease_address;
+    int64_t now = esp_timer_get_time();
+    bool healthy = !storage_fault && snapshot.available && (ap_ready || station_ready) && snapshot_seen_at != 0 &&
+        now >= snapshot_seen_at && now - snapshot_seen_at < INT64_C(1000000);
     portEXIT_CRITICAL(&lock);
     return healthy;
 }

@@ -6,6 +6,7 @@ let firmwareJob = null;
 let firmwareTimer = null;
 let firmwarePolling = false;
 let firmwareMutating = false;
+let firmwareRevision = 0;
 let firmwareUpload = null;
 let firmwareTransferred = 0;
 let firmwareOutcome = "";
@@ -57,6 +58,7 @@ function renderAccount() {
 }
 
 function resetSession() {
+  firmwareRevision++;
   account.authenticated = false;
   account.csrf = "";
   firmwareUpload?.abort();
@@ -130,25 +132,32 @@ function renderFirmware() {
 }
 
 async function pollFirmware() {
-  if (!account.authenticated || document.hidden || firmwarePolling) return;
+  if (!account.authenticated || document.hidden || firmwarePolling || firmwareMutating) return;
   clearTimeout(firmwareTimer);
   firmwarePolling = true;
   const csrf = account.csrf;
+  const revision = firmwareRevision;
   try {
     const information = await api("/api/v1/firmware");
-    if (!account.authenticated || account.csrf !== csrf) return;
-    firmwareState = information;
+    if (!account.authenticated || account.csrf !== csrf || revision !== firmwareRevision) return;
+    let job = null;
     try {
-      const job = await api("/api/v1/update/job");
-      if (account.authenticated && account.csrf === csrf) firmwareJob = job;
+      job = await api("/api/v1/update/job");
     } catch (error) {
-      if (error.code === "update_owner_required") firmwareJob = null;
-      else throw error;
+      if (error.code !== "update_owner_required") throw error;
     }
-    if (!account.authenticated || account.csrf !== csrf) return;
+    if (!account.authenticated || account.csrf !== csrf || revision !== firmwareRevision) return;
+    firmwareState = job ?? information;
+    firmwareJob = job;
     if (firmwareUncertain) {
       firmwareOutcome = "";
       firmwareUncertain = false;
+      notify();
+    }
+    if (expectedFirmware && firmwareJob?.phase === "staged" && firmwareJob.candidate_version === expectedFirmware) {
+      expectedFirmware = "";
+      firmwareOutcome = "";
+      try { sessionStorage.removeItem("keyboard.pending-firmware.v1"); } catch {}
       notify();
     }
     if (expectedFirmware && !firmwareState.busy && !firmwareState.trial_boot) {
@@ -159,6 +168,7 @@ async function pollFirmware() {
     }
     renderFirmware();
   } catch (error) {
+    if (revision !== firmwareRevision) return;
     firmwareUncertain = true;
     firmwareOutcome = expectedFirmware ? "Restarting; sign in again when the device returns" : errorMessage(error);
     renderFirmware();
@@ -219,6 +229,7 @@ async function uploadFirmware(event) {
 async function firmwareCommand(activate) {
   if (!account.authenticated || firmwareMutating) return;
   const csrf = account.csrf;
+  firmwareRevision++;
   firmwareMutating = true;
   firmwareOutcome = "";
   notify();
@@ -239,6 +250,7 @@ async function firmwareCommand(activate) {
     if (activate) {
       expectedFirmware = job.candidate_version;
       try { sessionStorage.setItem("keyboard.pending-firmware.v1", expectedFirmware); } catch {}
+      renderFirmware();
     }
     const result = await api(activate ? "/api/v1/update/activate" : "/api/v1/update/job", activate ? "POST" : "DELETE",
       { job_id: job.job_id, ...(activate ? { sha256: job.sha256 } : {}) });
@@ -253,6 +265,7 @@ async function firmwareCommand(activate) {
     }
     notify(errorMessage(error));
   } finally {
+    firmwareRevision++;
     firmwareMutating = false;
     renderFirmware();
     pollFirmware();
