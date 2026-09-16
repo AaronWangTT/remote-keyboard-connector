@@ -314,6 +314,7 @@ static void run_worker(unsigned steps)
 static void test_http_observation(void)
 {
     expect_web(false, false, false);
+    assert(!web_server_service_healthy());
     assert(web_server_status_start() == ESP_ERR_INVALID_STATE && task_calls == 0);
     server_started = true;
     fail_task = true;
@@ -332,6 +333,11 @@ static void test_http_observation(void)
     assert(network_control_begin(ap_address, client.generation));
     publish();
     expect_web(true, true, false);
+    assert(web_server_service_healthy());
+    now_us += 500000;
+    assert(!web_server_service_healthy());
+    now_us -= 500000;
+    assert(web_server_service_healthy());
     active_client = &client;
     publish();
     web_server_status_t status = expect_web(true, true, true);
@@ -344,6 +350,7 @@ static void test_http_observation(void)
     owner_claimed = false;
     publish();
     expect_web(true, false, false);
+    assert(web_server_service_healthy());
     owner_claimed = true;
     websocket_connected = false;
     publish();
@@ -352,6 +359,7 @@ static void test_http_observation(void)
     usb_status.ready = false;
     publish();
     expect_web(true, false, false);
+    assert(web_server_service_healthy());
     usb_status.ready = true;
     usb_status.generation++;
     publish();
@@ -360,6 +368,7 @@ static void test_http_observation(void)
     change_usb_on_read = true;
     publish();
     assert(!web_server_status().valid && indicated_status() == BOARD_STATUS_NOT_READY);
+    assert(!web_server_service_healthy());
     change_usb_on_read = false;
     usb_status.generation--;
     now_us += ACCESS_CONTROL_LEASE_US;

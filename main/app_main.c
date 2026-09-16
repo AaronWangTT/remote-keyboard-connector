@@ -1,7 +1,6 @@
 #include "board_status.h"
 #include "esp_err.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "firmware_update.h"
 #include "network.h"
 #include "usb_keyboard.h"
@@ -24,9 +23,8 @@ static bool services_healthy(void)
 {
     network_status_t network;
     network_status(&network);
-    web_server_status_t web = web_server_status();
-    return network_service_healthy() && network.available && (network.ap_active || network.station_online) && web.valid &&
-        (uint64_t)(esp_timer_get_time() / 1000) - web.sampled_at_ms < 500 && usb_keyboard_service_healthy();
+    return network_service_healthy() && network.available && (network.ap_active || network.station_online) &&
+        web_server_service_healthy() && usb_keyboard_service_healthy();
 }
 
 void app_main(void)

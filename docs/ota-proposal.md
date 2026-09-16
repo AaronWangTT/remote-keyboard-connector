@@ -397,6 +397,14 @@ result until status is checked, not a reason to blindly repeat activation.
 
 ## Boot Validation And Rollback
 
+The fresh-install OTA-data image is intentionally erased. With this no-factory
+ESP-IDF v6.1 layout, the bootloader selects `ota_0` and writes its sequence/state
+record as `ESP_OTA_IMG_VALID` before entering the application. Missing or unknown
+state after bootloader handoff remains an error, not permission for the updater
+to assume a valid image. The native SDK-backed test exercises the actual
+bootloader selection/initialization functions with mocked storage; CI runs it
+with `IDF_PATH` set. This does not replace physical first-install acceptance.
+
 Enable `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` in the wired baseline. On a boot
 marked `ESP_OTA_IMG_PENDING_VERIFY`, run bounded diagnostics before calling
 `esp_ota_mark_app_valid_cancel_rollback()`:
@@ -412,6 +420,12 @@ Do not require Internet, NTP, a browser reconnect, or USB host enumeration to
 accept the image. A powered-off router should permit protected-AP recovery, not
 automatically condemn the update. Choose the diagnostic deadline to include
 bounded station retry/recovery, and confirm promptly after checks pass.
+
+Web-management liveness uses `web_server_service_healthy()`: the HTTP service
+must be started and have a coherent snapshot published by its own task within
+500 ms. Do not substitute keyboard-ready status (`web.ready`), which also
+requires owner claim and USB host readiness. Tests keep management healthy
+without USB enumeration and reject stale or invalid publication.
 
 Commit `CONFIG_BOOTLOADER_WDT_ENABLE=y` and
 `CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE=y` for the OTA profile so the RTC

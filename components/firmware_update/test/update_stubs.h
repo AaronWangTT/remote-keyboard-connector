@@ -22,8 +22,14 @@
 #define ESP_PARTITION_SUBTYPE_DATA_OTA 0
 #define ESP_PARTITION_SUBTYPE_APP_OTA_0 16
 #define ESP_PARTITION_SUBTYPE_APP_OTA_1 17
+#define ESP_OTA_IMG_NEW 0
 #define ESP_OTA_IMG_PENDING_VERIFY 1
 #define ESP_OTA_IMG_VALID 2
+#define ESP_OTA_IMG_INVALID 3
+#define ESP_OTA_IMG_ABORTED 4
+#define FACTORY_INDEX -1
+#define INVALID_INDEX -99
+#define FLASH_SECTOR_SIZE 4096
 #define ESP_IMAGE_VERIFY_SILENT 1
 #define portMUX_INITIALIZER_UNLOCKED 0
 #define pdPASS 1
@@ -33,6 +39,7 @@
 #define PSA_SUCCESS 0
 #define RWDT_HAL_CONTEXT_DEFAULT() {0}
 #define ESP_LOGI(...) ((void)0)
+#define ESP_LOGD(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
 
 typedef int esp_err_t;
@@ -49,6 +56,8 @@ typedef struct { void (*callback)(void *); const char *name; } esp_timer_create_
 typedef struct { uint32_t address; uint32_t size; bool encrypted; } esp_partition_t;
 typedef struct { char version[32]; char project_name[32]; } esp_app_desc_t;
 typedef struct { uint32_t offset; size_t size; } esp_partition_pos_t;
+typedef struct { uint32_t ota_seq; uint8_t seq_label[20]; uint32_t ota_state; uint32_t crc; } esp_ota_select_entry_t;
+typedef struct { esp_partition_pos_t ota_info; esp_partition_pos_t factory; unsigned app_count; } bootloader_state_t;
 typedef struct { size_t image_len; } esp_image_metadata_t;
 esp_err_t esp_image_verify(int mode, const esp_partition_pos_t *position, esp_image_metadata_t *metadata);
 

@@ -11,6 +11,9 @@ static bool reserved, allow_network, quiescent, signature_ok, activation_ok, hea
 static bool cancel_in_begin;
 static bool extra_bytes;
 static esp_ota_img_states_t boot_state;
+static esp_err_t boot_state_result;
+static esp_ota_select_entry_t boot_metadata[2];
+static unsigned boot_metadata_writes;
 static unsigned health_calls;
 static void (*boot_entry)(void *);
 static jmp_buf task_exit;
@@ -49,7 +52,7 @@ esp_err_t esp_partition_read(const esp_partition_t *partition, size_t offset, vo
 const esp_partition_t *esp_ota_get_running_partition(void) { return &partitions[2]; }
 const esp_partition_t *esp_ota_get_next_update_partition(void *start) { assert(start == NULL); return &partitions[3]; }
 esp_err_t esp_ota_get_state_partition(const esp_partition_t *partition, esp_ota_img_states_t *state)
-{ assert(partition == &partitions[2]); *state = boot_state; return ESP_OK; }
+{ assert(partition == &partitions[2]); if (boot_state_result == ESP_OK) *state = boot_state; return boot_state_result; }
 esp_err_t esp_ota_mark_app_valid_cancel_rollback(void) { assert(health_calls >= 8); marks++; return ESP_OK; }
 esp_err_t esp_ota_mark_app_invalid_rollback_and_reboot(void) { rollbacks++; return ESP_FAIL; }
 esp_err_t esp_ota_begin(const esp_partition_t *partition, size_t bytes, esp_ota_handle_t *value)
@@ -86,6 +89,28 @@ bool usb_keyboard_begin_maintenance(void) { return true; }
 const update_descriptor_t *firmware_update_descriptor(void) { return &running_descriptor; }
 static bool healthy(void) { health_calls++; return health_ok; }
 
+esp_err_t bootloader_common_read_otadata(const esp_partition_pos_t *partition, esp_ota_select_entry_t *records)
+{ assert(partition->offset == 0x19000); memcpy(records, boot_metadata, sizeof(boot_metadata)); return ESP_OK; }
+uint32_t bootloader_common_ota_select_crc(const esp_ota_select_entry_t *record)
+{ return record->ota_seq ^ UINT32_C(0x5a5a5a5a); }
+bool bootloader_common_ota_select_invalid(const esp_ota_select_entry_t *record)
+{ return record->ota_seq == UINT32_MAX || record->crc != bootloader_common_ota_select_crc(record) ||
+    record->ota_state == ESP_OTA_IMG_INVALID || record->ota_state == ESP_OTA_IMG_ABORTED; }
+int bootloader_common_get_active_otadata(const esp_ota_select_entry_t *records)
+{ return !bootloader_common_ota_select_invalid(&records[0]) ? 0 : !bootloader_common_ota_select_invalid(&records[1]) ? 1 : -1; }
+bool esp_efuse_is_flash_encryption_enabled(void) { return false; }
+bool write_otadata(const esp_ota_select_entry_t *record, uint32_t offset, bool encrypted)
+{
+    assert(!encrypted && (offset == 0x19000 || offset == 0x1a000));
+    boot_metadata[(offset - 0x19000) / 4096] = *record;
+    boot_state = record->ota_state;
+    boot_state_result = ESP_OK;
+    boot_metadata_writes++;
+    return true;
+}
+
+#include "sdk_bootloader.inc"
+
 static void reset(void)
 {
     status = (firmware_update_status_t){0}; worker_active = network_held = initialized = handle_open = false;
@@ -94,6 +119,8 @@ static void reset(void)
     write_offset = erase_bytes = health_calls = 0; reserved = watchdog_disabled = cancel_in_begin = extra_bytes = false;
     allow_network = quiescent = signature_ok = activation_ok = health_ok = true;
     boot_state = ESP_OTA_IMG_VALID;
+    boot_state_result = ESP_OK;
+    boot_metadata_writes = 0;
     running_descriptor = (update_descriptor_t){.magic = {'K','B','O','T','A','0','0','1'}, .format_version = 1,
         .bootstrap_version = 1, .updater_version = 1, .settings_version = 1, .kdf_iterations = 10,
         .flash_bytes = 0x1000000, .slot_bytes = UPDATE_SLOT_BYTES, .security_profile = 1,
@@ -125,6 +152,23 @@ static void upload(uint32_t job)
 
 int main(void)
 {
+#ifdef UPDATE_TEST_SDK_BOOTLOADER
+    reset();
+    memset(boot_metadata, 0xff, sizeof(boot_metadata));
+    boot_state_result = ESP_ERR_NOT_FOUND;
+    bootloader_state_t bootstrap = {.ota_info = {.offset = 0x19000, .size = 8192}, .app_count = 2};
+    assert(bootloader_utility_get_selected_boot_partition(&bootstrap) == 0 && ota_has_initial_contents);
+    assert(firmware_update_init() == ESP_ERR_NOT_FOUND);
+    set_actual_ota_seq(&bootstrap, 0);
+    assert(boot_metadata_writes == 1 && boot_metadata[0].ota_seq == 1 && boot_metadata[0].ota_state == ESP_OTA_IMG_VALID);
+    assert(boot_metadata[0].crc == bootloader_common_ota_select_crc(&boot_metadata[0]));
+    assert(firmware_update_init() == ESP_OK && !firmware_update_status().trial_boot);
+    assert(firmware_update_validate_boot(healthy) == ESP_OK && firmware_update_status().available);
+    assert(bootloader_utility_get_selected_boot_partition(&bootstrap) == 0 && !ota_has_initial_contents);
+    set_actual_ota_seq(&bootstrap, 0);
+    assert(boot_metadata_writes == 1);
+    puts("PASS: SDK initializes erased otadata to a valid ota_0 record before application entry");
+#endif
     reset(); boot_state = -1;
     assert(firmware_update_init() == ESP_ERR_INVALID_STATE && !firmware_update_status().available);
 

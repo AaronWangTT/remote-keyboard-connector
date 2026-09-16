@@ -127,6 +127,13 @@ web_server_status_t web_server_status(void)
     return status;
 }
 
+bool web_server_service_healthy(void)
+{
+    web_server_status_t current = web_server_status();
+    uint64_t now = (uint64_t)(esp_timer_get_time() / 1000);
+    return server_started && current.valid && now >= current.sampled_at_ms && now - current.sampled_at_ms < 500;
+}
+
 static void publish_status(void *argument)
 {
     (void)argument;

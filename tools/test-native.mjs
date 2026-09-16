@@ -20,7 +20,7 @@ const boardDriver = {
   sources: ["components/board/board_status_logic.c", "components/board/board_status.c", "components/board/test/board_driver_test.c"],
 };
 const suites = {
-  update_service: { includes: [".cache/tests/update-stubs", "components/firmware_update/test", "components/firmware_update/include",
+  update_service: { includes: [".cache/tests/update-stubs", ".cache/tests", "components/firmware_update/test", "components/firmware_update/include",
       "components/network/include", "components/usb_keyboard/include"],
     sources: ["components/firmware_update/update_policy.c", "components/firmware_update/test/update_service_test.c"] },
   update_policy: { includes: ["components/firmware_update/include"],
@@ -83,6 +83,16 @@ const section = (source, start, end) => {
 };
 const network = await readFile("components/network/network.c", "utf8");
 const web = await readFile("components/web_server/web_server.c", "utf8");
+let bootloaderFixture = "";
+if (process.env.IDF_PATH) {
+  const bootloader = await readFile(resolve(process.env.IDF_PATH, "components/bootloader_support/src/bootloader_utility.c"), "utf8");
+  bootloaderFixture = "#define UPDATE_TEST_SDK_BOOTLOADER 1\nstatic bool ota_has_initial_contents;\n" +
+    section(bootloader, "int bootloader_utility_get_selected_boot_partition(const bootloader_state_t *bs)", "\n}\n") + "\n}\n" +
+    section(bootloader, "static void set_actual_ota_seq(const bootloader_state_t *bs, int index)", "\n}\n") + "\n}\n";
+  assert.equal(bootloader.match(/set_actual_ota_seq\(bs, index\);\s*load_image\(&image_data\);/g)?.length, 2,
+    "SDK must initialize selected OTA metadata before both normal and fallback image entry paths");
+}
+await writeFile(".cache/tests/sdk_bootloader.inc", bootloaderFixture);
 await writeFile(".cache/tests/network_observer.inc",
   section(network, "network_control_status_t network_control_status(uint32_t generation)", "\nvoid network_management_touch") +
   section(network, "bool network_control_begin(uint32_t local_address, uint32_t generation)", "\nstatic bool recovery_held"));
