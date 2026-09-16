@@ -212,7 +212,27 @@ for (const engine of [chromium, webkit]) for (const rollback of [false, true]) t
   context.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const errors = [];
+  const updateRequests = [];
   page.on("pageerror", error => errors.push(error.message));
+  page.on("request", request => {
+    if (/\/api\/v1\/(firmware|update)/.test(request.url())) {
+      updateRequests.push({ event: "request", method: request.method(), path: new URL(request.url()).pathname });
+    }
+  });
+  page.on("response", response => {
+    if (/\/api\/v1\/(firmware|update)/.test(response.url())) {
+      updateRequests.push({ event: "response", status: response.status(), path: new URL(response.url()).pathname });
+    }
+  });
+  let uploadCount = 0;
+  if (engine === chromium) {
+    await page.route("**/api/v1/update", async route => {
+      if (++uploadCount === 2) {
+        await route.fetch();
+        await route.abort();
+      } else await route.continue();
+    });
+  }
   await page.goto(new URL("/ota", url).href);
   const signIn = async () => {
     await expect(page.locator("#account-submit")).toBeEnabled();
@@ -234,6 +254,8 @@ for (const engine of [chromium, webkit]) for (const rollback of [false, true]) t
         status: await page.locator("#firmware-status").textContent(),
         message: await page.locator("#ui-message").textContent(),
         job: await (await page.request.get(new URL("/api/v1/update/job", url).href)).json(),
+        visibility: await page.evaluate(() => document.visibilityState),
+        requests: updateRequests,
         pageErrors: errors,
       }));
       throw error;
@@ -244,13 +266,8 @@ for (const engine of [chromium, webkit]) for (const rollback of [false, true]) t
   await page.keyboard.press("x");
   await page.locator("#firmware-cancel").click();
   await expect(page.locator("#firmware-status")).toHaveText("Update cancelled");
-  if (engine === chromium) {
-    await page.route("**/api/v1/update", async route => {
-      await route.fetch();
-      await route.abort();
-    }, { times: 1 });
-  }
   await upload();
+  if (engine === chromium) assert.equal(uploadCount, 2, "A lost upload response must not replay the upload");
   for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 844, height: 390 }, { width: 1280, height: 800 }]) {
     await expect(page.locator("#ui-message")).toBeHidden();
     await page.setViewportSize(viewport);
