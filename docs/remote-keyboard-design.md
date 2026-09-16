@@ -515,8 +515,10 @@ saved selection across reloads and reconnects rather than resetting it to iOS.
 Loading the page or changing the host setting must never send a chord. A profile
 change clears held input and one-shot Shift, sending only a neutral release if
 needed. It never completes a pending gesture from the old profile. An invalid
-or unsupported saved profile must not silently fall back or emit input; require
-a valid selection instead. A remembered host type is a user preference and must
+or unsupported saved profile disables the host-dependent Globe and on-screen
+Shift actions until a valid selection is made, without falling back to iOS.
+Ordinary typing and physical Shift remain available because their mappings do
+not depend on Host. A remembered host type is a user preference and must
 be updated when the board moves to a different host type. USB-enumeration
 fingerprinting is heuristic and is not part of this design.
 

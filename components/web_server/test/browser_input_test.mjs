@@ -86,6 +86,24 @@ test("Windows touch Shift taps stay local and capitalize the next chord", () => 
   assert.equal(keyboard.shiftLatched, false);
 });
 
+test("unsupported profiles cannot start on-screen Shift gestures or disturb ordinary typing", () => {
+  for (const profile of ["", "macos", "linux", "constructor", "toString", "__proto__", null]) {
+    const keyboard = new KeyboardInput();
+    assert.deepEqual(keyboard.press("shift", shift, 0, profile), []);
+    assert.equal(keyboard.sources.size, 0);
+    assert.deepEqual(keyboard.release("shift", 2000), []);
+    assert.equal(keyboard.shiftLatched, false);
+    assert.deepEqual(keyboard.press("a", characterKey("a"), 2100, profile),
+      [{ modifiers: 0, keys: [4] }]);
+    assert.deepEqual(keyboard.press("shift", shift, 2150, profile), []);
+    assert.deepEqual(keyboard.report, { modifiers: 0, keys: [4] });
+    assert.deepEqual(keyboard.release("a", 2200), [neutral]);
+    assert.deepEqual(keyboard.press("physical", physicalKeys.get("ShiftLeft"), 2300, profile),
+      [{ modifiers: SHIFT_LEFT, keys: [] }]);
+    assert.deepEqual(keyboard.release("physical", 2400), [neutral]);
+  }
+});
+
 test("Windows held touch Shift has no standalone report in either release order", () => {
   for (const releaseShiftFirst of [false, true]) {
     const keyboard = new KeyboardInput();
@@ -141,6 +159,14 @@ test("Windows long Shift holds cannot toggle IME after cancellation or other inp
   keyboard.press("shift", shift, 0, "windows");
   keyboard.clear();
   assert.deepEqual(keyboard.release("shift", 2000), []);
+  for (const duration of [50, 2000]) {
+    keyboard.press("shift", shift, 0, "windows");
+    keyboard.cancelDeferredShiftGestures();
+    assert.deepEqual(keyboard.report, neutral);
+    assert.equal(keyboard.shiftActive, true);
+    assert.deepEqual(keyboard.release("shift", duration), [neutral]);
+    assert.equal(keyboard.shiftLatched, false);
+  }
   for (const key of [physicalKeys.get("CapsLock"), physicalKeys.get("ShiftRight"), shift]) {
     keyboard.clear();
     keyboard.press("shift", shift, 0, "windows");

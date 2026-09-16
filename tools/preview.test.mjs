@@ -1089,6 +1089,68 @@ for (const browserType of [chromium, webkit]) {
       }, [{ modifiers: 0, keys: [4] }, neutral]);
       await expect(letter).toBeEnabled();
     }
+    await page.evaluate(() => localStorage.setItem("keyboard.host-profile.v1", "macos"));
+    await page.reload();
+    await takeControl(page);
+    const globe = page.getByRole("button", { name: "Switch input source" });
+    await expect(shift).toBeDisabled();
+    await expect(globe).toBeDisabled();
+    await expectReports(async () => {
+      await shift.evaluate(button => button.click());
+      await globe.evaluate(button => button.click());
+    }, []);
+    await expectReports(() => letter.tap(), [{ modifiers: 0, keys: [4] }, neutral]);
+    await page.getByRole("radio", { name: "Win", exact: true }).tap();
+    await expect(shift).toBeEnabled();
+    await expectReports(async () => {
+      await shift.tap();
+      await expect(shift).toHaveAttribute("data-shift", "latched");
+      await letter.tap();
+    }, [{ modifiers: 2, keys: [4] }, neutral]);
+    assert.deepEqual(errors, []);
+  });
+
+  test(`${browserType.name()} ignored physical keys cancel Windows Shift gestures`, { timeout: 30000 }, async context => {
+    const url = await startPreview(context);
+    const browser = await browserType.launch(browserType === webkit ?
+      { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+    context.after(() => browser.close());
+    const page = await browser.newPage({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+    const errors = [];
+    const states = [];
+    page.on("pageerror", error => errors.push(error.message));
+    page.on("websocket", socket => socket.on("framesent", frame => {
+      const message = JSON.parse(String(frame.payload));
+      if (message.type === "state") states.push({ modifiers: message.modifiers, keys: message.keys });
+    }));
+    const neutral = { modifiers: 0, keys: [] };
+    const counters = async () => (await fetch(new URL("/__test__/input", url))).json();
+    await page.goto(url);
+    await page.bringToFront();
+    await signIn(page);
+    await page.getByRole("radio", { name: "Win", exact: true }).tap();
+    const shift = page.getByRole("button", { name: "Shift", exact: true });
+    const letter = page.getByRole("button", { name: "A", exact: true });
+    for (const code of ["Escape", "ArrowLeft", "F1", "ControlLeft", "AltLeft", "MetaLeft"]) {
+      const start = states.length;
+      await shift.hover();
+      await page.mouse.down();
+      await expect(shift).toHaveAttribute("data-held", "true");
+      await page.keyboard.press(code, { delay: 1100 });
+      await page.mouse.up();
+      await expect(shift).toHaveAttribute("data-held", "false");
+      await expect(shift).toHaveAttribute("data-shift", "off");
+      await expect.poll(counters).toMatchObject({ report: neutral, pressed: false });
+      assert.deepEqual(states.slice(start), []);
+      if (["ControlLeft", "AltLeft", "MetaLeft"].includes(code)) {
+        await expect(letter).toBeDisabled();
+        await takeControl(page);
+      } else {
+        await expect(letter).toBeEnabled();
+      }
+      await letter.tap();
+      await expect.poll(() => states.slice(start)).toEqual([{ modifiers: 0, keys: [4] }, neutral]);
+    }
     assert.deepEqual(errors, []);
   });
 }

@@ -342,7 +342,7 @@ function render() {
   for (const button of rows.querySelectorAll("button")) {
     const key = definitions.get(button.dataset.key);
     button.disabled = key.action !== "page" &&
-      (!ready || (key.action === "globe" && !validHostProfile(hostProfile)));
+      (!ready || ((key.action === "globe" || key.action === "shift") && !validHostProfile(hostProfile)));
     if (key.action === "shift") {
       button.dataset.shift = keyboard.capsPending ? "pending" : keyboard.capsLock === true ? "caps" :
         keyboard.shiftLatched ? "latched" : "off";
@@ -540,6 +540,7 @@ surface.addEventListener("click", event => {
   changeInput(() => keyboard.release("accessible", performance.now()));
 });
 
+window.addEventListener("keydown", () => keyboard.cancelDeferredShiftGestures(), true);
 surface.addEventListener("keydown", event => {
   if (event.isComposing || event.target.closest("#local-echo-text, input, textarea, select, [contenteditable], button:not([data-key])")) return;
   const button = event.target.closest("button[data-key]");

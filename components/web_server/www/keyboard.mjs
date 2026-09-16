@@ -157,11 +157,15 @@ export class KeyboardInput {
     return [this.report, { modifiers: command.modifiers, keys: [...command.keys] }, this.report];
   }
 
-  press(sourceId, key, now, hostProfile = DEFAULT_HOST_PROFILE) {
-    if (this.sources.has(sourceId)) return [];
+  cancelDeferredShiftGestures() {
     for (const source of this.sources.values()) {
       if (source.deferStandalone) source.used = true;
     }
+  }
+
+  press(sourceId, key, now, hostProfile = DEFAULT_HOST_PROFILE) {
+    if (this.sources.has(sourceId) || (key.action === "shift" && !validHostProfile(hostProfile))) return [];
+    this.cancelDeferredShiftGestures();
     if (key.action === "shift") {
       this.sources.set(sourceId, { modifiers: SHIFT_LEFT, controlShift: true, started: now,
         deferStandalone: hostProfile === "windows",

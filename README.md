@@ -176,11 +176,14 @@ Caps Lock. With Host set to Win, short on-screen Shift taps do not send a
 standalone Shift: the modifier is sent with typing keys, avoiding the Chinese
 IME mode toggle caused by a bare Shift tap. To request an IME mode toggle,
 hold Shift alone for at least one second and release it. This sends one Left
-Shift tap and clears the one-shot latch. Other input during the hold or
-cancellation suppresses that gesture. The IME must have Shift mode switching
+Shift tap and clears the one-shot latch. Other keyboard input during the hold,
+including physical keys that are not forwarded, or cancellation suppresses
+that gesture. The IME must have Shift mode switching
 enabled; the page cannot observe its mode. iOS and physical Shift key mappings
 are unchanged. Changing Host clears held input and one-shot Shift without
 completing a pending IME gesture; it sends only a release if input was active.
+An unsupported saved Host disables Globe and on-screen Shift until a valid
+profile is selected; ordinary typing and physical Shift remain available.
 
 Caps state comes from USB host LED feedback, not a local guess. The release
 button, focus loss, cancellation, disconnect, and safety deadlines clear
