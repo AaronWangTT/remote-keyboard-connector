@@ -220,10 +220,13 @@ preserving the existing one-profile limit:
 | Portal router | Always on | Open station | On only during authorized path validation or ready operation, after a valid IPv4 lease and DNS configuration | Device AP only |
 
 The next configuration schema should store mode, SSID bytes, requested hostname,
-upstream security type, and a password only when the type requires one. Migrate
-valid version-1 records to Personal STA or Standalone AP without changing their
-meaning. Unknown modes and malformed combinations fail closed into the protected
-recovery AP without erasing the prior record.
+upstream security type, and a password only when the type requires one.
+Portal-router records additionally require a validated, nonzero unicast six-byte
+upstream BSSID; an absent or malformed BSSID is not a wildcard. Migrate valid
+version-1 records to Personal STA or Standalone AP without changing their meaning
+or adding a BSSID restriction to existing Personal STA profiles. Unknown modes
+and malformed combinations fail closed into the protected recovery AP without
+erasing the prior record.
 
 Persisting portal-router mode authorizes restoring the upstream profile, not
 restoring client transit. Transit authorization, association/lease bindings,
@@ -231,10 +234,24 @@ NAPT entries, and DNS transactions are runtime-only and start empty after reboot
 
 Use an explicit portal-network action rather than treating every blank password
 as permission to join an open network. For scan results, show the observed
-security type and require owner confirmation. For a hidden open SSID, require an
-explicit Open selection. At association time verify that the actual network is
-`WIFI_AUTH_OPEN`; do not silently accept a protected-to-open downgrade or a
-different SSID representation.
+security type and selected BSSID, distinguish same-name access points, and require
+owner confirmation. A hidden open SSID requires explicit Open selection and
+directed discovery of a concrete BSSID for confirmation before association.
+Constrain every initial connection, retry, and reboot restore to the saved or
+explicitly confirmed candidate BSSID. At association time verify the actual
+BSSID, SSID bytes, and `WIFI_AUTH_OPEN` before accepting DHCP results, probing,
+or setting up DNS/NAPT; do not silently accept a different access point,
+protected-to-open downgrade, or different SSID representation.
+
+If the saved BSSID is unavailable or a different BSSID is observed, keep transit
+blocked and the prior profile intact. Present the old and proposed BSSID through
+the protected AP and require a fresh authenticated owner confirmation before
+testing a replacement candidate. Do not roam to another same-name AP or overwrite
+the saved BSSID from an association event. Commit the replacement only through
+the same atomic candidate workflow; failure or cancellation keeps the old record.
+BSSID pinning is a selection/change-detection guard, not network authentication:
+an attacker can spoof both SSID and BSSID on an open network. It does not protect
+HTTP portal credentials or replace end-to-end HTTPS and certificate validation.
 
 Keep the board's station MAC stable across reconnects and reboot. Do not clone
 the client MAC, rotate it while a portal grant may be active, or expose controls
@@ -281,10 +298,28 @@ renumbering, authorization loss, or routing failure:
   clear the advisory portal result.
 4. Keep the protected AP and local keyboard service available when their own
    state remains healthy.
-5. Retry a lost upstream connection with bounded backoff. A healthy station lease
-  may remain after AP-client disconnect, but translations, DNS transactions, and
-  client authorization must not. Re-enable transit only through the setup
-  sequence with a valid station lease, DNS configuration, and fresh owner grant.
+5. Schedule a lost upstream connection for bounded retry under the AP-idle
+  arbitration below. A healthy station lease may remain after AP-client
+  disconnect, but translations, DNS transactions, and client authorization must
+  not. Re-enable transit only through the setup sequence with the confirmed
+  BSSID, a valid station lease, DNS configuration, and fresh owner grant.
+
+Reuse the existing network-owned AP-idle arbitration for firmware-initiated
+station scans, association retries, and channel changes. Defer disruptive work
+while an AP control lease or authenticated setup activity window is active;
+read-only status polling must not extend that window. Keep healthy local AP
+control available and expose a deferred-retry state. Resume bounded retries when
+the AP becomes idle, rechecking the guard immediately before each disruptive
+operation. Serialize that check with control admission, and prevent a new control
+lease from starting during the disruptive operation or before AP health recovers.
+
+An authenticated **Retry upstream** command may explicitly override deferral only
+after the owner confirms that AP connectivity may be interrupted. First release
+input and revoke keyboard control and client transit, then start the guarded
+retry. If the AP client disconnects, run the full translation/DNS cleanup and
+require reconnect plus fresh **Enable browser access** and **Take Control**
+actions; never restore either grant automatically. Unsolicited radio/channel loss
+can still interrupt the AP and must trigger the same fail-closed release path.
 
 Do not forward IPv6 or advertise an IPv6 router in the first increment. Do not
 add NAPT port mappings. Keep the current single AP-client limit. Bound and
@@ -473,7 +508,8 @@ not just successful NAPT sessions. Association alone must never enable transit.
 Extend the existing Network view rather than creating a second setup site:
 
 - Label open scan results clearly as unsecured and distinguish them from
-  unsupported enterprise or legacy-security networks.
+  unsupported enterprise or legacy-security networks. Show the selected BSSID
+  and require explicit confirmation of any replacement, including a same-name AP.
 - Offer an explicit **Use browser sign-in** action for a selected open network;
   do not show a password field for that action.
 - Before connecting, explain that the protected device AP stays active and that
@@ -485,7 +521,9 @@ Extend the existing Network view rather than creating a second setup site:
   payloads.
 - Provide **Open network sign-in**, **Check again**, **Retry upstream**,
   **Return to standalone AP**, and separately confirmed **Forget network**
-  commands as applicable.
+  commands as applicable. Show when automatic retry is deferred for AP control
+  or setup activity; **Retry upstream** requires confirmation of the possible AP
+  interruption before releasing control and proceeding.
 - Keep the current AP recovery URL visible using `state.ap_ip`, and show the
   proposed `state.ap_reconnect_ip` before a confirmed address change. Treat
   `http://192.168.4.1/` only as the normal default. Do not promise that the OS will
@@ -503,7 +541,9 @@ responses.
 | Failure | Required behavior |
 | --- | --- |
 | Open SSID unavailable or changes security | Report the specific association failure, retain the prior committed profile, and keep the protected AP. |
+| Saved BSSID unavailable or associated BSSID differs, including after reboot | Keep transit blocked and the prior profile intact; do not follow the SSID to another AP. Require authenticated confirmation of a specific replacement BSSID and a new atomic candidate test. BSSID pinning does not prevent deliberate MAC spoofing. |
 | Station DHCP timeout | Do not enable NAPT; retry with bounded backoff while local service remains available. |
+| Upstream recovery while an AP controller or setup window is active | Defer firmware-initiated scans/reassociation/channel changes until the AP-idle guard allows them or the owner confirms an explicit disruptive retry. Release/revoke before retry and require fresh grants after any AP reconnect. |
 | AP and station subnets overlap | Keep routing disabled and use the existing confirmed AP-renumbering workflow before retrying. |
 | No usable IPv4 station DNS server, including IPv6-only DNS | Report DNS unavailable and keep transit disabled; do not silently substitute a public resolver. |
 | DHCP DNS update does not reach client | Ask for one bounded reconnect in the proof of concept; require the local forwarder before release if the supported-client gate still fails. |
@@ -545,12 +585,15 @@ a target portal before persistence or UI work begins.
 ### 2. Configuration And State Model
 
 Add the versioned mode/security profile, migration, exact open-auth validation,
-candidate commit behavior, and portal-router lifecycle to
+confirmed BSSID binding, candidate commit behavior, and portal-router lifecycle to
 `components/network`. Extend native tests before changing the browser API.
 
 Gate: malformed and downgraded profiles fail closed; all old valid records retain
 their meaning; reboot and interrupted-save tests preserve the protected AP and a
-whole committed record.
+whole committed record. Test absent/malformed BSSIDs, duplicate SSIDs with
+different BSSIDs, an association mismatch, hidden-network discovery, and a changed
+BSSID after reconnect/reboot. No unconfirmed replacement may reach DHCP/probe/
+routing setup or replace the saved record; cancellation preserves the old profile.
 
 ### 3. Routing, DNS, And Isolation
 
@@ -566,7 +609,11 @@ bidirectional default-deny behavior in other modes and during candidate testing,
 established-only return traffic, no STA local-service exposure, and no port
 mapping. Disconnect the sole AP client, give a replacement the same IP, inject
 late old-client replies, and prove that neither stale traffic nor unapproved new
-transit reaches it before or after fresh authorization.
+transit reaches it before or after fresh authorization. Retry tests must keep
+automatic disruptive work deferred during both active AP control and setup
+windows, verify that polling does not prolong the window, and cover guard changes
+between timer scheduling and dispatch. Test idle resumption and confirmed manual
+retry, with release before disruption and fresh authorization after AP reconnect.
 
 ### 4. Owner Workflow And Detection
 
@@ -583,6 +630,8 @@ before and after AP renumbering. Probe tests must replay an earlier cached succe
 for a new nonce, return missing/mismatched nonces, and deliver late responses after
 timeout or a routing-generation change; none may enter `authorized`. Test advisory
 success expiry and continued manual sign-in availability even after probe success.
+Cover BSSID replacement confirmation/cancellation, deferred-retry status, and
+explicit retry confirmation without automatic control or transit restoration.
 
 ### 5. Resource And Physical Acceptance
 
@@ -600,12 +649,12 @@ small compatibility matrix into universal support.
 
 | Layer | Minimum evidence |
 | --- | --- |
-| Native C | Profile migration/validation, state transitions, NAPT/DNS configuration/verification ordering, grant/revoke generations, probe nonce/deadline/generation checks, rollback, retry, station-IP change, and injected API/cleanup failures. |
+| Native C | Profile migration/validation and BSSID binding, state transitions, NAPT/DNS configuration/verification ordering, grant/revoke generations, probe nonce/deadline/generation checks, rollback, AP-idle retry arbitration, station-IP change, and injected API/cleanup failures. |
 | DNS | Missing/IPv6-only resolvers, upstream changes, UDP and TCP, truncation, malformed replies, timeout, transaction exhaustion, AP-only authorized binding, stale-generation cleanup, and no-query logging. |
 | Browser/API | Owner/CSRF protections, explicit transit authorization and revocation, open-network confirmation, portal states, probe freshness/expiry and always-available manual sign-in on a usable authorized path, trigger endpoint contract, current recovery addresses, idempotent recovery, no secret persistence, and keyboard-input isolation. |
 | ESP-IDF build | Required forwarding/NAPT settings enabled, port mapping disabled, no PSRAM dependency, size/headroom recorded, and release logging reviewed. |
 | Packet security | NAPT source identity, bidirectional default-deny in all non-routing/failed states, authorized association/lease enforcement, same-IP replacement with delayed old-client replies, established-only return traffic, no STA access to local HTTP/WebSocket/mDNS, no local control traffic upstream, and no IPv6 forwarding. |
-| Physical network | AP+STA channel changes, subnet overlap, DHCP/DNS renewal, station reconnect/address change, client reconnect, portal expiry, and reboot persistence. |
+| Physical network | AP+STA channel changes, subnet overlap, DHCP/DNS renewal, station reconnect/address or BSSID change, duplicate SSIDs, active AP control/setup during recovery, confirmed disruptive retry, client reconnect, portal expiry, and reboot persistence. |
 | Resource behavior | Portal asset bursts, translation-table pressure, heap low-water mark, throughput, local UI responsiveness, and USB all-keys-up deadlines. |
 
 All automated results must be labeled separately from physical radio, portal,
