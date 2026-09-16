@@ -1157,7 +1157,221 @@ test("unknown Caps feedback is not replaced by a guessed lock state", { timeout:
   assert.equal((await (await fetch(new URL("/__test__/input", url))).json()).caps_lock, null);
 });
 
-test("all keyboard pages fit phone, tablet and desktop viewports without overlapping keys", { timeout: 30000 }, async (context) => {
+test("local echo is opt-in, passive, clearable and remembers only the setting", { timeout: 20000 }, async context => {
+  const url = await startPreview(context);
+  const browser = await chromium.launch();
+  context.after(() => browser.close());
+  const page = await browser.newPage({ hasTouch: true, viewport: { width: 390, height: 844 } });
+  page.setDefaultTimeout(5000);
+  await page.goto(url);
+  await signIn(page);
+  const toggle = page.getByRole("switch", { name: "Local echo", exact: true });
+  const echo = page.locator("#local-echo-text");
+  const counters = async () => (await (await fetch(new URL("/__test__/input", url))).json());
+  await expect(toggle).not.toBeChecked();
+  await expect(page.locator("#local-echo-window")).toBeHidden();
+  await page.keyboard.type("private", { delay: 20 });
+  await expect(echo).toHaveText("");
+  const before = await counters();
+  await toggle.check();
+  await expect(page.locator("#local-echo-window")).toBeVisible();
+  assert.equal((await counters()).down, before.down);
+  await page.locator("#keyboard").focus();
+  await page.keyboard.press("Shift+KeyH");
+  await page.keyboard.type("ello, remote.", { delay: 20 });
+  await expect(echo).toHaveText("Hello, remote.");
+  await page.keyboard.press("Backspace");
+  await expect(echo).toHaveText("Hello, remote");
+  await page.getByRole("button", { name: "Return", exact: true }).tap();
+  await expect(echo).toHaveText("");
+  await page.keyboard.type("clear me", { delay: 20 });
+  await expect(echo).toHaveText("clear me");
+  const beforeClear = await counters();
+  await page.getByRole("button", { name: "Clear local echo", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(echo).toHaveText("");
+  assert.equal((await counters()).down, beforeClear.down);
+  await page.keyboard.type("temporary", { delay: 20 });
+  await expect(echo).toHaveText("temporary");
+  await toggle.uncheck();
+  await expect(echo).toHaveText("");
+  await toggle.check();
+  await expect(echo).toHaveText("");
+  assert.deepEqual(await page.evaluate(() => ({ ...localStorage })), { "keyboard.local-echo.v1": "true" });
+  assert.equal(await echo.evaluate(element => element.isContentEditable), false);
+  await page.reload();
+  await expect(toggle).toBeChecked();
+  await expect(echo).toHaveText("");
+  await toggle.uncheck();
+  await page.reload();
+  await expect(toggle).not.toBeChecked();
+  await page.evaluate(() => localStorage.setItem("keyboard.local-echo.v1", "invalid"));
+  await page.reload();
+  await expect(toggle).not.toBeChecked();
+  await page.evaluate(() => {
+    Storage.prototype.setItem = () => { throw new Error("Storage unavailable"); };
+  });
+  await toggle.check();
+  await expect(page.locator("#local-echo-window")).toBeVisible();
+  await expect(page.locator("#ui-message")).toHaveText("Local echo preference could not be saved.");
+});
+
+test("local echo applies only acknowledged edits and never revives cleared pending text", { timeout: 20000 }, async context => {
+  const url = await startPreview(context);
+  const browser = await chromium.launch();
+  context.after(() => browser.close());
+  const page = await browser.newPage();
+  page.setDefaultTimeout(5000);
+  await page.addInitScript(() => {
+    window.deferEchoAcks = false;
+    window.echoReplies = [];
+    const listen = WebSocket.prototype.addEventListener;
+    WebSocket.prototype.addEventListener = function (type, callback, options) {
+      if (type !== "message") return listen.call(this, type, callback, options);
+      return listen.call(this, type, event => {
+        if (window.deferEchoAcks && JSON.parse(event.data).type === "queued") {
+          window.echoReplies.push(() => callback.call(this, event));
+        } else callback.call(this, event);
+      }, options);
+    };
+  });
+  await page.goto(url);
+  await signIn(page);
+  await page.getByRole("switch", { name: "Local echo", exact: true }).check();
+  const echo = page.locator("#local-echo-text");
+  for (const [action, code, expected] of [["deliver", "KeyA", "a"], ["deliver", "KeyB", "ab"],
+    ["deliver", "Backspace", "a"], ["deliver", "Enter", ""], ["clear", "KeyA", ""], ["toggle", "KeyA", ""]]) {
+    await page.locator("#keyboard").focus();
+    const before = await echo.textContent();
+    await page.evaluate(() => { window.deferEchoAcks = true; });
+    await page.keyboard.press(code);
+    await page.waitForFunction(() => window.echoReplies.length === 2);
+    const observed = await page.evaluate(action => {
+      const beforeReply = document.querySelector("#local-echo-text").textContent;
+      if (action === "clear") document.querySelector("#local-echo-clear").click();
+      if (action === "toggle") {
+        document.querySelector("#local-echo-toggle").click();
+        document.querySelector("#local-echo-toggle").click();
+      }
+      window.deferEchoAcks = false;
+      for (const reply of window.echoReplies.splice(0)) reply();
+      return beforeReply;
+    }, action);
+    assert.equal(observed, before);
+    await expect(echo).toHaveText(expected);
+    await expect(page.getByRole("button", { name: "A", exact: true })).toBeEnabled();
+  }
+  await page.locator("#keyboard").focus();
+  await page.keyboard.press("KeyB");
+  await expect(echo).toHaveText("b");
+});
+
+for (const [engineName, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
+  test(`${engineName} local echo supports keyboard-only scrolling without remote input`, { timeout: 25000 }, async context => {
+    const url = await startPreview(context);
+    const browser = await engine.launch(engineName === "WebKit" ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+    context.after(() => browser.close());
+    const page = await browser.newPage({ hasTouch: true, viewport: { width: 844, height: 390 } });
+    page.setDefaultTimeout(5000);
+    const counters = async () => (await (await fetch(new URL("/__test__/input", url))).json());
+    await page.goto(url);
+    await signIn(page);
+    const toggle = page.getByRole("switch", { name: "Local echo", exact: true });
+    const echo = page.locator("#local-echo-text");
+    await toggle.check();
+    await page.locator("#keyboard").focus();
+    const text = "abcdefghij".repeat(8);
+    await page.keyboard.type(text, { delay: 20 });
+    await expect(echo).toHaveText(text);
+    await expect.poll(counters).toMatchObject({ down: text.length, up: text.length, queued: text.length * 2 });
+    const before = await counters();
+    await toggle.focus();
+    await page.keyboard.press("Tab");
+    await expect(echo).toBeFocused();
+    assert.equal(await echo.evaluate(element => element.isContentEditable), false);
+    assert.equal(await echo.evaluate(element => getComputedStyle(element).outlineStyle), "solid");
+    const scrollLeft = await echo.evaluate(element => element.scrollLeft);
+    assert.ok(scrollLeft > 0);
+    await page.keyboard.press("ArrowLeft");
+    await expect.poll(() => echo.evaluate(element => element.scrollLeft)).toBeLessThan(scrollLeft);
+    await page.keyboard.press("Space");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("local", { delay: 20 });
+    await expect(echo).toHaveText(text);
+    assert.deepEqual(await counters(), before);
+    const screenshots = new URL("../.cache/tests/", import.meta.url);
+    await mkdir(screenshots, { recursive: true });
+    await page.screenshot({ path: fileURLToPath(new URL(`local-echo-${engineName.toLowerCase()}-focus.png`, screenshots)) });
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name: "Clear local echo", exact: true })).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(echo).toHaveText("");
+    assert.deepEqual(await counters(), before);
+    await page.getByRole("button", { name: "A", exact: true }).tap();
+    await expect(echo).toHaveText("a");
+  });
+
+  test(`${engineName} local echo preserves input semantics and erases text on lifecycle exits`, { timeout: 25000 }, async context => {
+    const url = await startPreview(context);
+    const browser = await engine.launch(engineName === "WebKit" ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+    context.after(() => browser.close());
+    const page = await browser.newPage({ hasTouch: true, viewport: { width: 390, height: 844 } });
+    page.setDefaultTimeout(5000);
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.goto(url);
+    await signIn(page);
+    await page.getByRole("switch", { name: "Local echo", exact: true }).check();
+    const echo = page.locator("#local-echo-text");
+    const letter = page.getByRole("button", { name: "A", exact: true });
+    await page.locator("#keyboard").focus();
+    await page.keyboard.down("a");
+    await expect(echo).toHaveText("a");
+    await page.keyboard.down("a");
+    await letter.tap();
+    await expect(echo).toHaveText("a");
+    await page.keyboard.up("a");
+    await letter.tap();
+    await expect(echo).toHaveText("aa");
+    await echo.dispatchEvent("pointercancel", { pointerId: 99, pointerType: "touch", bubbles: true });
+    await expect(echo).toHaveText("aa");
+    await expect(letter).toBeEnabled();
+    for (const name of ["Switch input source", "Cancel (Escape)"]) {
+      await page.getByRole("button", { name, exact: true }).tap();
+      await expect(echo).toHaveText("aa");
+    }
+    await page.getByRole("button", { name: "123", exact: true }).tap();
+    await page.getByRole("button", { name: "?", exact: true }).tap();
+    await expect(echo).toHaveText("aa?");
+    await page.setViewportSize({ width: 844, height: 390 });
+    await expect(echo).toHaveText("aa?");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(echo).toHaveText("aa?");
+    await page.getByRole("button", { name: "ABC", exact: true }).tap();
+    for (const event of ["release", "blur", "pagehide", "visibilitychange", "network", "logout"]) {
+      await letter.tap();
+      await expect(echo).not.toHaveText("");
+      if (event === "release") await page.getByRole("button", { name: "Release all keys", exact: true }).click();
+      else if (event === "network") await page.getByRole("button", { name: "Network settings", exact: true }).click();
+      else if (event === "logout") await page.getByRole("button", { name: "Sign out", exact: true }).click();
+      else await page.evaluate(event => {
+        if (event === "visibilitychange") {
+          Object.defineProperty(document, "hidden", { configurable: true, value: true });
+          document.dispatchEvent(new Event(event));
+          delete document.hidden;
+        } else window.dispatchEvent(new Event(event));
+      }, event);
+      await expect(echo).toHaveText("");
+      if (event === "logout") break;
+      if (event === "network") await page.getByRole("button", { name: "Back to keyboard", exact: true }).click();
+      await takeControl(page);
+      await expect(echo).toHaveText("");
+    }
+    assert.deepEqual(errors, []);
+  });
+}
+
+test("all keyboard pages fit phone, tablet and desktop viewports without overlapping keys", { timeout: 45000 }, async (context) => {
   const url = await startPreview(context);
   const browser = await chromium.launch();
   context.after(() => browser.close());
@@ -1171,9 +1385,16 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
   await expect(page.getByRole("button", { name: "A", exact: true })).toBeEnabled();
   const screenshots = new URL("../.cache/tests/", import.meta.url);
   await mkdir(screenshots, { recursive: true });
-  for (const [width, height] of [[320, 568], [375, 667], [390, 844], [430, 932], [568, 320],
-    [844, 390], [768, 1024], [1024, 768], [1366, 768], [1920, 1080]]) {
+  for (const [width, height, echoEnabled] of [[320, 568], [375, 667], [390, 844], [430, 932], [568, 320],
+    [844, 390], [768, 1024], [1024, 768], [1366, 768], [1920, 1080]].flatMap(viewport => [[...viewport, false], [...viewport, true]])) {
     await page.setViewportSize({ width, height });
+    await page.getByRole("switch", { name: "Local echo", exact: true }).setChecked(echoEnabled);
+    if (echoEnabled) {
+      await page.locator("#keyboard").focus();
+      const text = width === 1920 ? "w".repeat(280) : "hello, remote.";
+      await page.keyboard.type(text, { delay: 20 });
+      await expect(page.locator("#local-echo-text")).toHaveText(text.slice(-256));
+    }
     for (const mode of ["letters", "numbers", "symbols"]) {
       if (mode === "letters" && await page.locator("#key-rows").getAttribute("data-page") !== "letters") {
         await page.getByRole("button", { name: "ABC", exact: true }).click();
@@ -1187,7 +1408,7 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
         const header = document.querySelector("header").getBoundingClientRect();
         const footer = document.querySelector("footer").getBoundingClientRect();
         const problems = [];
-        const metadata = [...document.querySelectorAll(".keyboard-meta > span, .host-profile-field")];
+        const metadata = [...document.querySelectorAll(".keyboard-meta > span, .host-profile-field, .echo-toggle")];
         const metaBounds = metadata.map(element => element.getBoundingClientRect());
         metadata.forEach((element, index) => {
           const box = metaBounds[index];
@@ -1202,6 +1423,20 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
           if (segment.scrollWidth > segment.clientWidth + 1) problems.push("host toggle label overflow");
         }
         const bounds = keys.map(button => button.getBoundingClientRect());
+        const echo = document.querySelector("#local-echo-window");
+        if (!echo.hidden) {
+          const box = echo.getBoundingClientRect();
+          if (box.left < 0 || box.right > innerWidth || box.top < header.bottom || box.bottom > bounds[0].top) problems.push("echo bounds");
+          for (const other of metaBounds) {
+            if (box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top) problems.push("echo metadata overlap");
+          }
+          const text = document.querySelector("#local-echo-text").getBoundingClientRect();
+          const clear = document.querySelector("#local-echo-clear").getBoundingClientRect();
+          if (text.right > clear.left || text.top < box.top || text.bottom > box.bottom) problems.push("echo content bounds");
+          if (clear.width < 44 || clear.height < 44) problems.push("echo clear target");
+        }
+        const toggle = document.querySelector(".echo-toggle").getBoundingClientRect();
+        if (toggle.width < 44 || toggle.height < 44) problems.push("echo toggle target");
         keys.forEach((button, index) => {
           const box = bounds[index];
           const utility = ["globe", "cancel"].includes(button.dataset.action);
@@ -1236,11 +1471,11 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
         return { problems, width: document.documentElement.scrollWidth,
           height: document.documentElement.scrollHeight, viewportHeight: innerHeight };
       });
-      assert.deepEqual(layout.problems, [], `${width}x${height} ${mode}`);
+      assert.deepEqual(layout.problems, [], `${width}x${height} ${mode} echo=${echoEnabled}`);
       assert.ok(layout.width <= width, `Horizontal scrolling at ${width}x${height} ${mode}`);
       assert.ok(layout.height <= layout.viewportHeight + 1, `Vertical scrolling at ${width}x${height} ${mode}: ${layout.height}`);
       if ([320, 390, 568, 768, 1366].includes(width)) {
-        await page.screenshot({ path: fileURLToPath(new URL(`keyboard-${width}-${mode}.png`, screenshots)) });
+        await page.screenshot({ path: fileURLToPath(new URL(`keyboard-${width}-${mode}${echoEnabled ? "-echo" : ""}.png`, screenshots)) });
       }
     }
   }
@@ -1302,12 +1537,14 @@ test("buffered sockets, dropped acknowledgements and send errors release and rec
   await signIn(page);
   const key = page.getByRole("button", { name: "A", exact: true });
   await expect(key).toBeEnabled();
+  await page.getByRole("switch", { name: "Local echo", exact: true }).check();
   for (const fault of ["buffered", "ack", "send"]) {
     const baseline = await counters();
     await page.locator("#keyboard").focus();
     await page.evaluate(fault => { window.transportFault = fault; }, fault);
     await page.keyboard.down("a");
     await expect(key).toBeDisabled();
+    await expect(page.locator("#local-echo-text")).toHaveText("");
     await expect.poll(async () => (await counters()).pressed).toBe(false);
     await page.evaluate(() => { window.transportFault = null; });
     await takeControl(page);
