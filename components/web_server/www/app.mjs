@@ -346,7 +346,8 @@ function render() {
     if (key.action === "shift") {
       button.dataset.shift = keyboard.capsPending ? "pending" : keyboard.capsLock === true ? "caps" :
         keyboard.shiftLatched ? "latched" : "off";
-      button.dataset.held = String((report.modifiers & 0x22) !== 0);
+      button.dataset.held = String((report.modifiers & 0x22) !== 0 ||
+        [...keyboard.sources.values()].some(source => source.controlShift));
       button.setAttribute("aria-pressed", String(keyboard.shiftActive || keyboard.capsLock === true));
       button.querySelector(".icon").dataset.icon = keyboard.capsLock === true ? "caps" : "shift";
     } else {
@@ -589,6 +590,8 @@ hostProfileToggle.addEventListener("change", event => {
   if (!event.target.matches('input[name="host-profile"]') || !event.target.checked ||
       !validHostProfile(event.target.value)) return;
   hostProfile = event.target.value;
+  keyboard.clear();
+  if (ready) publish([keyboard.report]);
   try { localStorage.setItem(hostProfileStorageKey, hostProfile); }
   catch { notify("Host preference could not be saved."); }
   render();

@@ -178,7 +178,9 @@ IME mode toggle caused by a bare Shift tap. To request an IME mode toggle,
 hold Shift alone for at least one second and release it. This sends one Left
 Shift tap and clears the one-shot latch. Other input during the hold or
 cancellation suppresses that gesture. The IME must have Shift mode switching
-enabled; the page cannot observe its mode. iOS and physical Shift are unchanged.
+enabled; the page cannot observe its mode. iOS and physical Shift key mappings
+are unchanged. Changing Host clears held input and one-shot Shift without
+completing a pending IME gesture; it sends only a release if input was active.
 
 Caps state comes from USB host LED feedback, not a local guess. The release
 button, focus loss, cancellation, disconnect, and safety deadlines clear

@@ -512,7 +512,9 @@ unsupported saved values leave both segments unselected until the user chooses o
 A Globe tap sends its preset when the normal control and USB
 readiness gates permit input. Keep the host-type setting editable and retain a
 saved selection across reloads and reconnects rather than resetting it to iOS.
-Loading the page or changing the host setting must never send a chord. An invalid
+Loading the page or changing the host setting must never send a chord. A profile
+change clears held input and one-shot Shift, sending only a neutral release if
+needed. It never completes a pending gesture from the old profile. An invalid
 or unsupported saved profile must not silently fall back or emit input; require
 a valid selection instead. A remembered host type is a user preference and must
 be updated when the board moves to a different host type. USB-enumeration

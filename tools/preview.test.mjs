@@ -974,6 +974,7 @@ for (const browserType of [chromium, webkit]) {
         const start = states.length;
         await activate();
         await expect(shift).toHaveAttribute("data-shift", "latched");
+        await expect(shift).toHaveAttribute("data-held", "false");
         assert.equal(states.length, start);
         await letter.tap();
       }, [{ modifiers: 2, keys: [4] }, neutral]);
@@ -987,11 +988,16 @@ for (const browserType of [chromium, webkit]) {
     await expectReports(async () => {
       await shift.hover();
       await page.mouse.down();
+      await expect(shift).toHaveAttribute("data-held", "true");
+      await expect(shift).toHaveAttribute("data-shift", "off");
+      await expect(shift).toHaveAttribute("aria-pressed", "true");
+      await expect.poll(counters).toMatchObject({ report: neutral, pressed: false });
       await expect(letter).toHaveText("A");
       await page.keyboard.press("a", { delay: 1100 });
       await page.mouse.up();
     }, [{ modifiers: 2, keys: [4] }, neutral]);
     await expect(shift).toHaveAttribute("data-shift", "off");
+    await expect(shift).toHaveAttribute("data-held", "false");
 
     await expectReports(() => shift.dblclick({ delay: 60 }), [{ modifiers: 0, keys: [57] }, neutral]);
     await expect(page.locator("#caps-status")).toHaveText("Caps on");
@@ -1016,6 +1022,73 @@ for (const browserType of [chromium, webkit]) {
     await expect(letter).toBeDisabled();
     await expect.poll(counters).toMatchObject({ report: neutral, pressed: false });
     assert.equal(states.slice(beforeCancel).some(state => state.modifiers === 2 && state.keys.length === 0), false);
+    assert.deepEqual(errors, []);
+  });
+
+  test(`${browserType.name()} Host changes cancel Shift holds, latches and typing`, { timeout: 30000 }, async context => {
+    const url = await startPreview(context);
+    const browser = await browserType.launch(browserType === webkit ?
+      { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+    context.after(() => browser.close());
+    const page = await browser.newPage({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+    const errors = [];
+    const states = [];
+    page.on("pageerror", error => errors.push(error.message));
+    page.on("websocket", socket => socket.on("framesent", frame => {
+      const message = JSON.parse(String(frame.payload));
+      if (message.type === "state") states.push({ modifiers: message.modifiers, keys: message.keys });
+    }));
+    const neutral = { modifiers: 0, keys: [] };
+    const counters = async () => (await fetch(new URL("/__test__/input", url))).json();
+    const expectReports = async (activate, expected) => {
+      const start = states.length;
+      await activate();
+      await expect.poll(() => states.slice(start)).toEqual(expected);
+      await expect.poll(counters).toMatchObject({ report: neutral, pressed: false });
+    };
+    await page.goto(url);
+    await page.bringToFront();
+    await signIn(page);
+    const shift = page.getByRole("button", { name: "Shift", exact: true });
+    const letter = page.getByRole("button", { name: "A", exact: true });
+    for (const [from, to] of [["Win", "iOS"], ["iOS", "Win"]]) {
+      const originalHost = page.getByRole("radio", { name: from, exact: true });
+      const nextHost = page.getByRole("radio", { name: to, exact: true });
+      await originalHost.tap();
+      await expectReports(async () => {
+        await shift.hover();
+        await page.mouse.down();
+        await expect(shift).toHaveAttribute("data-held", "true");
+        const heldSince = Date.now();
+        await expect.poll(() => Date.now() - heldSince).toBeGreaterThanOrEqual(1000);
+        await nextHost.evaluate(input => input.click());
+        await expect(nextHost).toBeChecked();
+        await expect(shift).toHaveAttribute("data-held", "false");
+        await expect(shift).toHaveAttribute("data-shift", "off");
+        await page.mouse.up();
+      }, from === "iOS" ? [{ modifiers: 2, keys: [] }, neutral] : []);
+      await expectReports(() => letter.tap(), [{ modifiers: 0, keys: [4] }, neutral]);
+
+      await expectReports(async () => {
+        await shift.tap();
+        await expect(shift).toHaveAttribute("data-shift", "latched");
+        await originalHost.tap();
+        await expect(shift).toHaveAttribute("data-shift", "off");
+        await expect(shift).toHaveAttribute("data-held", "false");
+        await letter.tap();
+      }, [...(to === "iOS" ? [{ modifiers: 2, keys: [] }, neutral] : []),
+        { modifiers: 0, keys: [4] }, neutral]);
+
+      await expectReports(async () => {
+        await page.locator("#keyboard").focus();
+        await page.keyboard.down("a");
+        await expect.poll(counters).toMatchObject({ report: { modifiers: 0, keys: [4] } });
+        await nextHost.tap();
+        await expect.poll(counters).toMatchObject({ report: neutral, pressed: false });
+        await page.keyboard.up("a");
+      }, [{ modifiers: 0, keys: [4] }, neutral]);
+      await expect(letter).toBeEnabled();
+    }
     assert.deepEqual(errors, []);
   });
 }
