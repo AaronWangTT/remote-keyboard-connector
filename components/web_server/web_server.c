@@ -24,6 +24,10 @@
 
 extern const char index_start[] asm("_binary_index_html_start");
 extern const char index_end[] asm("_binary_index_html_end");
+extern const char ota_html_start[] asm("_binary_ota_html_start");
+extern const char ota_html_end[] asm("_binary_ota_html_end");
+extern const char ota_script_start[] asm("_binary_ota_mjs_start");
+extern const char ota_script_end[] asm("_binary_ota_mjs_end");
 extern const char css_start[] asm("_binary_app_css_start");
 extern const char css_end[] asm("_binary_app_css_end");
 extern const char javascript_start[] asm("_binary_app_mjs_start");
@@ -66,6 +70,8 @@ typedef struct {
 
 static const web_asset_t assets[] = {
     {"/", "text/html; charset=utf-8", index_start, index_end},
+    {"/ota", "text/html; charset=utf-8", ota_html_start, ota_html_end},
+    {"/ota.mjs", "text/javascript; charset=utf-8", ota_script_start, ota_script_end},
     {"/app.css", "text/css; charset=utf-8", css_start, css_end},
     {"/app.mjs", "text/javascript; charset=utf-8", javascript_start, javascript_end},
     {"/keyboard.mjs", "text/javascript; charset=utf-8", keyboard_start, keyboard_end},
@@ -726,7 +732,7 @@ static esp_err_t update_management_handler(httpd_req_t *request)
     firmware_update_tick();
     bool firmware = strcmp(request->uri, "/api/v1/firmware") == 0;
     if (firmware) return update_reply(request, false, 0);
-    if (firmware_update_status().policy.job_id != 0 && !update_owned(request, session)) {
+    if (firmware_update_status().busy && !update_owned(request, session)) {
         return problem(request, "403 Forbidden", "update_owner_required");
     }
     if (!mutation) return update_reply(request, true, 0);

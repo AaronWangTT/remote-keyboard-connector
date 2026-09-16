@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f4f7f8">
+  <title>Firmware Update</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/ota.mjs" type="module"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="identity">
+        <h1>Firmware Update</h1>
+        <div class="statuses" role="status" aria-live="polite"><span id="connection-status" class="status">Loading</span></div>
+      </div>
+      <button id="logout" class="tool-button neutral" type="button" aria-label="Sign out" title="Sign out" hidden>
+        <span class="icon" data-icon="logout" aria-hidden="true"></span>
+      </button>
+    </header>
+    <div class="workspace-content">
+      <p id="ui-message" class="inline-message" role="alert" hidden></p>
+      <section id="account-view" class="account-panel" aria-labelledby="account-title">
+        <h2 id="account-title">Sign in</h2>
+        <form id="account-form">
+          <div class="field">
+            <label for="owner-password">Owner password</label>
+            <div class="password-field">
+              <input id="owner-password" type="password" autocomplete="current-password" maxlength="128" required>
+              <button id="password-toggle" class="tool-button neutral" type="button" aria-label="Show password" title="Show password"><span class="icon" data-icon="eye" aria-hidden="true"></span></button>
+            </div>
+          </div>
+          <button id="account-submit" class="command-button" type="submit" disabled>Sign in</button>
+          <button id="session-retry" class="command-button secondary" type="button" hidden>Retry connection</button>
+        </form>
+      </section>
+      <section id="firmware-view" class="network-panel" aria-label="Firmware" hidden>
+        <dl class="network-facts">
+          <dt>Running version</dt><dd id="firmware-version">-</dd>
+          <dt>Board</dt><dd id="firmware-board">-</dd>
+          <dt>Build</dt><dd id="firmware-profile">-</dd>
+          <dt>Candidate</dt><dd id="firmware-candidate">None</dd>
+        </dl>
+        <p id="firmware-status" class="job-status" role="status" aria-live="polite">Loading</p>
+        <progress id="firmware-progress" max="100" value="0" aria-label="Firmware upload progress" hidden></progress>
+        <form id="firmware-form">
+          <div class="field"><label for="firmware-file">Firmware image</label><input id="firmware-file" type="file" accept=".bin,application/octet-stream" required></div>
+          <button id="firmware-upload" class="command-button" type="submit" disabled>Upload</button>
+        </form>
+        <div class="network-job-actions firmware-actions">
+          <button id="firmware-activate" class="command-button" type="button" hidden>Install and restart</button>
+          <button id="firmware-cancel" class="command-button secondary" type="button" hidden>Cancel update</button>
+          <button id="firmware-refresh" class="tool-button neutral" type="button" aria-label="Refresh firmware status" title="Refresh firmware status"><span class="icon" data-icon="refresh" aria-hidden="true"></span></button>
+        </div>
+      </section>
+    </div>
+    <footer><span id="device-address"></span><span>HTTP/WS development</span></footer>
+  </main>
+</body>
+</html>

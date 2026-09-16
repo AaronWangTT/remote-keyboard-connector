@@ -143,9 +143,13 @@ Repeat ownership claim and Wi-Fi setup afterward. There is no dedicated migratio
 tool or old-NVS conversion, and no eFuse change. Optional old-flash backups are
 private user precautions, not installation inputs.
 
-For routine OTA, use either AP or station mode, sign in, and open Network >
-Firmware updates. Upload `firmware-ota.bin`, wait for verification, then choose
-Install and restart. Sign in again and confirm the running version. The inactive
+For routine OTA, use either AP or station mode and open `http://kb.local/ota`
+directly, or append `/ota` to the device's current hostname/IP address. This
+is a separate page with no links or buttons connecting it to the keyboard or
+network settings pages. Sign in with the owner password if needed; the existing
+owner session is also accepted. Upload `firmware-ota.bin`, wait for verification,
+then choose Install and restart. Sign in again on `/ota` and confirm the running
+version. The inactive
 slot is written, a failed trial boot rolls back, and credentials/settings are
 preserved. Uploads require a higher `major.minor.patch` version, matching
 board/layout, and the same signing key. USB host enumeration is not required.

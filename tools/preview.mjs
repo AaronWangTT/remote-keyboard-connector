@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { parseTree } from "jsonc-parser";
 import { WebSocket, WebSocketServer } from "ws";
 import { passwordIterations } from "./provision-device.mjs";
@@ -36,17 +37,18 @@ let managementUntil = 0;
 let firmwareVersion = "0.1.0";
 let updateJob = { job_id: 0, phase: "idle", received: 0, expected: 0, candidate_version: "", sha256: "", error: "" };
 let updateOwner = null;
-let uploadActive = false;
+let activeUpload = null;
 let updateDeadline = 0;
 let updateLastProgress = 0;
 const updateDelay = Math.max(10, Number(process.env.PREVIEW_UPDATE_DELAY_MS) || 200);
 const updateStagedTtl = Math.max(100, Number(process.env.PREVIEW_UPDATE_STAGED_MS) || 120000);
+const updateIdleTtl = Math.max(100, Number(process.env.PREVIEW_UPDATE_IDLE_MS) || 10000);
 if (process.env.PREVIEW_NETWORK_MODE === "station") Object.assign(network, {
   ap_active: false, ap_ip: "", station_online: true, station_ip: "192.168.1.50", desired_station: true,
   has_profile: true, phase: "station", saved_ssid: "Home Wi-Fi", station_ssid: "Home Wi-Fi" });
 
 function updateBusy() {
-  return uploadActive || ["receiving", "verifying", "staged", "activating"].includes(updateJob.phase);
+  return activeUpload !== null || ["receiving", "verifying", "staged", "activating"].includes(updateJob.phase);
 }
 
 function firmwareInfo() {
@@ -54,9 +56,24 @@ function firmwareInfo() {
     test_only: true, available: true, trial_boot: false, busy: updateBusy(), max_bytes: 0x4cc000 };
 }
 
+function releaseUpload(job, abort = false) {
+  if (activeUpload?.job !== job) return;
+  const upload = activeUpload;
+  activeUpload = null;
+  if (abort) {
+    upload.controller.abort();
+    if (!upload.response.destroyed && !upload.response.headersSent) {
+      upload.response.setHeader("Connection", "close");
+      upload.response.once("finish", () => upload.request.destroy());
+      sendJson(upload.response, 400, { error: "update_failed" });
+    } else upload.request.destroy();
+  }
+}
+
 function cancelUpdate() {
   if (!["receiving", "verifying", "staged"].includes(updateJob.phase)) return false;
   Object.assign(updateJob, { phase: "cancelled", error: "cancelled" });
+  releaseUpload(updateJob, true);
   return true;
 }
 
@@ -75,50 +92,51 @@ async function updateRequest(request, response) {
     const current = updateJob = { job_id: updateJob.job_id + 1, phase: "receiving", received: 0, expected,
       candidate_version: "", sha256: "", error: "" };
     updateOwner = session;
-    uploadActive = true;
+    const uploadController = new AbortController();
+    activeUpload = { job: current, request, response, controller: uploadController };
     updateDeadline = performance.now() + 300000;
     updateLastProgress = performance.now();
     const chunks = [];
     try {
       for await (const chunk of request) {
-        if (current.phase !== "receiving" || current.received + chunk.length > expected) throw new Error("cancelled");
+        if (current !== updateJob || current.phase !== "receiving" || current.received + chunk.length > expected) throw new Error("cancelled");
         current.received += chunk.length;
         updateLastProgress = performance.now();
         chunks.push(chunk);
       }
       if (current.received !== expected || current.phase !== "receiving") throw new Error("incomplete");
       current.phase = "verifying";
-      await new Promise(resolve => setTimeout(resolve, updateDelay));
+      await delay(updateDelay, undefined, { signal: uploadController.signal });
       const data = Buffer.concat(chunks);
       const field = offset => data.subarray(offset, offset + 32).toString("ascii").split("\0")[0];
       const version = field(0x120 + 184);
       const parts = value => value.split(".").map(Number);
       const next = parts(version), previous = parts(firmwareVersion);
       const difference = next.findIndex((value, index) => value !== previous[index]);
-      if (current.phase !== "verifying" || process.env.PREVIEW_UPDATE_FAIL === "signature" || data[0] !== 0xe9 ||
+      if (current !== updateJob || current.phase !== "verifying" || process.env.PREVIEW_UPDATE_FAIL === "signature" || data[0] !== 0xe9 ||
           data.subarray(0x120, 0x128).toString() !== "KBOTA001" || field(0x120 + 72) !== firmwareInfo().board ||
           field(0x120 + 104) !== firmwareInfo().layout ||
           !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version) || next.some(value => value > 65535) ||
           difference < 0 || next[difference] <= previous[difference] || data[expected - 4096] !== 0xe7) throw new Error("invalid_image");
       Object.assign(current, { phase: "staged", candidate_version: version, sha256: createHash("sha256").update(data).digest("hex") });
       updateDeadline = performance.now() + updateStagedTtl;
-      uploadActive = false;
+      releaseUpload(current);
       return sendJson(response, 200, { ...firmwareInfo(), ...current });
     } catch {
-      if (current.phase !== "cancelled") Object.assign(current, { phase: "failed", error: "invalid_or_incomplete_image" });
-      uploadActive = false;
-      if (!response.destroyed) sendJson(response, 400, { error: "update_failed" });
+      if (["receiving", "verifying"].includes(current.phase)) Object.assign(current, { phase: "failed", error: "invalid_or_incomplete_image" });
+      releaseUpload(current);
+      if (!response.destroyed && !response.writableEnded) sendJson(response, 400, { error: "update_failed" });
       return;
     }
   }
-  if (updateJob.job_id !== 0 && session !== updateOwner) return sendJson(response, 403, { error: "update_owner_required" });
+  if (updateBusy() && session !== updateOwner) return sendJson(response, 403, { error: "update_owner_required" });
   if (request.url === "/api/v1/update/job" && request.method === "GET") return sendJson(response, 200, { ...firmwareInfo(), ...updateJob });
   const activation = request.url === "/api/v1/update/activate" && request.method === "POST";
   if (!activation && !(request.url === "/api/v1/update/job" && request.method === "DELETE")) return sendJson(response, 405, {});
   const command = await jsonBody(request, { numbers: true, maximum: 192 });
   if (!command || Object.keys(command).length !== (activation ? 2 : 1) || !Number.isInteger(command.job_id) ||
       command.job_id < 1 || (activation && !/^[a-f0-9]{64}$/.test(command.sha256 ?? ""))) return sendJson(response, 400, { error: "invalid_update_request" });
-  if (command.job_id !== updateJob.job_id || (activation ? uploadActive || updateJob.phase !== "staged" ||
+  if (command.job_id !== updateJob.job_id || (activation ? activeUpload !== null || updateJob.phase !== "staged" ||
       command.sha256 !== updateJob.sha256 : !cancelUpdate())) return sendJson(response, 409, { error: "update_not_ready" });
   if (activation) {
     updateJob.phase = "activating";
@@ -425,6 +443,8 @@ function validReport(message) {
 
 const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
+  ["/ota", ["ota.html", "text/html; charset=utf-8"]],
+  ["/ota.mjs", ["ota.mjs", "text/javascript; charset=utf-8"]],
   ["/app.css", ["app.css", "text/css; charset=utf-8"]],
   ["/app.mjs", ["app.mjs", "text/javascript; charset=utf-8"]],
   ["/keyboard.mjs", ["keyboard.mjs", "text/javascript; charset=utf-8"]],
@@ -605,9 +625,11 @@ server.on("upgrade", (request, socket, head) => {
 
 setInterval(() => {
   if (updateBusy() && updateJob.phase !== "activating") {
-    if (!sessions.has(updateOwner?.token)) cancelUpdate();
-    else if (performance.now() >= updateDeadline || (updateJob.phase === "receiving" && performance.now() - updateLastProgress >= 10000)) {
+    const now = performance.now();
+    if (!sessions.has(updateOwner?.token) || now - updateOwner.lastSeen >= 900000 || now - updateOwner.createdAt >= 28800000) cancelUpdate();
+    else if (now >= updateDeadline || (updateJob.phase === "receiving" && now - updateLastProgress >= updateIdleTtl)) {
       Object.assign(updateJob, { phase: "failed", error: "update_timeout" });
+      releaseUpload(updateJob, true);
     }
   }
   if (pendingControl && (performance.now() >= pendingControl.until || !sessions.has(pendingControl.session.token))) pendingControl = null;
@@ -634,6 +656,7 @@ server.listen(port, "127.0.0.1", () => {
 
 function shutdown() {
   console.log("Preview receipts:", JSON.stringify(inputSnapshot()));
+  releaseUpload(updateJob, true);
   for (const connection of websocketServer.clients) connection.terminate();
   websocketServer.close();
   server.close();

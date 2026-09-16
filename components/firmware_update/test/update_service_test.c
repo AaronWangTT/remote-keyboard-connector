@@ -33,7 +33,8 @@ void vTaskDelay(unsigned ticks) { assert(enters == 0); now += ticks * 1000; }
 void vTaskDelete(void *task) { assert(task == NULL); longjmp(task_exit, 1); }
 void esp_restart(void) { longjmp(task_exit, 2); }
 void wdt_hal_write_protect_disable(wdt_hal_context_t *context) { (void)context; }
-void wdt_hal_disable(wdt_hal_context_t *context) { (void)context; watchdog_disabled = true; assert(marks > 0); }
+void wdt_hal_disable(wdt_hal_context_t *context)
+{ (void)context; watchdog_disabled = true; assert(marks > 0 || boot_state == ESP_OTA_IMG_VALID); }
 void wdt_hal_write_protect_enable(wdt_hal_context_t *context) { (void)context; }
 esp_err_t esp_flash_get_size(void *chip, uint32_t *size) { (void)chip; *size = 0x1000000; return ESP_OK; }
 const esp_partition_t *esp_partition_find_first(int type, int subtype, const char *name)
@@ -88,7 +89,7 @@ static bool healthy(void) { health_calls++; return health_ok; }
 static void reset(void)
 {
     status = (firmware_update_status_t){0}; worker_active = network_held = initialized = handle_open = false;
-    boot_task = NULL; target = NULL; hash = (psa_hash_operation_t)PSA_HASH_OPERATION_INIT;
+    boot_task = NULL; boot_entry = NULL; target = NULL; hash = (psa_hash_operation_t)PSA_HASH_OPERATION_INIT;
     now = enters = begins = writes = aborts = ends = selections = releases = marks = rollbacks = 0;
     write_offset = erase_bytes = health_calls = 0; reserved = watchdog_disabled = cancel_in_begin = extra_bytes = false;
     allow_network = quiescent = signature_ok = activation_ok = health_ok = true;
@@ -124,7 +125,18 @@ static void upload(uint32_t job)
 
 int main(void)
 {
+    reset(); boot_state = -1;
+    assert(firmware_update_init() == ESP_ERR_INVALID_STATE && !firmware_update_status().available);
+
+    reset(); health_ok = false;
+    assert(firmware_update_init() == ESP_OK && !firmware_update_status().trial_boot);
+    assert(firmware_update_validate_boot(healthy) == ESP_OK);
+    assert(boot_entry == NULL && health_calls == 0 && marks == 0 && rollbacks == 0);
+    assert(watchdog_disabled && firmware_update_status().available);
+    assert(firmware_update_validate_boot(healthy) == ESP_ERR_INVALID_STATE);
+
     reset();
+    boot_state = ESP_OTA_IMG_PENDING_VERIFY;
     assert(firmware_update_init() == ESP_OK && !firmware_update_status().available);
     assert(firmware_update_validate_boot(healthy) == ESP_OK);
     if (setjmp(task_exit) == 0) boot_entry(NULL);

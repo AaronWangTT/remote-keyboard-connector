@@ -57,11 +57,22 @@ esp_err_t firmware_update_init(void)
         }
     }
     esp_ota_img_states_t state;
-    status.trial_boot = esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY;
+    esp_err_t result = esp_ota_get_state_partition(esp_ota_get_running_partition(), &state);
+    if (result != ESP_OK) return result;
+    if (state != ESP_OTA_IMG_VALID && state != ESP_OTA_IMG_PENDING_VERIFY) return ESP_ERR_INVALID_STATE;
+    status.trial_boot = state == ESP_OTA_IMG_PENDING_VERIFY;
     const esp_timer_create_args_t timer = {.callback = restart_callback, .name = "ota_restart"};
-    esp_err_t result = esp_timer_create(&timer, &restart_timer);
+    result = esp_timer_create(&timer, &restart_timer);
     initialized = result == ESP_OK;
     return result;
+}
+
+static void stop_boot_watchdog(void)
+{
+    wdt_hal_context_t watchdog = RWDT_HAL_CONTEXT_DEFAULT();
+    wdt_hal_write_protect_disable(&watchdog);
+    wdt_hal_disable(&watchdog);
+    wdt_hal_write_protect_enable(&watchdog);
 }
 
 static void validate_boot(void *argument)
@@ -72,10 +83,7 @@ static void validate_boot(void *argument)
     while (esp_timer_get_time() < deadline) {
         healthy_samples = health_probe() ? healthy_samples + 1 : 0;
         if (healthy_samples >= 8 && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
-            wdt_hal_context_t watchdog = RWDT_HAL_CONTEXT_DEFAULT();
-            wdt_hal_write_protect_disable(&watchdog);
-            wdt_hal_disable(&watchdog);
-            wdt_hal_write_protect_enable(&watchdog);
+            stop_boot_watchdog();
             portENTER_CRITICAL(&lock);
             status.available = true;
             status.trial_boot = false;
@@ -92,7 +100,14 @@ static void validate_boot(void *argument)
 
 esp_err_t firmware_update_validate_boot(bool (*healthy)(void))
 {
-    if (!initialized || healthy == NULL || boot_task != NULL) return ESP_ERR_INVALID_STATE;
+    if (!initialized || healthy == NULL || boot_task != NULL || firmware_update_status().available) return ESP_ERR_INVALID_STATE;
+    if (!status.trial_boot) {
+        stop_boot_watchdog();
+        portENTER_CRITICAL(&lock);
+        status.available = true;
+        portEXIT_CRITICAL(&lock);
+        return ESP_OK;
+    }
     health_probe = healthy;
     return xTaskCreate(validate_boot, "ota_boot", 4096, NULL, 2, &boot_task) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }

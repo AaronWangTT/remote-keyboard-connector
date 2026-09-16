@@ -329,9 +329,19 @@ previous healthy slot. Downgrade overrides are outside the first increment.
 
 ## Local Update Flow
 
-Expose Firmware settings with the running version, selected candidate version,
-upload progress, verification result, activation confirmation, and final boot
-outcome. Do not report success just because all bytes left the browser.
+Serve a separate Firmware Update page at `http://kb.local/ota`, also reachable
+via `/ota` on the device's current AP or station hostname/IP. Users enter this
+URL directly. Remove the keyboard/network settings Firmware button and do not
+add links or navigation between the two pages. Use separate HTML/controllers;
+the keyboard page must not load the OTA controller or poll OTA endpoints.
+
+The OTA page accepts the existing owner session or presents its own sign-in
+form. Login, logout, reconnect, and reboot confirmation remain on `/ota`, with
+no redirect to the keyboard page. This is UI separation, not an authentication
+boundary: every update operation still requires the existing owner and CSRF
+checks. Show the running/candidate versions, upload progress, verification,
+activation confirmation, and final boot outcome. Do not report success just
+because all bytes left the browser.
 
 Proposed routes follow the existing versioned management API:
 
@@ -528,10 +538,12 @@ component; no separate migration utility is introduced.
 - [Network maintenance admission](../components/network/network.c) accepts
    either a live AP or station address and excludes control/network changes.
    No AP activation or Internet access is required for station-mode OTA.
-- Startup requires eight consecutive healthy samples 250 ms apart, including
+- Pending-verification trial boots require eight consecutive healthy samples 250 ms apart, including
    network-worker progress, readable saved settings, a live HTTP service, and
    USB-task progress without host enumeration. The RTC watchdog stays armed
    until confirmation; a failed trial requests rollback without resetting NVS.
+   Already-confirmed boots stop the startup watchdog after service initialization
+   without repeating the trial task or entering its rollback path.
 - [Artifact generation](../tools/ota_artifacts.py) runs as part of every normal
    build, verifies the actual RSA signature, signs the install manifest, and
    checks equality between the wired ZIP's application and OTA payload. Private
@@ -541,8 +553,9 @@ component; no separate migration utility is introduced.
    `--reset-layout`, independent public-key verification, fresh provisioning,
    and complete readback checks. It does not inspect or convert an old layout.
    See the [sender guide](sender-installation.md) for commands and key handling.
-- Network > Firmware updates provides upload, progress, cancellation, separate
-   activation, re-login, and running-version confirmation. Lost responses are
+- The standalone `/ota` page provides owner login, upload, progress, cancellation,
+   separate activation, re-login, and running-version confirmation, with no
+   navigation to or from the keyboard/network settings UI. Lost responses are
    resolved through status without repeating activation or keyboard control.
 - Local validation includes 12 ASan/UBSan native suites, 25 keyboard-model tests,
    60 SDK-backed installer/artifact tests, and Chromium/WebKit browser/API tests.
@@ -566,6 +579,7 @@ Host tests and a successful build are not substitutes for the device checks.
 | Flash layout | Validate 64 KiB NVS, 8 KiB OTA metadata, two aligned 6 MiB app slots, non-overlap, the 16 MiB boundary, bootloader fit, and at least 20% signed-image headroom. |
 | Dual-output normal build | One clean normal build produces the wired replacement bundle and OTA payload without switching firmware configurations or rebuilding. Verify identical signed application bytes, length, SHA-256, version, source revision, and compatibility identifiers; both installation methods lead to OTA-capable firmware. |
 | Artifact isolation | OTA output contains only the signed app and public metadata; no install images, NVS, secrets, or address-selection instructions. |
+| Page separation | Direct `/ota` access supports owner login and the complete update/reboot flow on AP and station. Neither page links to the other; `/` loads no OTA controller or update polling, and `/ota` loads no keyboard controller or control-acquisition UI. |
 | PHY initialization | Verify embedded-data build settings and reject mismatched profiles; clean installation starts radio with erased unused `phy_init` and recreates absent NVS calibration records. |
 | Fresh installation | Install on an erased device with the normal flash/provisioning workflow, without old-layout metadata, old credentials, a backup, or a migration tool as inputs. Require explicit approval for erasing an existing board; retain fresh credentials, verify every written range, and complete fresh claim/Wi-Fi setup. |
 | Login cost and latency | Verify 10 iterations throughout firmware/tooling and in freshly generated records, correct/wrong-password behavior, rejected legacy costs, and unchanged online rate limits. Record on-device KDF and end-to-end login timings; do not claim unmeasured speedups. |

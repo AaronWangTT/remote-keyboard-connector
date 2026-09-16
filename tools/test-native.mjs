@@ -32,7 +32,7 @@ const suites = {
   board_unsupported: { ...boardDriver, flags: ["-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1"] },
   runtime_status: {
     includes: [...boardDriver.includes, ".cache/tests", "components/web_server", "components/web_server/include",
-      "components/network/include", "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON"],
+      "components/network", "components/network/include", "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/web_server/access_control.c",
       "components/board/board_status_logic.c", "components/board/test/runtime_status_test.c"],
     flags: ["-DCJSON_NESTING_LIMIT=4"], linkFlags: ["-lm"] },
@@ -86,6 +86,10 @@ const web = await readFile("components/web_server/web_server.c", "utf8");
 await writeFile(".cache/tests/network_observer.inc",
   section(network, "network_control_status_t network_control_status(uint32_t generation)", "\nvoid network_management_touch") +
   section(network, "bool network_control_begin(uint32_t local_address, uint32_t generation)", "\nstatic bool recovery_held"));
+await writeFile(".cache/tests/network_effect_decision.inc",
+  `static network_effect_t network_test_effect(int64_t now)\n{\n${
+    section(network, "        bool was_testing = testing;", "\n        if (effect == NETWORK_OPEN_AP)")
+  }\n    (void)was_testing;\n    return effect;\n}\n`);
 await writeFile(".cache/tests/input_client.inc",
   section(web, "typedef struct {\n    int socket;", "\nstatic input_client_t *active_client;"));
 await writeFile(".cache/tests/web_observer.inc",

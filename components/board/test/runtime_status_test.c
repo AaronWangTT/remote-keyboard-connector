@@ -2,6 +2,7 @@
 #include "access_control.h"
 #include "board_status_logic.h"
 #include "network.h"
+#include "network_state.h"
 #include "usb_keyboard.h"
 #include "web_server.h"
 
@@ -21,7 +22,11 @@ static uint32_t ap_address;
 static uint32_t station_address;
 static uint32_t lease_address;
 static uint32_t guard_generation;
+static network_state_t state;
+static bool testing;
+static int64_t management_until;
 #include "network_observer.inc"
+#include "network_effect_decision.inc"
 #include "input_client.inc"
 
 static input_client_t *active_client;
@@ -34,6 +39,10 @@ static bool status_pending;
 static web_server_status_t status_snapshot;
 
 static unsigned critical_depth;
+static bool check_update_after_unlock;
+static uint32_t update_address;
+static network_effect_t next_effect;
+static unsigned state_ticks;
 static bool http_owner_context;
 static bool identity_ready = true;
 static bool owner_claimed = true;
@@ -90,6 +99,20 @@ void test_exit_critical(portMUX_TYPE *mutex)
     assert(critical_depth == 1 && *mutex == 1);
     critical_depth--;
     *mutex = 0;
+    if (check_update_after_unlock) {
+        check_update_after_unlock = false;
+        assert(!network_update_begin(update_address));
+    }
+}
+
+network_effect_t network_state_tick(network_state_t *current, int64_t now, bool held)
+{
+    (void)now;
+    (void)held;
+    assert(current == &state && critical_depth == 1);
+    state_ticks++;
+    current->attempts++;
+    return next_effect;
 }
 
 int xTaskCreate(TaskFunction_t entry, const char *name, uint32_t stack_size, void *argument,
@@ -226,6 +249,29 @@ static void test_network_observation(void)
     command_pending = false;
     guarded = true;
     assert(!network_update_begin(station_address));
+    const network_effect_t effects[] = {NETWORK_TRY_CONNECT, NETWORK_OPEN_AP, NETWORK_CLOSE_AP};
+    for (uint32_t address = 1; address <= 2; address++) {
+        for (size_t index = 0; index < sizeof(effects) / sizeof(effects[0]); index++) {
+            reset_network();
+            snapshot.station_online = true;
+            station_address = lease_address = 2;
+            state = (network_state_t){0};
+            state_ticks = 0;
+            next_effect = effects[index];
+            update_address = address;
+            check_update_after_unlock = true;
+            assert(network_test_effect(now_us) == effects[index]);
+            assert(!check_update_after_unlock && state_ticks == 1 && state.attempts == 1);
+            assert(!control_ready && !update_reserved && !snapshot.can_control);
+
+            control_ready = true;
+            snapshot.can_control = true;
+            assert(network_update_begin(address));
+            assert(network_test_effect(now_us) == NETWORK_WAIT);
+            assert(state_ticks == 1 && state.attempts == 1 && update_reserved);
+            network_update_end();
+        }
+    }
     reset_network();
 }
 

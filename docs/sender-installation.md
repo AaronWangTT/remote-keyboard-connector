@@ -182,9 +182,13 @@ failure can still lose files needed for recovery. Windows filesystem acceptance
 remains a hardware/environment gate, not something Linux mocks can prove.
 
 For ordinary updates, connect through either standalone AP or the device's
-station/LAN address, sign in, release control, and open Network > Firmware
-updates. Upload `firmware-ota.bin`, wait for verification, then select Install
-and restart. Sign in again and check the running version. An upload alone does
+station/LAN address. Release any active keyboard control, then open
+`http://kb.local/ota` directly, or use `/ota` on the current device hostname/IP.
+The standalone update page is not linked from the keyboard or network settings
+page, and has no navigation back to them. It accepts the existing owner session
+or prompts for owner login; omitting navigation does not bypass authentication.
+Upload `firmware-ota.bin`, wait for verification, then select Install and restart.
+Sign in again on `/ota` and check the running version. An upload alone does
 not activate an image; a lost response is resolved through status, not by
 automatically repeating activation. Wi-Fi settings and ownership survive OTA
 and rollback. Do not use an install ZIP or a merged BIN as an OTA image.
@@ -232,7 +236,9 @@ The OTA additions exercise real RSA image and manifest verification, identical
 wired/OTA outputs, legacy-cost rejection, explicit reset/test-key consent,
 unknown old layouts, wrong-device/capacity refusals, and failed readback without
 resetting. Native tests cover inactive-slot writes, cancellation, expiry,
-activation, and trial-boot handling. Browser tests cover AP and station flows.
+activation, and trial-boot handling. Browser tests cover AP and station flows,
+direct `/ota` login, page separation, cancelled/stalled uploads, and re-login
+after reboot without navigating to the keyboard page.
 These do not establish physical installation, full-capacity operation, power-loss
 behavior, or recovery. No real device was flashed during implementation.
 

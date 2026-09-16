@@ -85,6 +85,7 @@ for (const mode of ["ap", "station"]) test(`OTA API stages, cancels and activate
   assert.equal((await fetch(new URL("/api/v1/update/job", url), { headers: { Cookie: other.cookie } })).status, 403);
   assert.equal((await call("/api/v1/update/activate", "POST", { job_id: staged.job_id + 1, sha256: staged.sha256 })).status, 409);
   assert.equal((await call("/api/v1/update/job", "DELETE", { job_id: staged.job_id })).status, 202);
+  assert.equal((await fetch(new URL("/api/v1/update/job", url), { headers: { Cookie: other.cookie } })).status, 200);
   assert.equal((await call("/api/v1/update/activate", "POST", { job_id: staged.job_id, sha256: staged.sha256 })).status, 409);
   const next = await (await upload()).json();
   assert.equal((await call("/api/v1/update/activate", "POST", { job_id: next.job_id, sha256: next.sha256 })).status, 202);
@@ -98,6 +99,112 @@ for (const mode of ["ap", "station"]) test(`OTA API stages, cancels and activate
   assert.equal((await (await fetch(new URL("/__test__/input", url))).json()).down, 0);
 });
 
+for (const ending of ["failed", "cancelled", "expired", "logout"]) test(`OTA API releases terminal ownership after ${ending}`, { timeout: 10000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_UPDATE_DELAY_MS: "10", PREVIEW_UPDATE_STAGED_MS: "500" });
+  const owner = await loginRequest(url);
+  const other = await loginRequest(url);
+  const call = (session, path, method = "GET", body) => fetch(new URL(path, url), {
+    method, headers: { Cookie: session.cookie, Origin: url, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" },
+    ...(body ? { body: JSON.stringify(body) } : {}) });
+  const upload = (session, version = "0.1.1") => fetch(new URL("/api/v1/update", url), {
+    method: "POST", headers: { Cookie: session.cookie, Origin: url, "X-CSRF-Token": session.csrf,
+      "Content-Type": "application/octet-stream" }, body: previewUpdateImage(version) });
+  const response = await upload(owner, ending === "failed" ? "0.1.0" : "0.1.1");
+  assert.equal(response.status, ending === "failed" ? 400 : 200);
+  const first = await response.json();
+  if (ending !== "failed") assert.equal((await call(other, "/api/v1/update/job")).status, 403);
+  if (ending === "cancelled") assert.equal((await call(owner, "/api/v1/update/job", "DELETE", { job_id: first.job_id })).status, 202);
+  if (ending === "logout") assert.equal((await call(owner, "/api/v1/session", "DELETE")).status, 200);
+  await expect.poll(async () => (await call(other, "/api/v1/update/job")).status).toBe(200);
+  const next = await upload(other);
+  assert.equal(next.status, 200);
+  const job = await next.json();
+  assert.equal(job.phase, "staged");
+  assert.equal((await call(other, "/api/v1/update/job", "DELETE", { job_id: job.job_id })).status, 202);
+});
+
+for (const ending of ["timeout", "cancel", "logout"]) test(`OTA stalled body is closed and released after ${ending}`, { timeout: 12000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_UPDATE_IDLE_MS: "1000", PREVIEW_UPDATE_DELAY_MS: "10" });
+  const owner = await loginRequest(url);
+  const other = await loginRequest(url);
+  const headers = session => ({ Cookie: session.cookie, Origin: url, "X-CSRF-Token": session.csrf });
+  const stalled = httpRequest(new URL("/api/v1/update", url), { method: "POST", headers: {
+    ...headers(owner), "Content-Type": "application/octet-stream", "Content-Length": "8192" } });
+  const closed = new Promise(resolve => stalled.once("close", resolve));
+  stalled.on("error", () => {});
+  stalled.on("response", response => response.resume());
+  context.after(() => stalled.destroy());
+  stalled.write(previewUpdateImage().subarray(0, 1024));
+  const job = async () => (await fetch(new URL("/api/v1/update/job", url), { headers: headers(owner) })).json();
+  await expect.poll(async () => (await job()).received).toBe(1024);
+  const current = await job();
+  if (ending !== "timeout") {
+    const response = await fetch(new URL(ending === "logout" ? "/api/v1/session" : "/api/v1/update/job", url), {
+      method: "DELETE", headers: { ...headers(owner), "Content-Type": "application/json" },
+      ...(ending === "cancel" ? { body: JSON.stringify({ job_id: current.job_id }) } : {}) });
+    assert.equal(response.status, ending === "logout" ? 200 : 202);
+  }
+  await closed;
+  const terminal = await fetch(new URL("/api/v1/update/job", url), { headers: headers(other) });
+  assert.equal(terminal.status, 200);
+  const result = await terminal.json();
+  assert.equal(result.busy, false);
+  assert.equal(result.error, ending === "timeout" ? "update_timeout" : "cancelled");
+  const next = await fetch(new URL("/api/v1/update", url), { method: "POST", headers: {
+    ...headers(other), "Content-Type": "application/octet-stream" }, body: previewUpdateImage() });
+  assert.equal(next.status, 200);
+  assert.equal((await next.json()).phase, "staged");
+});
+
+test("OTA cancelled verification cannot release a newer upload", { timeout: 12000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_UPDATE_DELAY_MS: "1500" });
+  const owner = await loginRequest(url);
+  const other = await loginRequest(url);
+  const headers = session => ({ Cookie: session.cookie, Origin: url, "X-CSRF-Token": session.csrf });
+  const upload = session => fetch(new URL("/api/v1/update", url), { method: "POST", headers: {
+    ...headers(session), "Content-Type": "application/octet-stream" }, body: previewUpdateImage() });
+  const first = upload(owner).catch(() => null);
+  const job = async session => (await fetch(new URL("/api/v1/update/job", url), { headers: headers(session) })).json();
+  await expect.poll(async () => (await job(owner)).phase).toBe("verifying");
+  const current = await job(owner);
+  assert.equal((await fetch(new URL("/api/v1/update/job", url), { method: "DELETE", headers: {
+    ...headers(owner), "Content-Type": "application/json" }, body: JSON.stringify({ job_id: current.job_id }) })).status, 202);
+  const second = upload(other);
+  await expect.poll(async () => (await job(other)).phase).toBe("verifying");
+  await first;
+  assert.equal((await job(other)).busy, true);
+  assert.equal((await upload(owner)).status, 409);
+  const response = await second;
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).job_id, current.job_id + 1);
+});
+
+for (const engine of [chromium, webkit]) test(`Keyboard and OTA pages stay separate in ${engine.name()}`, { timeout: 15000 }, async context => {
+  const url = await startPreview(context);
+  const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+  context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const requests = [];
+  const errors = [];
+  page.on("request", request => requests.push(new URL(request.url()).pathname));
+  page.on("pageerror", error => errors.push(error.message));
+  await page.goto(url);
+  await expect(page.locator("#account-submit")).toBeEnabled();
+  await page.locator("#owner-password").fill("preview-owner-password");
+  await page.locator("#account-submit").click();
+  await expect(page.locator("#keyboard")).toBeVisible();
+  await page.locator("#network-settings").click();
+  await expect(page.locator("#network-view")).toBeVisible();
+  await expect(page.locator('#firmware-settings, #firmware-view, a[href="/ota"]')).toHaveCount(0);
+  assert.equal(requests.some(path => path === "/ota.mjs" || /^\/api\/v1\/(firmware|update)/.test(path)), false);
+  requests.length = 0;
+  await page.goto(new URL("/ota", url).href);
+  await expect(page.locator("#firmware-version")).toHaveText("0.1.0");
+  await expect(page.locator('#keyboard, #network-view, #network-settings, #firmware-back, a[href="/"]')).toHaveCount(0);
+  assert.equal(requests.includes("/app.mjs") || requests.includes("/keyboard.mjs"), false);
+  assert.deepEqual(errors, []);
+});
+
 for (const engine of [chromium, webkit]) for (const rollback of [false, true]) test(`Firmware view uploads, cancels and confirms ${rollback ? "rollback" : "reboot"} in ${engine.name()}`, { timeout: 30000 }, async context => {
   const url = await startPreview(context, { PREVIEW_NETWORK_MODE: engine === chromium ? "station" : "ap", PREVIEW_UPDATE_DELAY_MS: "150",
     PREVIEW_UPDATE_FAIL: rollback ? "boot" : "" });
@@ -106,7 +213,7 @@ for (const engine of [chromium, webkit]) for (const rollback of [false, true]) t
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
-  await page.goto(url);
+  await page.goto(new URL("/ota", url).href);
   const signIn = async () => {
     await expect(page.locator("#account-submit")).toBeEnabled();
     await page.locator("#owner-password").fill("preview-owner-password");
@@ -114,8 +221,7 @@ for (const engine of [chromium, webkit]) for (const rollback of [false, true]) t
     await expect(page.locator("#account-view")).toBeHidden();
   };
   await signIn();
-  await page.locator("#network-settings").click();
-  await page.locator("#firmware-settings").click();
+  await expect(page.locator("#network-settings, #firmware-back, #keyboard, #take-control")).toHaveCount(0);
   await expect(page.locator("#firmware-version")).toHaveText("0.1.0");
   const upload = async () => {
     await page.locator("#firmware-file").setInputFiles({ name: "keyboard-0.1.1.bin", mimeType: "application/octet-stream", buffer: previewUpdateImage() });
@@ -154,9 +260,7 @@ for (const engine of [chromium, webkit]) for (const rollback of [false, true]) t
   await signIn();
   await expect(page.locator("#firmware-version")).toHaveText(rollback ? "0.1.0" : "0.1.1");
   await expect(page.locator("#firmware-status")).toHaveText(rollback ? "Update not confirmed; version 0.1.0 is running" : "Version 0.1.1 is running");
-  await page.locator("#firmware-back").click();
-  await page.locator("#network-back").click();
-  await expect(page.locator("#take-control")).toBeEnabled();
+  await expect(page).toHaveURL(new URL("/ota", url).href);
   const input = await (await fetch(new URL("/__test__/input", url))).json();
   assert.equal(input.down, 0);
   assert.equal(input.connected, false);
@@ -168,16 +272,20 @@ test("Firmware view cancels during verification before the first job poll", { ti
   const browser = await chromium.launch();
   context.after(() => browser.close());
   const page = await browser.newPage();
-  await page.goto(url);
+  const requests = [];
+  page.on("request", request => {
+    if (new URL(request.url()).pathname.startsWith("/api/v1/update")) requests.push({ method: request.method(), path: new URL(request.url()).pathname });
+  });
+  await page.goto(new URL("/ota", url).href);
   await expect(page.locator("#account-submit")).toBeEnabled();
   await page.locator("#owner-password").fill("preview-owner-password");
   await page.locator("#account-submit").click();
-  await page.locator("#network-settings").click();
-  await page.locator("#firmware-settings").click();
   await expect(page.locator("#firmware-file")).toBeEnabled();
   await page.locator("#firmware-file").setInputFiles({ name: "test.bin", mimeType: "application/octet-stream", buffer: previewUpdateImage() });
   await page.locator("#firmware-upload").click();
   await page.locator("#firmware-cancel").click();
+  await expect.poll(() => requests.filter(request => request.method === "DELETE").length,
+    { message: "Cancel must reach the device, not only abort the browser upload" }).toBe(1);
   await expect(page.locator("#firmware-status")).toHaveText("Update cancelled");
   await expect(page.locator("#firmware-activate")).toBeHidden();
   await expect(page.locator("#firmware-file")).toBeEnabled();
