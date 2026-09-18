@@ -270,7 +270,7 @@ function renderNetwork() {
     state.error ? errors[state.error] ?? "Network operation failed." : jobs[state.job] ?? state.job;
   document.querySelector("#network-job-status").dataset.error = String(Boolean(state.error));
   const committedProfile = JSON.stringify([state.desired_station, state.saved_ssid_hex || state.saved_ssid, state.requested_hostname]);
-  const committedJob = networkFieldsJob === state.job_id && ["succeeded", "cancelled"].includes(state.job);
+  const committedJob = networkFieldsJob !== 0 && networkFieldsJob === state.job_id && ["succeeded", "cancelled"].includes(state.job);
   if (!networkFieldsInitialized || (!state.busy && (renderedProfile !== committedProfile || committedJob))) {
     document.querySelector(`[name="network-mode"][value="${state.desired_station ? "station" : "ap"}"]`).checked = true;
     const input = document.querySelector("#wifi-ssid");
