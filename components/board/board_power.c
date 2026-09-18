@@ -92,13 +92,27 @@ esp_err_t board_power_enter_sleep(void)
 {
     if (!wake_prepared || !board_power_wake_released()) return ESP_ERR_INVALID_STATE;
     esp_err_t result = board_status_pause(true);
+    const gpio_config_t inactive = {
+        .pin_bit_mask = UINT64_C(1) << GPIO_NUM_48,
+        .mode = GPIO_MODE_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    if (result == ESP_OK) result = gpio_config(&inactive);
     if (result == ESP_OK) result = gpio_hold_en(GPIO_NUM_48);
     if (result == ESP_OK) {
         gpio_deep_sleep_hold_en();
         result = esp_deep_sleep_try_to_start();
         gpio_deep_sleep_hold_dis();
     }
-    esp_err_t restored = gpio_hold_dis(GPIO_NUM_48);
+    esp_err_t restored = gpio_set_level(GPIO_NUM_48, 1);
+    gpio_config_t active = inactive;
+    active.mode = GPIO_MODE_OUTPUT;
+    esp_err_t configured = gpio_config(&active);
+    if (restored == ESP_OK) restored = configured;
+    esp_err_t released = gpio_hold_dis(GPIO_NUM_48);
+    if (restored == ESP_OK) restored = released;
     esp_err_t resumed = board_status_pause(false);
     if (restored == ESP_OK) restored = resumed;
     return restored != ESP_OK ? restored : result == ESP_OK ? ESP_FAIL : result;

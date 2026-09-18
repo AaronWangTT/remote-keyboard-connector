@@ -38,6 +38,8 @@ and remaining acceptance work.
 | 2026-09-14 | Merged BIN flashing and operation | Passed, user reported the merged image worked on the board. |
 | 2026-09-15 | G48 ready/idle, active-control, and release patterns | Passed on the explicitly flashed `0xf6920` (1,009,952-byte) debug-optimized XinluCity-profile image. The user observed one short pulse about every two seconds while ready/idle, steady ON with a valid controller, and return to the idle pulse after Release with no stuck key. Full image readback matched the authorized build. |
 | 2026-09-15 | G48 startup/not-ready, AP-only, reconnect, USB unplug/suspend, focus/network loss, timing/load, and endurance | Pending. The size-optimized `0xe17c0` image was build-validated but not physically flashed. |
+| 2026-09-18 | Automatic idle sleep and BOOT recovery | User confirmed sleep after more than 30 minutes idle and return after pressing BOOT. This is a user-observed functional check, without current measurements or exact installed-image identification. |
+| 2026-09-18 | G48 dark during sleep | Failed on both PC and iPad: the user observed G48 green instead of dark while the board slept. The high-impedance sleep-state correction is software-tested but requires a new on-board check. |
 
 The user confirmed: "I've tried both versions on board, worked perfectly fine."
 Both formats contain the same keyboard firmware. Record this as a basic
@@ -56,6 +58,20 @@ Silicon revision is not PCB revision, and PSRAM capacity is not flash capacity.
 The vendor schematic shows `3V3 -> R13 (4.7 kOhm) -> PWR -> GND` and
 `3V3 -> LED1 -> R25 (4.7 kOhm) -> GPIO48`. PWR is not software-controlled;
 G48 is illuminated by LOW and dark at HIGH. It is not an addressable RGB LED.
+
+The HIGH/off relationship above describes powered, awake operation. The initial
+power-management implementation retained a driven HIGH output during deep sleep,
+but the user observed the LED lit while sleep and BOOT wake still worked. The
+candidate correction releases GPIO48's input, output, and both pulls before
+holding the pin state through sleep. It does not change pad supply selection,
+flash/PSRAM power settings, the idle timeout, or the BOOT wake source.
+
+High impedance disables the GPIO drivers, not the pad's protection paths; it
+does not establish that any supply-related leakage is eliminated. GPIO48's
+actual supply selection and sleep voltage remain unmeasured. Confirm the LED
+is dark and BOOT still restores normal operation on the corrected test image
+before accepting this fix. If it remains lit, investigate the pin supply and
+board circuit rather than changing shared memory-pad supplies speculatively.
 
 The [board status implementation](../docs/board-status-led-proposal.md#software-implementation-record)
 requires the explicit XinluCity profile and leaves PWR, USB GPIO19/GPIO20, and
