@@ -99,7 +99,8 @@ esp_err_t board_power_enter_sleep(void)
         gpio_deep_sleep_hold_dis();
     }
     esp_err_t restored = gpio_hold_dis(GPIO_NUM_48);
-    if (restored == ESP_OK) restored = board_status_pause(false);
+    esp_err_t resumed = board_status_pause(false);
+    if (restored == ESP_OK) restored = resumed;
     return restored != ESP_OK ? restored : result == ESP_OK ? ESP_FAIL : result;
 }
 #else
