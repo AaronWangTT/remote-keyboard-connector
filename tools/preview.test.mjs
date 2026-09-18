@@ -2010,7 +2010,12 @@ for (const [engineName, engine] of [["Chromium", chromium], ["WebKit", webkit]])
   });
 }
 
-for (const browserType of [chromium, webkit]) test(`all keyboard pages fit phone, tablet and desktop viewports without overlapping keys in ${browserType.name()}`, { timeout: browserType === webkit ? 90000 : 45000 }, async (context) => {
+for (const browserType of [chromium, webkit]) for (const [group, viewports] of [
+  ["phone, tablet and desktop viewports", [[320, 568], [375, 667], [390, 844], [430, 932], [568, 320],
+    [844, 390], [768, 1024], [1024, 768], [1366, 768], [1920, 1080]]],
+  ["compact-height breakpoints", [[390, 600], [390, 601], [390, 640], [390, 641], [390, 680], [390, 681],
+    [390, 820], [390, 821], [768, 769], [768, 820], [768, 821], [568, 360], [568, 361], [568, 380], [568, 381]]],
+]) test(`all keyboard pages fit ${group} without overlapping keys in ${browserType.name()}`, { timeout: browserType === webkit ? 90000 : 45000 }, async (context) => {
   const url = await startPreview(context);
   const browser = await browserType.launch(browserType === webkit ?
     { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
@@ -2025,8 +2030,7 @@ for (const browserType of [chromium, webkit]) test(`all keyboard pages fit phone
   await expect(page.getByRole("button", { name: "A", exact: true })).toBeEnabled();
   const screenshots = new URL("../.cache/tests/", import.meta.url);
   await mkdir(screenshots, { recursive: true });
-  for (const [width, height, echoEnabled] of [[320, 568], [375, 667], [390, 844], [430, 932], [568, 320],
-    [844, 390], [768, 1024], [1024, 768], [1366, 768], [1920, 1080]].flatMap(viewport => [[...viewport, false], [...viewport, true]])) {
+  for (const [width, height, echoEnabled] of viewports.flatMap(viewport => [[...viewport, false], [...viewport, true]])) {
     await page.setViewportSize({ width, height });
     await page.getByRole("switch", { name: "Local echo", exact: true }).setChecked(echoEnabled);
     if (echoEnabled) {
@@ -2124,7 +2128,7 @@ for (const browserType of [chromium, webkit]) test(`all keyboard pages fit phone
       assert.ok(layout.width <= width, `Horizontal scrolling at ${width}x${height} ${mode}`);
       assert.ok(layout.height <= layout.viewportHeight + 1, `Vertical scrolling at ${width}x${height} ${mode}: ${layout.height}`);
       if ([320, 390, 568, 768, 1366].includes(width)) {
-        await page.screenshot({ path: fileURLToPath(new URL(`keyboard-${browserType.name()}-${width}-${mode}${echoEnabled ? "-echo" : ""}.png`, screenshots)) });
+        await page.screenshot({ path: fileURLToPath(new URL(`keyboard-${browserType.name()}-${width}x${height}-${mode}${echoEnabled ? "-echo" : ""}.png`, screenshots)) });
       }
     }
   }
