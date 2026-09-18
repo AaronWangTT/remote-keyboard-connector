@@ -43,6 +43,17 @@ esp_err_t gpio_config(const gpio_config_t *configuration)
     return fail_configuration ? ESP_FAIL : ESP_OK;
 }
 
+void gpio_deep_sleep_hold_dis(void)
+{
+    assert(configure_calls == 1 && levels[0] == 1);
+}
+
+esp_err_t gpio_hold_dis(gpio_num_t pin)
+{
+    assert(pin == GPIO_NUM_48 && configure_calls == 1 && levels[0] == 1);
+    return ESP_OK;
+}
+
 int xTaskCreate(TaskFunction_t entry, const char *name, uint32_t stack_size, void *argument,
                 unsigned priority, TaskHandle_t *handle)
 {

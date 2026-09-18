@@ -23,7 +23,7 @@ encrypted credential storage remain lower-priority follow-up work.
 
 - [CI workflow setup proposal](docs/ci-workflow-proposal.md)
 - [Board status LED design, software validation, and remaining hardware gates](docs/board-status-led-proposal.md)
-- [Board power management proposal and sleep/wake validation gates](docs/board-power-management-proposal.md)
+- [Board power management design, implementation, and sleep/wake validation gates](docs/board-power-management-proposal.md)
 - [Sender installation and firmware artifact guide](docs/sender-installation.md)
 - [OTA design, implementation, and hardware acceptance gates](docs/ota-proposal.md)
 - [Wi-Fi enhancement plan, implementation record, and remaining gates](docs/wifi-enhancement-plan.md)
@@ -82,7 +82,7 @@ Generic builds leave GPIO48 untouched. On a fresh configuration, plain
 `sdkconfig` retains whichever profile was selected previously.
 
 For an interactive local build, run **ESP-IDF: SDK Configuration Editor
-(menuconfig)**, then select **Board status LED > Board profile > XinluCity
+(menuconfig)**, then select **Board controls > Board profile > XinluCity
 ESP32S3 NANO / ESP32-S3-N16R8 (G48 active-low)** and rebuild. This updates the
 ignored local `sdkconfig`; do not commit that generated file.
 
@@ -99,7 +99,8 @@ Before flashing, verify the generated configuration reports
 The profile uses the schematic's active-low, single-color G48: one short pulse
 every two seconds for ready/idle, steady ON for a valid live controller, and
 two short pulses for not ready. PWR remains independent. No brightness setting
-or web UI change is included.
+is included. The selected board also enables the automatic sleep feature below
+by default on a fresh configuration.
 
 See the [profile build commands and validation record](docs/board-status-led-proposal.md#software-implementation-record).
 Focused software checks and a 2026-09-15 physical check of the previously
@@ -107,6 +108,31 @@ flashed debug-optimized LED image passed for visible G48 ready/idle, active
 control, and release back to idle. The optimized image described below was not
 flashed. Startup/not-ready timing, suspend, failure handling, USB/load effects,
 and endurance remain pending.
+
+### Automatic Sleep
+
+On the explicit XinluCity profile, `BOARD_POWER_MANAGEMENT` enables automatic
+deep sleep after 30 minutes without meaningful activity. **Network settings >
+Power > Auto sleep** offers **30 minutes**, **60 minutes**, and **Never**; Save
+power setting persists the choice on the board. Generic and unsupported builds
+do not claim the BOOT pin or expose the control.
+
+Before sleeping, firmware revokes control, completes neutral USB input where
+possible, stops Wi-Fi, detaches USB HID, and holds G48 dark. Press BOOT to wake
+and restart services, then sign in and Take Control again. RST retains hardware
+restart/recovery behavior. Saved owner and network settings survive; previous
+sessions and queued keys do not. Background polls and heartbeats do not reset
+the idle timer; valid held input and management/OTA work inhibit sleep.
+
+PWR remains lit while supplied. This is not a physical power switch. A host
+that removes USB power after disconnect may require cable reconnection instead
+of BOOT. Storage or sleep-preparation failures disable automatic sleep for the
+current boot without changing the saved timeout. No new manual shutdown key is
+included, and `Never` does not waive USB suspend-current requirements.
+
+The [implementation record and acceptance gates](docs/board-power-management-proposal.md#implementation-record)
+separate software checks from the still-pending physical power, wake, USB
+reconnection, and host-suspend validation. No board was flashed for this feature.
 
 ## Sender Provisioning
 

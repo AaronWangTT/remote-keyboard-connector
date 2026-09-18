@@ -46,6 +46,12 @@ let networkFieldsInitialized = false;
 let networkFieldsJob = 0;
 let renderedProfile = "";
 let renderedScan = "";
+let powerState = null;
+let powerDirty = false;
+let powerMutating = false;
+let powerUncertain = false;
+let powerRevision = 0;
+let powerMessage = "";
 
 function renderLocalEcho() {
   surface.dataset.localEcho = String(localEchoEnabled);
@@ -80,6 +86,10 @@ function errorMessage(error) {
     release_control_first: "Release keyboard control before continuing.",
     update_busy: "A firmware update is in progress.",
     device_starting: "The keyboard is checking startup. Try again shortly.",
+    device_busy: "A device operation is in progress.",
+    device_sleeping: "Keyboard asleep or entering sleep.",
+    power_unavailable: "Automatic sleep is unavailable.",
+    invalid_power_request: "Auto sleep must be 30 minutes, 60 minutes, or Never.",
     storage_failed: "Settings storage is unavailable. Restart the keyboard before retrying.",
     invalid_network_request: "Check the network name, password, and hostname.",
     login_required: "Sign in to continue." })[error.code] ?? "Cannot reach the keyboard. Check the connection and try again.";
@@ -123,6 +133,9 @@ function clearNetworkPassword() {
 function renderAccount() {
   if (!account.authenticated) {
     currentView = "keyboard";
+    powerRevision++;
+    powerState = null;
+    powerDirty = false;
     clearNetworkPassword();
     setPasswordVisibility(document.querySelector('[data-password-toggle="owner-password"]'), false);
   }
@@ -160,14 +173,55 @@ async function loadSession() {
   }
 }
 
+function powerBusy() {
+  return !powerState?.available || powerState.preparing || powerMutating || powerUncertain ||
+    networkMutating || networkUncertain || !networkState?.can_control;
+}
+
+function renderPower() {
+  document.querySelector("#power-form").hidden = powerState?.supported === false;
+  const select = document.querySelector("#power-idle");
+  if (powerState && !powerDirty && !powerMutating) select.value = String(powerState.idle_minutes);
+  select.disabled = powerBusy();
+  document.querySelector("#power-save").disabled = powerBusy() || !powerDirty;
+  document.querySelector("#power-retry").hidden = !powerUncertain;
+  document.querySelector("#power-retry").disabled = powerMutating;
+  const status = document.querySelector("#power-status");
+  status.textContent = powerMutating ? "Saving" : powerUncertain ? "Saved setting not confirmed" :
+    !powerState ? "Loading" : powerState.preparing ? "Entering sleep" :
+    !powerState.available ? "Automatic sleep unavailable" : powerMessage;
+  status.hidden = !status.textContent;
+  status.dataset.error = String(powerUncertain || Boolean(powerState?.error));
+}
+
+async function loadPower() {
+  if (!account.authenticated || powerMutating) return;
+  const revision = powerRevision;
+  try {
+    const state = await api("/api/v1/power");
+    if (revision !== powerRevision || !account.authenticated) return;
+    powerState = state;
+    if (powerUncertain) {
+      powerDirty = false;
+      powerMessage = "Current setting loaded";
+    }
+    powerUncertain = false;
+  } catch {
+    if (revision !== powerRevision) return;
+    powerUncertain = true;
+  }
+  renderPower();
+}
+
 function renderNetwork() {
+  renderPower();
   const state = networkState;
   const stationMode = document.querySelector('[name="network-mode"]:checked').value === "station";
   document.querySelector("#station-fields").hidden = !stationMode;
   document.querySelector("#wifi-ssid").required = stationMode;
   document.querySelector("#wifi-password").required = stationMode;
   document.querySelector("#network-apply").textContent = stationMode ? "Test and Connect" : "Use Standalone AP";
-  const busy = !state || state.busy || !state.available || networkMutating || networkUncertain;
+  const busy = !state || state.busy || !state.available || networkMutating || networkUncertain || powerMutating || powerUncertain;
   for (const input of document.querySelectorAll("#network-form input, #network-form select, #network-form button, #hostname-form input, #hostname-form button")) input.disabled = busy;
   document.querySelector("#forget-network").hidden = !state?.has_profile;
   document.querySelector("#forget-network").disabled = busy;
@@ -255,6 +309,7 @@ async function pollNetwork() {
   try {
     networkState = await api("/api/v1/network/job");
     networkUncertain = false;
+    if (currentView === "network") await loadPower();
     renderNetwork();
   } catch (error) {
     networkUncertain = true;
@@ -266,7 +321,7 @@ async function pollNetwork() {
 }
 
 async function submitNetwork(action, fields = {}) {
-  if (networkMutating || networkUncertain) return;
+  if (networkMutating || networkUncertain || powerMutating || powerUncertain) return;
   const resetsFields = ["connect", "ap", "station", "forget"].includes(action) ||
     (action === "cancel" && networkState?.job !== "scanning");
   disconnect();
@@ -674,6 +729,10 @@ document.querySelector("#network-settings").addEventListener("click", async () =
   disconnect();
   currentView = "network";
   networkFieldsInitialized = false;
+  powerRevision++;
+  powerState = null;
+  powerDirty = powerUncertain = false;
+  powerMessage = "";
   renderedScan = "";
   notify();
   renderAccount();
@@ -685,6 +744,7 @@ document.querySelector("#network-settings").addEventListener("click", async () =
 document.querySelector("#network-back").addEventListener("click", () => {
   clearNetworkPassword();
   currentView = "keyboard";
+  powerRevision++;
   if (networkTimer !== null) clearTimeout(networkTimer);
   networkTimer = null;
   notify();
@@ -722,6 +782,40 @@ document.querySelector("#network-form").addEventListener("submit", event => {
 document.querySelector("#hostname-form").addEventListener("submit", event => {
   event.preventDefault();
   submitNetwork("rename", { hostname: document.querySelector("#network-hostname").value });
+});
+document.querySelector("#power-idle").addEventListener("change", () => {
+  powerDirty = true;
+  powerMessage = "";
+  renderPower();
+});
+document.querySelector("#power-retry").addEventListener("click", loadPower);
+document.querySelector("#power-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (powerBusy() || !powerDirty) return;
+  const idle_minutes = Number(document.querySelector("#power-idle").value);
+  if (![0, 30, 60].includes(idle_minutes)) { notify(errorMessage({ code: "invalid_power_request" })); return; }
+  const revision = ++powerRevision;
+  powerMutating = true;
+  notify();
+  renderNetwork();
+  try {
+    const state = await api("/api/v1/power", "POST", { idle_minutes });
+    if (revision === powerRevision && account.authenticated) {
+      powerState = state;
+      powerDirty = false;
+      powerMessage = "Saved";
+    }
+  } catch (error) {
+    if (revision === powerRevision && account.authenticated) {
+      powerUncertain = true;
+      notify(errorMessage(error));
+    }
+  } finally {
+    powerMutating = false;
+    powerRevision++;
+    renderNetwork();
+    if (currentView === "network" && account.authenticated) await loadPower();
+  }
 });
 document.querySelector("#forget-network").addEventListener("click", () => {
   document.querySelector("#forget-ssid").textContent = networkState?.saved_ssid || "";

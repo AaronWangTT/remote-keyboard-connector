@@ -33,7 +33,7 @@ const suites = {
   board_power_policy: { includes: ["components/board/include"],
     sources: ["components/board/board_power_policy.c", "components/board/test/board_power_policy_test.c"] },
   board_power: { ...boardPower, flags: ["-DCONFIG_BOARD_POWER_MANAGEMENT=1", "-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1", "-DCONFIG_IDF_TARGET_ESP32S3=1"] },
-  board_power_disabled: { ...boardPower, flags: ["-DCONFIG_IDF_TARGET_ESP32S3=1"] },
+  board_power_disabled: { ...boardPower, flags: ["-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1", "-DCONFIG_IDF_TARGET_ESP32S3=1"] },
   board_power_unsupported: { ...boardPower, flags: ["-DCONFIG_BOARD_POWER_MANAGEMENT=1", "-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1"] },
   update_service: { includes: [".cache/tests/update-stubs", ".cache/tests", "components/firmware_update/test", "components/firmware_update/include",
       "components/network/include", "components/usb_keyboard/include"],
@@ -42,7 +42,7 @@ const suites = {
     sources: ["components/firmware_update/update_policy.c", "components/firmware_update/test/update_policy_test.c"] },
   board_status: { includes: ["components/board/include"],
     sources: ["components/board/board_status_logic.c", "components/board/test/board_status_test.c"] },
-  board_driver: { ...boardDriver, flags: ["-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1", "-DCONFIG_IDF_TARGET_ESP32S3=1"] },
+  board_driver: { ...boardDriver, flags: ["-DCONFIG_BOARD_POWER_MANAGEMENT=1", "-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1", "-DCONFIG_IDF_TARGET_ESP32S3=1"] },
   board_disabled: { ...boardDriver, flags: ["-DCONFIG_IDF_TARGET_ESP32S3=1"] },
   board_unsupported: { ...boardDriver, flags: ["-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1"] },
   runtime_status: {

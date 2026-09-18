@@ -105,6 +105,22 @@
           <div class="field"><label for="network-hostname">Local hostname</label><div class="hostname-field"><input id="network-hostname" value="kb" maxlength="32" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" autocomplete="off" spellcheck="false" required><span>.local</span></div></div>
           <button class="command-button secondary" type="submit">Save name</button>
         </form>
+        <form id="power-form" hidden>
+          <h3>Power</h3>
+          <div class="field">
+            <label for="power-idle">Auto sleep</label>
+            <select id="power-idle" disabled>
+              <option value="30">30 minutes</option>
+              <option value="60">60 minutes</option>
+              <option value="0">Never</option>
+            </select>
+          </div>
+          <p id="power-status" class="job-status" role="status" aria-live="polite" hidden></p>
+          <div class="network-job-actions">
+            <button id="power-save" class="command-button secondary" type="submit" disabled>Save power setting</button>
+            <button id="power-retry" class="command-button secondary" type="button" hidden>Refresh setting</button>
+          </div>
+        </form>
         <div class="network-footer network-job-actions">
           <button id="forget-network" class="command-button danger" type="button" hidden>Forget network</button>
         </div>
