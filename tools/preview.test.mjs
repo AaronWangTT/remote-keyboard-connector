@@ -68,6 +68,10 @@ test("Power API authenticates, validates and persists timeout choices", { timeou
   const read = async () => (await fetch(endpoint, { headers })).json();
   const save = body => fetch(endpoint, { method: "POST", headers, body });
   assert.equal((await read()).idle_minutes, 30);
+  const charset = await fetch(endpoint, { method: "POST", headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+    body: '{"idle_minutes":60}' });
+  assert.equal(charset.status, 200);
+  assert.equal((await read()).idle_minutes, 60);
   assert.equal((await fetch(endpoint, { method: "POST", headers: { ...headers, "X-CSRF-Token": "wrong" }, body: '{"idle_minutes":0}' })).status, 403);
   for (const body of ['{}', '{"idle_minutes":-1}', '{"idle_minutes":30.5}', '{"idle_minutes":"30"}',
     '{"idle_minutes":30,"idle_minutes":60}', '{"idle_minutes":30,"extra":0}', '{"idle_minutes":1e309}',
@@ -97,6 +101,7 @@ test("Power model ignores heartbeats and polls, then wakes disarmed with fresh a
   const connection = new WebSocket(new URL("/api/v1/keyboard", url.replace("http:", "ws:")), { headers: { Origin: url, Cookie: session.cookie } });
   context.after(() => connection.terminate());
   await once(connection, "open");
+  assert.equal((await advance(60001)).asleep, false);
   assert.equal((await advance(29 * 60000)).asleep, false);
   const heartbeat = once(connection, "message");
   connection.send(JSON.stringify({ v: 1, type: "ping" }));
@@ -126,6 +131,7 @@ test("Power model preserves 60-minute settings across wake and disables idle sle
     headers: { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" },
     ...(body ? { body: JSON.stringify(body) } : {}) });
   assert.equal((await call("/api/v1/power", { idle_minutes: 60 })).status, 200);
+  assert.equal((await (await call("/__test__/power", { advance_ms: 60001 })).json()).asleep, false);
   assert.equal((await (await call("/__test__/power", { advance_ms: 31 * 60000 })).json()).asleep, false);
   assert.equal((await (await call("/__test__/power", { advance_ms: 29 * 60000 + 1 })).json()).asleep, true);
   await call("/__test__/power", { action: "wake" });
@@ -166,7 +172,7 @@ test("Power model holds input and OTA awake, then starts a fresh quiet interval"
   assert.equal((await advance(65 * 60000)).asleep, false);
   assert.equal((await fetch(new URL("/api/v1/update/job", url), { method: "DELETE", headers: headers(),
     body: JSON.stringify({ job_id: staged.job_id }) })).status, 202);
-  await advance(0);
+  await advance(60001);
   assert.equal((await advance(29 * 60000)).asleep, false);
   assert.equal((await advance(60001)).asleep, true);
   const input = await (await fetch(new URL("/__test__/input", url))).json();

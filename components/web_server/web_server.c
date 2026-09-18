@@ -530,12 +530,15 @@ static esp_err_t power_handler(httpd_req_t *request)
         expire_control(NULL);
         if (active_client != NULL || pending_owner != NULL) return problem(request, "409 Conflict", "release_control_first");
         firmware_update_status_t update = firmware_update_status();
-        if (update.busy || update.trial_boot || !update.available || network_sleep_blocked()) {
+        network_status_t network;
+        network_status(&network);
+        if (update.busy || update.trial_boot || !update.available || network.busy) {
             return problem(request, "409 Conflict", "device_busy");
         }
         char type[48];
         if (request->content_len == 0 || request->content_len > 128 ||
-            !header(request, "Content-Type", type, sizeof(type)) || strcmp(type, "application/json") != 0) {
+            !header(request, "Content-Type", type, sizeof(type)) ||
+            (strcmp(type, "application/json") != 0 && strcmp(type, "application/json; charset=utf-8") != 0)) {
             return problem(request, "400 Bad Request", "invalid_power_request");
         }
         uint8_t payload[128];

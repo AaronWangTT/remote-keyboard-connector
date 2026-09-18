@@ -27,6 +27,7 @@ let powerOffset = 0;
 let powerLastActivity = performance.now();
 let powerWasBlocked = false;
 let powerSleeping = false;
+let powerManagementUntil = 0;
 const powerMutations = new Set();
 const network = { available: true, ap_active: true, station_online: false, desired_station: false,
   has_profile: false, busy: false, mdns: true,
@@ -61,7 +62,7 @@ function powerActivity() {
 function powerTick() {
   if (!power.available || powerSleeping) return;
   const blocked = !claimed || pendingControl !== null || (controller?.readyState === WebSocket.OPEN && controller.pressed) ||
-    updateBusy() || network.busy || powerMutations.size > 0;
+    updateBusy() || network.busy || powerMutations.size > 0 || performance.now() + powerOffset < powerManagementUntil;
   const previouslyBlocked = powerWasBlocked;
   powerWasBlocked = blocked;
   if (blocked || previouslyBlocked) { powerActivity(); return; }
@@ -77,7 +78,7 @@ async function powerRequest(request, response) {
   if (request.method === "POST") {
     if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "release_control_first" });
     if (updateBusy() || network.busy) return sendJson(response, 409, { error: "device_busy" });
-    const value = request.headers["content-type"] === "application/json" ? await jsonBody(request, { numbers: true, maximum: 128 }) : null;
+    const value = await jsonBody(request, { numbers: true, maximum: 128 });
     if (!value || Object.keys(value).length !== 1 || ![0, 30, 60].includes(value.idle_minutes)) return sendJson(response, 400, { error: "invalid_power_request" });
     if (!power.available) return sendJson(response, 503, { error: "power_unavailable" });
     if (process.env.PREVIEW_POWER_STORAGE_FAIL === "1" && value.idle_minutes !== power.idle_minutes) {
@@ -380,7 +381,11 @@ function authorized(request, response, mutation = false) {
     sendJson(response, 403, { error: "csrf_denied" });
     return null;
   }
-  if (mutation && network.ap_active) managementUntil = performance.now() + confirmationTtl;
+  if (mutation && network.ap_active) {
+    managementUntil = performance.now() + confirmationTtl;
+    powerManagementUntil = managementUntil + powerOffset;
+    powerWasBlocked = true;
+  }
   if (mutation && !powerMutations.has(response)) {
     powerMutations.add(response);
     const finished = () => powerMutations.delete(response);
@@ -519,6 +524,7 @@ const server = createServer(async (request, response) => {
       if (command?.action === "wake" && powerSleeping) {
         powerSleeping = false;
         powerWasBlocked = false;
+        powerManagementUntil = 0;
         loginAttempts = 0;
         powerActivity();
         capsLock = null;

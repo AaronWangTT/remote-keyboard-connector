@@ -25,7 +25,7 @@ const boardPower = {
 };
 const suites = {
   power_control: { includes: [...boardDriver.includes, "components/web_server", "components/network/include",
-      "components/firmware_update/include", "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON"],
+      "components/firmware_update/include", "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON", ".cache/tests"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/board/board_power_policy.c", "components/web_server/test/power_control_test.c"],
     flags: ["-DCJSON_NESTING_LIMIT=4"], linkFlags: ["-lm"] },
   usb_power: { includes: [...usbIncludes, ...boardDriver.includes, ".cache/tests"],
@@ -98,6 +98,8 @@ const section = (source, start, end) => {
 };
 const network = await readFile("components/network/network.c", "utf8");
 const web = await readFile("components/web_server/web_server.c", "utf8");
+await writeFile(".cache/tests/power_http.inc",
+  section(web, "static cJSON *power_json(void)\n{", "\nstatic cJSON *network_json(void)\n{"));
 const usb = await readFile("components/usb_keyboard/usb_keyboard.c", "utf8");
 await writeFile(".cache/tests/usb_power.inc",
   section(usb, "static void set_usb_online(", "\nconst uint8_t *tud_hid_descriptor_report_cb") +
@@ -123,7 +125,7 @@ if (process.env.IDF_PATH) {
 await writeFile(".cache/tests/sdk_bootloader.inc", bootloaderFixture);
 await writeFile(".cache/tests/sdk_signature_verifier.inc", signatureFixture);
 await writeFile(".cache/tests/network_observer.inc",
-  section(network, "network_control_status_t network_control_status(uint32_t generation)", "\nvoid network_management_touch") +
+  section(network, "network_control_status_t network_control_status(uint32_t generation)", "\nbool network_control_begin") +
   section(network, "bool network_control_begin(uint32_t local_address, uint32_t generation)", "\nstatic bool recovery_held") +
   section(network, "bool network_service_healthy(void)", "\nesp_err_t network_submit"));
 await writeFile(".cache/tests/network_effect_decision.inc",

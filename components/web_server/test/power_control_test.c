@@ -16,6 +16,7 @@ static bool quiescent;
 static bool release_completes;
 static bool network_ready;
 static bool network_busy;
+static bool management_grace;
 static bool network_stops;
 static bool fail_task;
 static bool detached;
@@ -52,7 +53,8 @@ esp_err_t usb_keyboard_sleep(bool sleeping)
     detached = sleeping;
     return ESP_OK;
 }
-bool network_sleep_blocked(void) { return network_busy; }
+bool network_sleep_blocked(void) { return network_busy || management_grace; }
+void network_status(network_status_t *snapshot) { *snapshot = (network_status_t){.available = true, .busy = network_busy}; }
 network_control_status_t network_control_status(uint32_t generation) { (void)generation; return (network_control_status_t){.ready = network_ready}; }
 bool network_sleep_begin(void) { if (network_busy) return false; fake_network_state = NETWORK_SLEEP_RESERVED; return true; }
 bool network_sleep_stop(void) { assert(fake_network_state == NETWORK_SLEEP_RESERVED); fake_network_state = NETWORK_SLEEP_STOPPING; return true; }
@@ -82,6 +84,68 @@ void vTaskDelete(TaskHandle_t handle) { assert(handle == NULL); longjmp(task_exi
 
 #include "../power_control.c"
 
+#define HTTP_GET 0
+#define HTTP_POST 1
+typedef struct {
+    int method;
+    size_t content_len;
+    const char *content_type;
+    const char *body;
+    size_t offset;
+} httpd_req_t;
+static void *active_client;
+static void *pending_owner;
+static int http_status;
+static bool authenticated = true;
+static bool origin_allowed = true;
+static char http_reply[192];
+
+static void response_headers(httpd_req_t *request) { (void)request; }
+static void expire_control(void *argument) { assert(argument == NULL); }
+static esp_err_t problem(httpd_req_t *request, const char *status, const char *code)
+{
+    (void)request;
+    assert(sscanf(status, "%d", &http_status) == 1);
+    snprintf(http_reply, sizeof(http_reply), "%s", code);
+    return ESP_OK;
+}
+static bool request_allowed(httpd_req_t *request, bool mutation)
+{
+    (void)mutation;
+    if (!origin_allowed) problem(request, "403 Forbidden", "origin_denied");
+    return origin_allowed;
+}
+static void *request_session(httpd_req_t *request, bool mutation)
+{
+    if (!authenticated) { problem(request, "401 Unauthorized", "login_required"); return NULL; }
+    if (mutation) management_grace = true;
+    return &authenticated;
+}
+static bool header(httpd_req_t *request, const char *name, char *value, size_t capacity)
+{
+    assert(strcmp(name, "Content-Type") == 0);
+    if (request->content_type == NULL || strlen(request->content_type) >= capacity) return false;
+    snprintf(value, capacity, "%s", request->content_type);
+    return true;
+}
+static int httpd_req_recv(httpd_req_t *request, char *buffer, size_t count)
+{
+    assert(count <= request->content_len - request->offset);
+    memcpy(buffer, request->body + request->offset, count);
+    request->offset += count;
+    return (int)count;
+}
+static void httpd_resp_set_type(httpd_req_t *request, const char *type) { (void)request; assert(strcmp(type, "application/json") == 0); }
+static esp_err_t httpd_resp_sendstr(httpd_req_t *request, const char *value)
+{
+    (void)request;
+    http_status = 200;
+    snprintf(http_reply, sizeof(http_reply), "%s", value);
+    return ESP_OK;
+}
+
+#include "power_http.inc"
+
 static void release_input(void) { release_calls++; }
 static void poll(void) { power_control_poll(true, false, release_input); }
 
@@ -89,7 +153,7 @@ static void reset(void)
 {
     now = 1000000;
     supported = wake_released = quiescent = release_completes = network_ready = network_stops = true;
-    network_busy = fail_task = detached = entered = false;
+    network_busy = management_grace = fail_task = detached = entered = false;
     load_result = store_result = prepare_result = ESP_OK;
     release_calls = store_calls = 0;
     saved_timeout = 30;
@@ -112,8 +176,52 @@ static void run_worker(void)
     assert(fake_network_state == NETWORK_SLEEP_AWAKE && !detached);
 }
 
+static void test_power_http(void)
+{
+    reset();
+    const char *types[] = {"application/json", "application/json; charset=utf-8"};
+    for (size_t index = 0; index < sizeof(types) / sizeof(types[0]); index++) {
+        const char *body = index == 0 ? "{\"idle_minutes\":60}" : "{\"idle_minutes\":30}";
+        httpd_req_t request = {.method = HTTP_POST, .content_type = types[index], .body = body, .content_len = strlen(body)};
+        assert(power_handler(&request) == ESP_OK && http_status == 200);
+        assert(management_grace && network_sleep_blocked());
+        assert(saved_timeout == (index == 0 ? 60 : 30));
+    }
+    unsigned previous_writes = store_calls;
+    const char *body = "{\"idle_minutes\":0}";
+    for (unsigned blocked = 0; blocked < 6; blocked++) {
+        httpd_req_t request = {.method = HTTP_POST, .content_type = "application/json", .body = body, .content_len = strlen(body)};
+        if (blocked == 0) active_client = &request;
+        if (blocked == 1) pending_owner = &request;
+        if (blocked == 2) network_busy = true;
+        if (blocked == 3) update.busy = true;
+        if (blocked == 4) update.trial_boot = true;
+        if (blocked == 5) update.available = false;
+        assert(power_handler(&request) == ESP_OK && http_status == 409);
+        assert(store_calls == previous_writes);
+        active_client = pending_owner = NULL;
+        network_busy = false;
+        update = (firmware_update_status_t){.available = true};
+    }
+    httpd_req_t request = {.method = HTTP_POST, .content_type = "text/plain", .body = body, .content_len = strlen(body)};
+    assert(power_handler(&request) == ESP_OK && http_status == 400);
+    assert(store_calls == previous_writes);
+    authenticated = false;
+    assert(power_handler(&request) == ESP_OK && http_status == 401);
+    authenticated = true;
+    origin_allowed = false;
+    assert(power_handler(&request) == ESP_OK && http_status == 403);
+    origin_allowed = true;
+    request.method = HTTP_GET;
+    now += 123456;
+    int64_t before_activity = policy.last_activity_us;
+    assert(power_handler(&request) == ESP_OK && http_status == 200);
+    assert(strstr(http_reply, "\"idle_minutes\":30") != NULL && policy.last_activity_us == before_activity);
+}
+
 int main(void)
 {
+    test_power_http();
     const char *invalid[] = {"", "[]", "null", "{}", "{\"idle_minutes\":true}", "{\"idle_minutes\":\"30\"}",
         "{\"idle_minutes\":-1}", "{\"idle_minutes\":30.5}", "{\"idle_minutes\":1e309}",
         "{\"idle_minutes\\u0000extra\":30}",

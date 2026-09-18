@@ -309,6 +309,7 @@ static void reset_network(void)
     snapshot_seen_at = now_us;
     command_pending = guarded = guard_ap = update_reserved = false;
     sleep_state = NETWORK_SLEEP_AWAKE;
+    management_until = 0;
     ap_address = 1;
     station_address = lease_address = guard_generation = 0;
 }
@@ -412,6 +413,14 @@ static void test_network_sleep_reservation(void)
     reset_network();
     assert(network_sleep_state() == NETWORK_SLEEP_AWAKE);
     assert(!network_sleep_stop());
+    network_management_touch(ap_address);
+    assert(snapshot.can_control && !snapshot.busy);
+    assert(network_sleep_blocked());
+    assert(!network_sleep_begin());
+    management_until = now_us;
+    assert(!network_sleep_blocked());
+    assert(network_sleep_begin());
+    network_sleep_end();
     assert(network_control_begin(ap_address, 9));
     assert(!network_sleep_begin());
     network_control_end(9);

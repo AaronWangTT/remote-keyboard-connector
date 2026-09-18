@@ -182,7 +182,7 @@ bool network_sleep_begin(void)
     int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&lock);
     bool accepted = sleep_state == NETWORK_SLEEP_AWAKE && control_ready && snapshot.available && !snapshot.busy &&
-        !command_pending && !guarded && !update_reserved && snapshot_seen_at != 0 && now >= snapshot_seen_at &&
+        !command_pending && !guarded && !update_reserved && now >= management_until && snapshot_seen_at != 0 && now >= snapshot_seen_at &&
         now - snapshot_seen_at < INT64_C(1000000);
     if (accepted) {
         sleep_state = NETWORK_SLEEP_RESERVED;
@@ -195,7 +195,7 @@ bool network_sleep_begin(void)
 bool network_sleep_blocked(void)
 {
     portENTER_CRITICAL(&lock);
-    bool blocked = snapshot.busy || command_pending || update_reserved;
+    bool blocked = snapshot.busy || command_pending || update_reserved || esp_timer_get_time() < management_until;
     portEXIT_CRITICAL(&lock);
     return blocked;
 }

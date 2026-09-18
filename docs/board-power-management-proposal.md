@@ -278,7 +278,10 @@ from a foreign task. Successful login, claim, control actions, network/update
 commands, saved timeout changes, and changed accepted input reports count as
 activity. Repeated identical reports, GET polling, and heartbeats do not.
 Unclaimed setup, pending control, valid held or incomplete USB input, network
-management jobs, OTA work, and unvalidated startup block sleep. BOOT must be
+management jobs and the existing AP management grace window, OTA work, and
+unvalidated startup block sleep. The grace deadline is checked during both
+blocker observation and atomic network sleep admission; polling does not extend
+it. A fresh idle interval follows its expiry. BOOT must be
 released stably for at least 50 ms before admission.
 
 The [board driver](../components/board/board_power.c) stores a single NVS `u32`
@@ -320,11 +323,14 @@ as `power` in the authenticated device status response.
 
 `POST /api/v1/power` requires the existing Host/Origin, owner-session, and CSRF
 checks, no active/pending keyboard control, and no conflicting network/OTA work.
-It accepts only an `application/json` object with one numeric `idle_minutes`
+It accepts an `application/json` object (also with `charset=utf-8`) with one numeric `idle_minutes`
 field equal to 0, 30, or 60. Bodies are bounded to 128 bytes; duplicate fields,
 unknown fields, invalid types/values, trailing data, and embedded or escaped NUL
 are rejected. Successful saves return the current settings object. Unsupported
 hardware or unavailable storage returns an error rather than pretending to save.
+Settings admission checks active jobs separately from the sleep grace deadline,
+so a save is not rejected merely because its authenticated request opens that
+grace window.
 
 The browser preserves unsaved choices during polling, prevents stale GET
 responses from overwriting a newer save, and reconciles lost responses by
