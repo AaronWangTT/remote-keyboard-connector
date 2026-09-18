@@ -17,6 +17,7 @@ static unsigned deleted_tasks;
 static uint32_t levels[16];
 static uint64_t edge_times[16];
 static uint64_t now_ms;
+static uint64_t stop_at_ms;
 static TaskFunction_t task_entry;
 static void *task_argument;
 static jmp_buf task_exit;
@@ -42,6 +43,17 @@ esp_err_t gpio_config(const gpio_config_t *configuration)
     return fail_configuration ? ESP_FAIL : ESP_OK;
 }
 
+void gpio_deep_sleep_hold_dis(void)
+{
+    assert(configure_calls == 1 && levels[0] == 1);
+}
+
+esp_err_t gpio_hold_dis(gpio_num_t pin)
+{
+    assert(pin == GPIO_NUM_48 && configure_calls == 1 && levels[0] == 1);
+    return ESP_OK;
+}
+
 int xTaskCreate(TaskFunction_t entry, const char *name, uint32_t stack_size, void *argument,
                 unsigned priority, TaskHandle_t *handle)
 {
@@ -59,7 +71,20 @@ void vTaskDelay(TickType_t ticks)
 {
     assert(ticks == BOARD_STATUS_REFRESH_MS);
     now_ms += ticks;
+    if (stop_at_ms != 0 && now_ms >= stop_at_ms) longjmp(task_exit, 1);
     assert(now_ms < 2000);
+}
+
+void test_enter_critical(portMUX_TYPE *lock)
+{
+    assert(*lock == 0);
+    *lock = 1;
+}
+
+void test_exit_critical(portMUX_TYPE *lock)
+{
+    assert(*lock == 1);
+    *lock = 0;
 }
 
 void vTaskDelete(TaskHandle_t handle)
@@ -120,6 +145,14 @@ int main(void)
     assert(task_entry != NULL && gpio_calls == 1 && levels[0] == 1);
     assert(board_status_start(read_status) == ESP_ERR_INVALID_STATE);
     assert(gpio_calls == 1 && configure_calls == 1 && task_calls == 1);
+    assert(board_status_pause(true) == ESP_OK);
+    assert(gpio_calls == 2 && levels[1] == 1);
+    stop_at_ms = 100;
+    if (setjmp(task_exit) == 0) task_entry(task_argument);
+    assert(gpio_calls == 2);
+    assert(board_status_pause(false) == ESP_OK);
+    gpio_calls = 1;
+    now_ms = stop_at_ms = 0;
     fail_gpio_call = 8;
     if (setjmp(task_exit) == 0) task_entry(task_argument);
     const uint32_t expected_levels[] = {1, 0, 1, 0, 1, 0, 1, 0, 1};
@@ -130,6 +163,7 @@ int main(void)
     assert(log_calls == 1 && deleted_tasks == 1);
     puts("PASS: G48 initialization ordering, startup failures, live/stale patterns and update failure cleanup");
 #else
+    assert(board_status_pause(true) == ESP_ERR_NOT_SUPPORTED);
     assert(board_status_start(NULL) == ESP_ERR_NOT_SUPPORTED);
     assert(board_status_start(read_status) == ESP_ERR_NOT_SUPPORTED);
     assert(gpio_calls == 0 && configure_calls == 0 && task_calls == 0 && log_calls == 0);

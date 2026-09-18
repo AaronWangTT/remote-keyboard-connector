@@ -4,6 +4,7 @@
 #include "firmware_update.h"
 #include "network.h"
 #include "network_state.h"
+#include "power_control.h"
 #include "usb_keyboard.h"
 #include "web_server.h"
 
@@ -19,6 +20,7 @@ static bool saved_configuration_valid;
 static bool storage_fault;
 static int64_t snapshot_seen_at;
 static bool update_reserved;
+static network_sleep_state_t sleep_state;
 static bool command_pending;
 static bool guarded;
 static bool guard_ap;
@@ -34,6 +36,8 @@ static int64_t management_until;
 #include "input_client.inc"
 
 static input_client_t *active_client;
+static access_session_t *pending_owner;
+static void release_control(void) { assert(false); }
 static int server_instance;
 static httpd_handle_t server = &server_instance;
 static bool server_started;
@@ -48,6 +52,15 @@ static uint32_t update_address;
 static network_effect_t next_effect;
 static unsigned state_ticks;
 static bool http_owner_context;
+static bool network_worker_context;
+static bool driver_started;
+static network_config_t saved;
+static unsigned wifi_stops;
+static unsigned wifi_restores;
+static unsigned recovery_calls;
+static esp_err_t wifi_stop_result;
+static esp_err_t wifi_restore_result;
+static bool cancel_during_stop;
 static bool identity_ready = true;
 static bool owner_claimed = true;
 static bool websocket_connected = true;
@@ -76,12 +89,57 @@ bool device_identity_ready(void)
     return identity_ready;
 }
 
+void power_control_poll(bool ready, bool pending, void (*release)(void))
+{
+    (void)ready;
+    assert(http_owner_context && !pending && release == release_control);
+}
+
 bool device_identity_claimed(void)
 {
-    assert(http_owner_context);
+    assert(http_owner_context || network_worker_context);
     owner_reads++;
     return owner_claimed;
 }
+
+void network_state_init(network_state_t *current, bool station, int64_t now)
+{
+    assert(current == &state && now == now_us && network_worker_context);
+    *current = (network_state_t){.ap = !station, .phase = station ? NETWORK_CONNECTING : NETWORK_AP};
+}
+
+static esp_err_t esp_wifi_stop(void)
+{
+    assert(network_worker_context && critical_depth == 0);
+    wifi_stops++;
+    if (cancel_during_stop) network_sleep_end();
+    return wifi_stop_result;
+}
+
+static esp_err_t configure_driver(bool ap, bool station, const network_config_t *configuration)
+{
+    assert(network_worker_context && critical_depth == 0 && ap != station && configuration == &saved);
+    wifi_restores++;
+    driver_started = wifi_restore_result == ESP_OK;
+    return wifi_restore_result;
+}
+
+static esp_err_t recovery(const char *error, bool retry_saved)
+{
+    assert(network_worker_context && strcmp(error, "sleep_restore_failed") == 0 && retry_saved);
+    recovery_calls++;
+    return ESP_FAIL;
+}
+
+static void refresh_snapshot(void)
+{
+    assert(network_worker_context && critical_depth == 0);
+    snapshot.available = driver_started;
+    snapshot.can_control = driver_started && sleep_state == NETWORK_SLEEP_AWAKE;
+    snapshot_seen_at = now_us;
+}
+
+#include "network_sleep_worker.inc"
 
 usb_keyboard_status_t usb_keyboard_status(void)
 {
@@ -250,6 +308,8 @@ static void reset_network(void)
     storage_fault = false;
     snapshot_seen_at = now_us;
     command_pending = guarded = guard_ap = update_reserved = false;
+    sleep_state = NETWORK_SLEEP_AWAKE;
+    management_until = 0;
     ap_address = 1;
     station_address = lease_address = guard_generation = 0;
 }
@@ -348,8 +408,57 @@ static void test_network_observation(void)
     reset_network();
 }
 
+static void test_network_sleep_reservation(void)
+{
+    reset_network();
+    assert(network_sleep_state() == NETWORK_SLEEP_AWAKE);
+    assert(!network_sleep_stop());
+    network_management_touch(ap_address);
+    assert(snapshot.can_control && !snapshot.busy);
+    assert(network_sleep_blocked());
+    assert(!network_sleep_begin(0));
+    management_until = now_us;
+    assert(!network_sleep_blocked());
+    assert(network_sleep_begin(0));
+    network_sleep_end();
+    assert(network_control_begin(ap_address, 9));
+    assert(!network_sleep_begin(0) && !network_sleep_begin(8));
+    assert(guarded && guard_generation == 9);
+    assert(network_sleep_begin(9));
+    network_sleep_end();
+    assert(guarded && guard_generation == 9);
+    network_control_end(9);
+    assert(network_update_begin(ap_address));
+    assert(!network_sleep_begin(0));
+    network_update_end();
+    command_pending = true;
+    assert(!network_sleep_begin(0));
+    command_pending = false;
+    snapshot.busy = true;
+    assert(!network_sleep_begin(0));
+    snapshot.busy = false;
+    snapshot_seen_at = now_us - INT64_C(1000000);
+    assert(!network_sleep_begin(0));
+    snapshot_seen_at = now_us;
+    assert(network_sleep_begin(0));
+    assert(!snapshot.can_control && network_sleep_state() == NETWORK_SLEEP_RESERVED);
+    assert(!network_update_begin(ap_address) && !network_control_begin(ap_address, 9));
+    expect_network(0, false, false);
+    unsigned before_ticks = state_ticks;
+    assert(network_test_effect(now_us) == NETWORK_WAIT && state_ticks == before_ticks);
+    network_sleep_end();
+    assert(network_sleep_state() == NETWORK_SLEEP_AWAKE && snapshot.can_control);
+    assert(network_sleep_begin(0) && network_sleep_stop());
+    assert(network_sleep_state() == NETWORK_SLEEP_STOPPING);
+    network_sleep_end();
+    assert(network_sleep_state() == NETWORK_SLEEP_RESUMING);
+    assert(!network_sleep_begin(0) && !network_update_begin(ap_address));
+    reset_network();
+}
+
 static void test_network_service_health(void)
 {
+    test_network_sleep_reservation();
     reset_network();
     saved_configuration_valid = false;
     strcpy(snapshot.error, "saved_configuration_invalid");
@@ -378,6 +487,38 @@ static void test_network_service_health(void)
     assert(network_service_healthy());
     lease_address = 0;
     assert(!network_service_healthy());
+    reset_network();
+}
+
+static void test_network_sleep_worker(void)
+{
+    for (unsigned failure = 0; failure < 4; failure++) {
+        reset_network();
+        driver_started = true;
+        saved = (network_config_t){.version = 1, .hostname = "kb", .station = failure % 2};
+        network_config_t unchanged = saved;
+        wifi_stops = wifi_restores = recovery_calls = 0;
+        wifi_stop_result = failure == 1 ? ESP_FAIL : ESP_OK;
+        wifi_restore_result = failure == 2 ? ESP_FAIL : ESP_OK;
+        cancel_during_stop = failure == 3;
+        network_worker_context = true;
+        assert(!sleep_step());
+        assert(network_sleep_begin(0));
+        assert(sleep_step() && wifi_stops == 0 && wifi_restores == 0);
+        assert(network_sleep_stop());
+        assert(sleep_step() && wifi_stops == 1);
+        assert(network_sleep_state() == (failure == 1 ? NETWORK_SLEEP_FAILED :
+            failure == 3 ? NETWORK_SLEEP_RESUMING : NETWORK_SLEEP_STOPPED));
+        if (failure != 3) assert(sleep_step() && wifi_stops == 1 && wifi_restores == 0);
+        assert(!network_update_begin(ap_address) && !network_control_begin(ap_address, 9));
+        network_sleep_end();
+        assert(sleep_step() && wifi_restores == 1);
+        assert(network_sleep_state() == NETWORK_SLEEP_AWAKE);
+        assert(recovery_calls == (failure == 2 ? 1 : 0));
+        assert(memcmp(&saved, &unchanged, sizeof(saved)) == 0);
+        network_worker_context = false;
+    }
+    cancel_during_stop = false;
     reset_network();
 }
 
@@ -419,6 +560,7 @@ static void run_worker(unsigned steps)
 
 static void test_http_observation(void)
 {
+    test_network_sleep_worker();
     expect_web(false, false, false);
     assert(!web_server_service_healthy());
     assert(web_server_status_start() == ESP_ERR_INVALID_STATE && task_calls == 0);

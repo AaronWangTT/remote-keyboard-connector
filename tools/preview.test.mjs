@@ -59,6 +59,243 @@ function previewUpdateImage(version = "0.1.1") {
   return image;
 }
 
+test("Power API authenticates, validates and persists timeout choices", { timeout: 15000 }, async context => {
+  const url = await startPreview(context);
+  const endpoint = new URL("/api/v1/power", url);
+  assert.equal((await fetch(endpoint)).status, 401);
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
+  const read = async () => (await fetch(endpoint, { headers })).json();
+  const save = body => fetch(endpoint, { method: "POST", headers, body });
+  assert.equal((await read()).idle_minutes, 30);
+  const charset = await fetch(endpoint, { method: "POST", headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+    body: '{"idle_minutes":60}' });
+  assert.equal(charset.status, 200);
+  assert.equal((await read()).idle_minutes, 60);
+  assert.equal((await fetch(endpoint, { method: "POST", headers: { ...headers, "X-CSRF-Token": "wrong" }, body: '{"idle_minutes":0}' })).status, 403);
+  for (const body of ['{}', '{"idle_minutes":-1}', '{"idle_minutes":30.5}', '{"idle_minutes":"30"}',
+    '{"idle_minutes":30,"idle_minutes":60}', '{"idle_minutes":30,"extra":0}', '{"idle_minutes":1e309}',
+    '{"idle_minutes\\u0000extra":30}', '{"idle_minutes":30}\0']) {
+    assert.equal((await save(body)).status, 400, body);
+  }
+  for (const idle_minutes of [60, 0, 30]) {
+    assert.equal((await save(JSON.stringify({ idle_minutes }))).status, 200);
+    assert.equal((await read()).idle_minutes, idle_minutes);
+  }
+  await takeRequest(url, session);
+  assert.equal((await save('{"idle_minutes":0}')).status, 409);
+  await fetch(new URL("/api/v1/control/stop", url), { method: "POST", headers });
+  const staged = await (await fetch(new URL("/api/v1/update", url), { method: "POST",
+    headers: { ...headers, "Content-Type": "application/octet-stream" }, body: previewUpdateImage() })).json();
+  assert.equal(staged.phase, "staged");
+  assert.equal((await save('{"idle_minutes":0}')).status, 409);
+});
+
+test("Power model ignores heartbeats and polls, then wakes disarmed with fresh authentication", { timeout: 15000 }, async context => {
+  const url = await startPreview(context);
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
+  const advance = async advance_ms => (await fetch(new URL("/__test__/power", url), {
+    method: "POST", headers, body: JSON.stringify({ advance_ms }) })).json();
+  await takeRequest(url, session);
+  const connection = new WebSocket(new URL("/api/v1/keyboard", url.replace("http:", "ws:")), { headers: { Origin: url, Cookie: session.cookie } });
+  context.after(() => connection.terminate());
+  await once(connection, "open");
+  assert.equal((await advance(60001)).asleep, false);
+  assert.equal((await advance(29 * 60000)).asleep, false);
+  const heartbeat = once(connection, "message");
+  connection.send(JSON.stringify({ v: 1, type: "ping" }));
+  await heartbeat;
+  assert.equal((await fetch(new URL("/api/v1/power", url), { headers })).status, 200);
+  assert.equal((await fetch(new URL("/api/v1/network/job", url), { headers })).status, 200);
+  const closed = once(connection, "close");
+  assert.equal((await advance(60001)).asleep, true);
+  await closed;
+  assert.equal((await fetch(new URL("/api/v1/power", url), { headers })).status, 503);
+  const wake = await fetch(new URL("/__test__/power", url), { method: "POST", headers, body: '{"action":"wake"}' });
+  assert.equal((await wake.json()).asleep, false);
+  assert.equal((await fetch(new URL("/api/v1/power", url), { headers })).status, 401);
+  const renewed = await loginRequest(url);
+  const power = await (await fetch(new URL("/api/v1/power", url), { headers: { Cookie: renewed.cookie } })).json();
+  assert.equal(power.idle_minutes, 30);
+  const input = await (await fetch(new URL("/__test__/input", url))).json();
+  assert.equal(input.connected, false);
+  assert.deepEqual(input.report, { modifiers: 0, keys: [] });
+  assert.equal(input.down, 0);
+});
+
+test("Power model preserves 60-minute settings across wake and disables idle sleep with Never", { timeout: 10000 }, async context => {
+  const url = await startPreview(context);
+  let session = await loginRequest(url);
+  const call = async (path, body) => fetch(new URL(path, url), { method: body ? "POST" : "GET",
+    headers: { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" },
+    ...(body ? { body: JSON.stringify(body) } : {}) });
+  assert.equal((await call("/api/v1/power", { idle_minutes: 60 })).status, 200);
+  assert.equal((await (await call("/__test__/power", { advance_ms: 60001 })).json()).asleep, false);
+  assert.equal((await (await call("/__test__/power", { advance_ms: 31 * 60000 })).json()).asleep, false);
+  assert.equal((await (await call("/__test__/power", { advance_ms: 29 * 60000 + 1 })).json()).asleep, true);
+  await call("/__test__/power", { action: "wake" });
+  session = await loginRequest(url);
+  assert.equal((await (await call("/api/v1/power")).json()).idle_minutes, 60);
+  assert.equal((await call("/api/v1/power", { idle_minutes: 0 })).status, 200);
+  assert.equal((await (await call("/__test__/power", { advance_ms: 86400000 })).json()).asleep, false);
+});
+
+test("Power model holds input and OTA awake, then starts a fresh quiet interval", { timeout: 15000 }, async context => {
+  const url = await startPreview(context);
+  let session = await loginRequest(url);
+  const headers = () => ({ Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" });
+  const advance = async advance_ms => (await fetch(new URL("/__test__/power", url), {
+    method: "POST", headers: headers(), body: JSON.stringify({ advance_ms }) })).json();
+  await takeRequest(url, session);
+  const connection = new WebSocket(new URL("/api/v1/keyboard", url.replace("http:", "ws:")), { headers: headers() });
+  context.after(() => connection.terminate());
+  await once(connection, "open");
+  const send = async message => {
+    const reply = once(connection, "message");
+    connection.send(JSON.stringify(message));
+    await reply;
+  };
+  await send({ v: 1, type: "state", seq: 1, modifiers: 0, keys: [4] });
+  assert.equal((await advance(31 * 60000)).asleep, false);
+  await send({ v: 1, type: "state", seq: 2, modifiers: 0, keys: [] });
+  await advance(0);
+  assert.equal((await advance(29 * 60000)).asleep, false);
+  const closed = once(connection, "close");
+  assert.equal((await advance(60001)).asleep, true);
+  await closed;
+  await fetch(new URL("/__test__/power", url), { method: "POST", headers: headers(), body: '{"action":"wake"}' });
+  session = await loginRequest(url);
+  const staged = await (await fetch(new URL("/api/v1/update", url), { method: "POST",
+    headers: { ...headers(), "Content-Type": "application/octet-stream" }, body: previewUpdateImage() })).json();
+  assert.equal(staged.phase, "staged");
+  assert.equal((await advance(65 * 60000)).asleep, false);
+  assert.equal((await fetch(new URL("/api/v1/update/job", url), { method: "DELETE", headers: headers(),
+    body: JSON.stringify({ job_id: staged.job_id }) })).status, 202);
+  await advance(60001);
+  assert.equal((await advance(29 * 60000)).asleep, false);
+  assert.equal((await advance(60001)).asleep, true);
+  const input = await (await fetch(new URL("/__test__/input", url))).json();
+  assert.deepEqual(input.report, { modifiers: 0, keys: [] });
+  assert.equal(input.down, 1);
+});
+
+for (const environment of [{ PREVIEW_BOARD_POWER: "0" }, { PREVIEW_POWER_STORAGE_FAIL: "1" }]) {
+  test(`Power model disables unsupported or failed storage: ${Object.keys(environment)[0]}`, { timeout: 10000 }, async context => {
+    const url = await startPreview(context, environment);
+    const session = await loginRequest(url);
+    const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
+    const saved = await fetch(new URL("/api/v1/power", url), { method: "POST", headers, body: '{"idle_minutes":60}' });
+    assert.equal(saved.status, 503);
+    const state = await (await fetch(new URL("/api/v1/power", url), { headers })).json();
+    assert.equal(state.available, false);
+    assert.equal(state.idle_minutes, 30);
+    const elapsed = await fetch(new URL("/__test__/power", url), { method: "POST", headers, body: '{"advance_ms":3600001}' });
+    assert.equal((await elapsed.json()).asleep, false);
+  });
+}
+
+for (const engine of [chromium, webkit]) test(`Power settings UI saves, preserves drafts and reconciles lost responses in ${engine.name()}`, { timeout: 30000 }, async context => {
+  const url = await startPreview(context);
+  const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+  context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 320, height: 568 } });
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.request.post(`${url}/api/v1/session`, { headers: { Origin: url }, data: { password: "preview-owner-password" } });
+  await page.goto(url);
+  await page.locator("#network-settings").click();
+  const select = page.getByLabel("Auto sleep", { exact: true });
+  await expect(select).toBeEnabled();
+  await expect(select).toHaveValue("30");
+  await select.selectOption("60");
+  await page.waitForResponse(response => response.url().endsWith("/api/v1/power") && response.request().method() === "GET");
+  await expect(select).toHaveValue("60");
+  assert.equal((await (await page.request.get(`${url}/api/v1/power`)).json()).idle_minutes, 30);
+  await page.getByRole("button", { name: "Save power setting", exact: true }).click();
+  await expect(page.locator("#power-status")).toHaveText("Saved");
+  await page.reload();
+  await page.locator("#network-settings").click();
+  await expect(select).toBeEnabled();
+  await expect(select).toHaveValue("60");
+
+  let writes = 0;
+  await page.route("**/api/v1/power", async route => {
+    if (route.request().method() !== "POST") { await route.continue(); return; }
+    writes++;
+    await route.fetch();
+    await route.abort("failed");
+  });
+  await select.selectOption("0");
+  await page.locator("#power-save").click();
+  await expect(page.locator("#power-status")).toHaveText("Current setting loaded");
+  await expect(select).toHaveValue("0");
+  assert.equal(writes, 1);
+  assert.equal((await (await page.request.get(`${url}/api/v1/power`)).json()).idle_minutes, 0);
+  await page.unroute("**/api/v1/power");
+
+  let releaseRead;
+  const readGate = new Promise(resolve => { releaseRead = resolve; });
+  let captured;
+  const capturedRead = new Promise(resolve => { captured = resolve; });
+  let holdRead = true;
+  await page.route("**/api/v1/power", async route => {
+    if (route.request().method() === "GET" && holdRead) {
+      holdRead = false;
+      const response = await route.fetch();
+      captured();
+      await readGate;
+      await route.fulfill({ response });
+    } else await route.continue();
+  });
+  try {
+    await capturedRead;
+    await select.selectOption("30");
+    await page.locator("#power-save").click();
+    await expect(page.locator("#power-status")).toHaveText("Saved");
+    releaseRead();
+    await expect(select).toHaveValue("30");
+    assert.equal((await (await page.request.get(`${url}/api/v1/power`)).json()).idle_minutes, 30);
+  } finally { releaseRead(); }
+  await page.locator("#power-form").scrollIntoViewIfNeeded();
+  const bounds = await select.boundingBox();
+  assert(bounds.x >= 0 && bounds.x + bounds.width <= 320);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await mkdir(new URL("../.cache/tests/", import.meta.url), { recursive: true });
+  await page.screenshot({ path: fileURLToPath(new URL(`../.cache/tests/power-${engine.name()}.png`, import.meta.url)) });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.locator("#power-form").scrollIntoViewIfNeeded();
+  const desktopBounds = await select.boundingBox();
+  assert(desktopBounds.x >= 0 && desktopBounds.x + desktopBounds.width <= 1280);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.screenshot({ path: fileURLToPath(new URL(`../.cache/tests/power-${engine.name()}-desktop.png`, import.meta.url)) });
+  assert.equal((await (await page.request.get(`${url}/__test__/input`)).json()).down, 0);
+  assert.deepEqual(errors, []);
+});
+
+for (const failure of ["unsupported", "storage"]) test(`Power settings UI handles ${failure} without affecting network settings`, { timeout: 15000 }, async context => {
+  const url = await startPreview(context, failure === "unsupported" ? { PREVIEW_BOARD_POWER: "0" } : { PREVIEW_POWER_STORAGE_FAIL: "1" });
+  const browser = await chromium.launch();
+  context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.request.post(`${url}/api/v1/session`, { headers: { Origin: url }, data: { password: "preview-owner-password" } });
+  await page.goto(url);
+  await page.locator("#network-settings").click();
+  await expect(page.locator("#network-apply")).toBeEnabled();
+  if (failure === "unsupported") {
+    await expect(page.locator("#power-form")).toBeHidden();
+  } else {
+    await expect(page.locator("#power-idle")).toBeEnabled();
+    await page.locator("#power-idle").selectOption("60");
+    await page.locator("#power-save").click();
+    await expect(page.locator("#power-status")).toHaveText("Automatic sleep unavailable");
+    await expect(page.locator("#power-idle")).toHaveValue("30");
+    await expect(page.locator("#power-idle")).toBeDisabled();
+    await expect(page.locator("#network-apply")).toBeEnabled();
+  }
+  assert.equal((await (await page.request.get(`${url}/__test__/input`)).json()).down, 0);
+});
+
 for (const mode of ["ap", "station"]) test(`OTA API stages, cancels and activates in ${mode} mode without resetting settings`, { timeout: 12000 }, async context => {
   const url = await startPreview(context, { PREVIEW_NETWORK_MODE: mode, PREVIEW_UPDATE_DELAY_MS: "100" });
   const session = await loginRequest(url);

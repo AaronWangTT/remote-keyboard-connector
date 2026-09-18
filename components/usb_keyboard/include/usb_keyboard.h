@@ -20,4 +20,5 @@ bool usb_keyboard_heartbeat(uint32_t generation);
 void usb_keyboard_release(uint32_t generation);
 bool usb_keyboard_quiescent(void);
 bool usb_keyboard_begin_maintenance(void);
+esp_err_t usb_keyboard_sleep(bool sleeping);
 bool usb_keyboard_service_healthy(void);

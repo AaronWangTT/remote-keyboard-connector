@@ -21,9 +21,17 @@ const drainingRequests = new WeakSet();
 let pendingControl = null;
 let loginWindow = 0;
 let loginAttempts = 0;
+const power = { supported: process.env.PREVIEW_BOARD_POWER !== "0", available: process.env.PREVIEW_BOARD_POWER !== "0",
+  preparing: false, idle_minutes: 30, error: "" };
+let powerOffset = 0;
+let powerLastActivity = performance.now();
+let powerWasBlocked = false;
+let powerSleeping = false;
+let powerManagementUntil = 0;
+const powerMutations = new Set();
 const network = { available: true, ap_active: true, station_online: false, desired_station: false,
   has_profile: false, busy: false, mdns: true,
-  get can_control() { return this.available && !this.busy && !updateBusy() && pendingControl === null && controller?.readyState !== WebSocket.OPEN; },
+  get can_control() { return !powerSleeping && this.available && !this.busy && !updateBusy() && pendingControl === null && controller?.readyState !== WebSocket.OPEN; },
   job_id: 0, phase: "ap", job: "idle", error: "",
   hostname: "kb", requested_hostname: "kb", ap_ssid: "WiFiKeyboard-123456", saved_ssid: "", saved_ssid_hex: "", station_ssid: "",
   ap_ip: "192.168.4.1", ap_reconnect_ip: "", station_ip: "", scan: [] };
@@ -46,6 +54,42 @@ const updateIdleTtl = Math.max(100, Number(process.env.PREVIEW_UPDATE_IDLE_MS) |
 if (process.env.PREVIEW_NETWORK_MODE === "station") Object.assign(network, {
   ap_active: false, ap_ip: "", station_online: true, station_ip: "192.168.1.50", desired_station: true,
   has_profile: true, phase: "station", saved_ssid: "Home Wi-Fi", station_ssid: "Home Wi-Fi" });
+
+function powerActivity() {
+  if (power.available && !powerSleeping) powerLastActivity = performance.now() + powerOffset;
+}
+
+function powerTick() {
+  if (!power.available || powerSleeping) return;
+  const blocked = !claimed || pendingControl !== null || (controller?.readyState === WebSocket.OPEN && controller.pressed) ||
+    updateBusy() || network.busy || powerMutations.size > 0 || performance.now() + powerOffset < powerManagementUntil;
+  const previouslyBlocked = powerWasBlocked;
+  powerWasBlocked = blocked;
+  if (blocked || previouslyBlocked) { powerActivity(); return; }
+  if (power.idle_minutes && network.available && performance.now() + powerOffset - powerLastActivity >= power.idle_minutes * 60000) {
+    releaseController();
+    sessions.clear();
+    powerSleeping = true;
+  }
+}
+
+async function powerRequest(request, response) {
+  if (!authorized(request, response, request.method !== "GET")) return;
+  if (request.method === "POST") {
+    if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "release_control_first" });
+    if (updateBusy() || network.busy) return sendJson(response, 409, { error: "device_busy" });
+    const value = await jsonBody(request, { numbers: true, maximum: 128 });
+    if (!value || Object.keys(value).length !== 1 || ![0, 30, 60].includes(value.idle_minutes)) return sendJson(response, 400, { error: "invalid_power_request" });
+    if (!power.available) return sendJson(response, 503, { error: "power_unavailable" });
+    if (process.env.PREVIEW_POWER_STORAGE_FAIL === "1" && value.idle_minutes !== power.idle_minutes) {
+      Object.assign(power, { available: false, error: "power_storage_failed" });
+      return sendJson(response, 503, { error: "power_unavailable" });
+    }
+    power.idle_minutes = value.idle_minutes;
+    powerActivity();
+  }
+  return sendJson(response, 200, power);
+}
 
 function updateBusy() {
   return activeUpload !== null || ["receiving", "verifying", "staged", "activating"].includes(updateJob.phase);
@@ -92,6 +136,7 @@ async function updateRequest(request, response) {
     const current = updateJob = { job_id: updateJob.job_id + 1, phase: "receiving", received: 0, expected,
       candidate_version: "", sha256: "", error: "" };
     updateOwner = session;
+    powerActivity();
     const uploadController = new AbortController();
     activeUpload = { job: current, request, response, controller: uploadController };
     updateDeadline = performance.now() + 300000;
@@ -147,6 +192,7 @@ async function updateRequest(request, response) {
       updateJob = { job_id: 0, phase: "idle", received: 0, expected: 0, candidate_version: "", sha256: "", error: "" };
     }, updateDelay).unref();
   }
+  powerActivity();
   return sendJson(response, 202, { ...firmwareInfo(), ...updateJob });
 }
 
@@ -216,6 +262,7 @@ async function networkRequest(request, response) {
   const confirmReconnect = value.action === "confirm" && network.job === "awaiting_ap_reconnect";
   const cancelScan = value.action === "cancel" && network.job === "scanning";
   const id = ++network.job_id;
+  powerActivity();
   sendJson(response, 202, { job_id: id, management_url: `http://${request.headers.host}/` });
   const action = value.action;
   if (action === "cancel") {
@@ -334,7 +381,17 @@ function authorized(request, response, mutation = false) {
     sendJson(response, 403, { error: "csrf_denied" });
     return null;
   }
-  if (mutation && network.ap_active) managementUntil = performance.now() + confirmationTtl;
+  if (mutation && network.ap_active) {
+    managementUntil = performance.now() + confirmationTtl;
+    powerManagementUntil = managementUntil + powerOffset;
+    powerWasBlocked = true;
+  }
+  if (mutation && !powerMutations.has(response)) {
+    powerMutations.add(response);
+    const finished = () => powerMutations.delete(response);
+    response.once("finish", finished);
+    response.once("close", finished);
+  }
   return session;
 }
 
@@ -351,6 +408,7 @@ function issueSession(response) {
   const token = randomBytes(32).toString("hex");
   const session = { token, csrf: randomBytes(32).toString("hex"), createdAt: now, lastSeen: now };
   sessions.set(token, session);
+  powerActivity();
   response.setHeader("Set-Cookie", `kb_session=${token}; Path=/; HttpOnly; SameSite=Strict`);
   sendJson(response, 200, sessionStatus(session));
 }
@@ -422,7 +480,7 @@ function inputSnapshot() {
 }
 
 function usbStatus() {
-  return { v: 1, type: "status", usb_ready: usbReady, caps_lock: capsLock };
+  return { v: 1, type: "status", usb_ready: usbReady && !powerSleeping, caps_lock: capsLock };
 }
 
 function validReport(message) {
@@ -460,6 +518,24 @@ const server = createServer(async (request, response) => {
     sendJson(response, 403, { error: "origin_denied" });
     return;
   }
+  if (request.url === "/__test__/power") {
+    if (request.method === "POST") {
+      const command = await jsonBody(request, { numbers: true });
+      if (command?.action === "wake" && powerSleeping) {
+        powerSleeping = false;
+        powerWasBlocked = false;
+        powerManagementUntil = 0;
+        loginAttempts = 0;
+        powerActivity();
+        capsLock = null;
+      } else if (Number.isSafeInteger(command?.advance_ms) && command.advance_ms >= 0 && command.advance_ms <= 86400000) {
+        powerOffset += command.advance_ms;
+        powerTick();
+      } else return sendJson(response, 400, { error: "invalid_test_request" });
+    }
+    return sendJson(response, 200, { ...power, asleep: powerSleeping });
+  }
+  if (powerSleeping && request.url !== "/__test__/input") return sendJson(response, 503, { error: "device_sleeping" });
   if (request.url === "/api/v1/session" && request.method === "GET") {
     sendJson(response, 200, sessionStatus(sessionFor(request)));
     return;
@@ -470,6 +546,7 @@ const server = createServer(async (request, response) => {
     if (controller?.session === session || pendingControl?.session === session) releaseController();
     if (updateOwner === session) cancelUpdate();
     sessions.delete(session.token);
+    powerActivity();
     response.setHeader("Set-Cookie", "kb_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
     sendJson(response, 200, sessionStatus(null));
     return;
@@ -502,7 +579,12 @@ const server = createServer(async (request, response) => {
       if (!network.can_control || network.busy) return sendJson(response, 409, { error: "network_busy" });
       pendingControl = { session, until: performance.now() + 5000 };
     }
+    powerActivity();
     sendJson(response, 200, { ok: true });
+    return;
+  }
+  if (request.url === "/api/v1/power" && ["GET", "POST"].includes(request.method)) {
+    await powerRequest(request, response).catch(() => { if (!response.headersSent) sendJson(response, 400, { error: "invalid_power_request" }); });
     return;
   }
   if ((request.url === "/api/v1/network/job" && request.method === "GET") ||
@@ -521,7 +603,7 @@ const server = createServer(async (request, response) => {
   if (request.url === "/api/v1/status") {
     if (!authorized(request, response)) return;
     response.setHeader("Content-Type", "application/json");
-    response.end(JSON.stringify({ ...usbStatus(), network }));
+    response.end(JSON.stringify({ ...usbStatus(), network, power }));
     return;
   }
   if (request.url === "/__test__/input") {
@@ -544,7 +626,7 @@ const server = createServer(async (request, response) => {
 });
 
 server.on("upgrade", (request, socket, head) => {
-  if (request.url !== "/api/v1/keyboard") {
+  if (request.url !== "/api/v1/keyboard" || powerSleeping) {
     socket.destroy();
     return;
   }
@@ -602,10 +684,12 @@ server.on("upgrade", (request, socket, head) => {
       session.lastSeen = connection.lastSeen;
       if (message.type === "ping") connection.send(JSON.stringify(usbStatus()));
       else if (message.type === "state" && usbReady && validReport(message) && message.seq === connection.sequence + 1) {
+        const nextReport = { modifiers: message.modifiers, keys: [...message.keys].sort((left, right) => left - right) };
+        if (JSON.stringify(nextReport) !== JSON.stringify(connection.report)) powerActivity();
         receipts.down += message.keys.filter(usage => !connection.report.keys.includes(usage)).length;
         receipts.up += connection.report.keys.filter(usage => !message.keys.includes(usage)).length;
         if (message.keys.includes(57) && !connection.report.keys.includes(57) && capsLock !== null) capsLock = !capsLock;
-        connection.report = { modifiers: message.modifiers, keys: [...message.keys].sort((left, right) => left - right) };
+        connection.report = nextReport;
         connection.sequence = message.seq;
         connection.pressed = message.keys.length > 0 || message.modifiers !== 0;
         connection.send(JSON.stringify({ v: 1, type: "queued", seq: message.seq }), (error) => {
@@ -644,6 +728,7 @@ setInterval(() => {
       finishNetwork("failed", "confirmation_timeout");
     }
   }
+  powerTick();
 }, 250).unref();
 
 const port = Number(process.env.PORT || 8080);

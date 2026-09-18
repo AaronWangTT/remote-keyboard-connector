@@ -19,6 +19,8 @@ static keyboard_report_t submitted_report;
 static keyboard_report_t completed_report;
 static bool leds_known;
 static bool caps_lock;
+static bool sleep_detached;
+static bool awaiting_mount;
 static int64_t worker_seen_at;
 static char serial_number[13];
 static const char *string_descriptors[] = {
@@ -29,10 +31,11 @@ static const char *string_descriptors[] = {
     "Boot Keyboard",
 };
 
-static void set_usb_online(bool online)
+static void set_usb_online(bool online, bool mounted)
 {
     xSemaphoreTake(state_mutex, portMAX_DELAY);
-    keyboard_state_usb(&keyboard, online);
+    if (mounted && !sleep_detached) awaiting_mount = false;
+    keyboard_state_usb(&keyboard, online && !sleep_detached && !awaiting_mount);
     leds_known = false;
     caps_lock = false;
     memset(&completed_report, 0, sizeof(completed_report));
@@ -42,18 +45,19 @@ static void set_usb_online(bool online)
 static void usb_event(tinyusb_event_t *event, void *argument)
 {
     (void)argument;
-    set_usb_online(event->id == TINYUSB_EVENT_ATTACHED);
+    bool attached = event->id == TINYUSB_EVENT_ATTACHED;
+    set_usb_online(attached, attached);
 }
 
 void tud_suspend_cb(bool remote_wakeup_enabled)
 {
     (void)remote_wakeup_enabled;
-    set_usb_online(false);
+    set_usb_online(false, false);
 }
 
 void tud_resume_cb(void)
 {
-    set_usb_online(tud_mounted());
+    set_usb_online(tud_mounted(), false);
 }
 
 const uint8_t *tud_hid_descriptor_report_cb(uint8_t instance)
@@ -119,7 +123,7 @@ static void keyboard_worker(void *argument)
     (void)argument;
     for (;;) {
         xSemaphoreTake(state_mutex, portMAX_DELAY);
-        bool online = tud_mounted() && !tud_suspended();
+        bool online = tud_mounted() && !tud_suspended() && !sleep_detached && !awaiting_mount;
         if (keyboard.online != online) {
             keyboard_state_usb(&keyboard, online);
             leds_known = false;
@@ -186,14 +190,39 @@ bool usb_keyboard_begin_maintenance(void)
     return true;
 }
 
+static bool keyboard_quiescent_locked(void)
+{
+    const keyboard_report_t empty = {0};
+    return !keyboard.online || (!keyboard.neutral_pending && !keyboard.in_flight && keyboard.count == 0 &&
+        memcmp(&completed_report, &empty, sizeof(empty)) == 0 && memcmp(&keyboard.desired_report, &empty, sizeof(empty)) == 0);
+}
+
 bool usb_keyboard_quiescent(void)
 {
     if (state_mutex == NULL || xSemaphoreTake(state_mutex, pdMS_TO_TICKS(25)) != pdTRUE) return false;
-    const keyboard_report_t empty = {0};
-    bool released = !keyboard.online || (!keyboard.neutral_pending && !keyboard.in_flight && keyboard.count == 0 &&
-        memcmp(&completed_report, &empty, sizeof(empty)) == 0 && memcmp(&keyboard.desired_report, &empty, sizeof(empty)) == 0);
+    keyboard_state_tick(&keyboard, esp_timer_get_time());
+    bool released = keyboard_quiescent_locked();
     xSemaphoreGive(state_mutex);
     return released;
+}
+
+esp_err_t usb_keyboard_sleep(bool sleeping)
+{
+    if (state_mutex == NULL || xSemaphoreTake(state_mutex, pdMS_TO_TICKS(25)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (!sleeping || keyboard_quiescent_locked()) {
+        bool changed = sleeping ? tud_disconnect() : tud_connect();
+        result = changed ? ESP_OK : ESP_FAIL;
+        if (changed) {
+            sleep_detached = sleeping;
+            awaiting_mount = true;
+            keyboard_state_usb(&keyboard, false);
+            leds_known = caps_lock = false;
+            memset(&completed_report, 0, sizeof(completed_report));
+        }
+    }
+    xSemaphoreGive(state_mutex);
+    return result;
 }
 
 bool usb_keyboard_service_healthy(void)

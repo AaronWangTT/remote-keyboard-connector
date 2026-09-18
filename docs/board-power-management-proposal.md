@@ -1,11 +1,12 @@
 # Board Power Management Proposal
 
 Date: 2026-09-18
-Status: discussion proposal; not implemented or physically validated.
+Status: implemented behind an explicit board profile; physical acceptance pending.
 
-This document records the power-management investigation and subsequent product
-discussion. It does not authorize firmware implementation, flashing, hardware
-modification, or changes to existing settings. Current behavior is unchanged.
+This document records the power-management investigation, product discussion,
+and subsequently authorized software implementation. The implementation record
+below distinguishes software checks from pending physical acceptance. Flashing,
+hardware modification, and physical power measurements require separate approval.
 
 ## Goal And Recommended Direction
 
@@ -104,9 +105,10 @@ phone may need to rejoin the board's Wi-Fi network. In station mode the board
 must reconnect to the router and restore network services. Host USB enumeration
 and browser reconnection add their own delays; measure end-to-end usability.
 
-An approaching-sleep notice with a deliberate cancellation action is a possible
-usability refinement, not a prerequisite for physical wake. Its exact timing
-and UI, along with placement of the timeout setting, remain design decisions.
+An approaching-sleep notice with a deliberate cancellation action remains a
+deferred usability refinement, not a prerequisite for physical wake. The timeout
+setting is implemented under Network settings > Power > Auto sleep, with an
+explicit Save power setting action and board-persisted values.
 
 ## Inactivity Policy
 
@@ -164,6 +166,9 @@ If a required sleep preparation step fails, abort automatic sleep and stay
 disarmed, restoring management access where possible. Use bounded waits; do not
 sleep blindly after failing to configure wake or while a usable USB connection
 still has an incomplete release. RST remains the hardware recovery path.
+The implementation disables automatic sleep for the remainder of a boot after
+a preparation failure. It also disables sleep on settings read/write failure;
+neither case silently changes the saved timeout to Never or erases settings.
 
 Any future manual sleep command must be board-local and owner-authorized when
 sent over the network. It must not emit a USB HID Power/Sleep usage that shuts
@@ -208,8 +213,9 @@ claim, or chip-datasheet sleep current as a board measurement.
 
 ## Verification And Acceptance
 
-Implementation requires separate approval. The following checks are proposed
-acceptance work, not tests performed by this document.
+Software implementation was separately approved. The checklist below defines
+acceptance criteria; the implementation record identifies completed software
+checks. Physical acceptance remains pending and requires separate approval.
 
 ### Software Checks
 
@@ -248,10 +254,129 @@ Until these checks pass, energy savings, reliable BOOT-only recovery, and USB
 power compliance remain unverified. A successful firmware build or simulated
 timeout test would not complete the physical acceptance gate.
 
+## Implementation Record
+
+The [board controls](../components/board/Kconfig) gate this feature on
+`CONFIG_BOARD_XINLUCITY_ESP32S3_NANO` and ESP32-S3. The new
+`CONFIG_BOARD_POWER_MANAGEMENT` defaults to enabled only for that selected
+profile and can be disabled at build time. Generic profiles leave BOOT/GPIO0
+untouched, report power management unsupported, and hide the settings control.
+Existing configurations should be checked explicitly; CI uses a fresh selected
+profile and asserts that power management is enabled before accepting its build.
+
+### Policy And Storage
+
+The [idle policy](../components/board/board_power_policy.c) uses monotonic time,
+with 30 minutes as the default, 60 minutes as the alternative, and zero for
+Never. Completed blocking work starts a fresh interval. Automatic Wi-Fi retries
+do not count as user activity; unavailable networking delays admission without
+continually restarting the activity clock.
+
+The [power coordinator](../components/web_server/power_control.c) is polled by
+the HTTP-owner status publisher, so it never samples controller/session pointers
+from a foreign task. Successful login, claim, control actions, network/update
+commands, saved timeout changes, and changed accepted input reports count as
+activity. Repeated identical reports, GET polling, and heartbeats do not.
+Unclaimed setup, pending control, valid held or incomplete USB input, network
+management jobs and the existing AP management grace window, OTA work, and
+unvalidated startup block sleep. The grace deadline is checked during both
+blocker observation and atomic network sleep admission; polling does not extend
+it. A fresh idle interval follows its expiry. BOOT must be
+released stably for at least 50 ms before admission.
+
+The [board driver](../components/board/board_power.c) stores a single NVS `u32`
+at namespace `board_power`, key `idle_minutes`. Missing data selects the default
+without writing it. Invalid records and storage failures disable automatic
+sleep for that boot. Only a changed, explicitly saved setting writes NVS; input
+timestamps are RAM-only. No existing identity/network data or partition layout
+is changed.
+
+### Shutdown And Recovery
+
+Sleep admission atomically reserves the network using the current USB/controller
+generation before revoking control. A rejected reservation preserves the live
+controller and original inactivity deadline, allowing the next valid attempt
+without another full timeout. Once admitted, the HTTP owner revokes control and
+rejects new mutation requests. A dedicated worker configures GPIO0 low-level EXT1 wake and waits up to
+two seconds for USB neutral completion. The network reservation excludes OTA,
+management, and control admission; only the network worker stops/restores Wi-Fi.
+The sleep worker waits up to three seconds for the stopped acknowledgment before
+detaching USB and entering deep sleep. HTTP/mDNS tasks are not destroyed during
+preparation; Wi-Fi stop removes reachability, and deep sleep ends execution.
+This preserves a recovery path when entry is rejected.
+
+G48 rendering is paused under its output lock, driven HIGH, and held through
+deep sleep. Startup releases that retention before normal status rendering.
+GPIO0, not the USB host or a timer, is the configured wake source. The wake path
+is the ordinary application startup, with a fresh policy interval and no saved
+controller/session state. RST and BOOT+RST recovery retain their hardware roles.
+
+ESP-IDF v6.1's `ext1_wakeup_prepare()` selects the RTC mux, enables input, and
+holds the wake-pin configuration inside sleep entry. BOOT remains a digital
+input for the pre-entry held-button checks; an early `rtc_gpio_init()` is not
+required. On rejected entry or startup, the board driver explicitly releases
+GPIO0's RTC hold before returning the pin to digital input. A native fixture
+executes the SDK's actual EXT1 preparation with its ESP32-S3 capability header;
+register operations are mocked, so this is not a physical wake test.
+
+If preparation fails, the worker removes the wake configuration and attempts
+network/USB restoration without restoring control. After a software USB detach,
+the service requires a fresh mount event and neutral report before reporting
+ready; TinyUSB's cached configured state alone is insufficient. Hardware failures
+can still require RST or cable reconnection. Automatic sleep remains disabled
+until restart and the settings view reports its unavailability.
+
+### Settings API
+
+`GET /api/v1/power` requires an owner session and returns `supported`,
+`available`, `preparing`, `idle_minutes`, and `error`. The same object is included
+as `power` in the authenticated device status response.
+
+`POST /api/v1/power` requires the existing Host/Origin, owner-session, and CSRF
+checks, no active/pending keyboard control, and no conflicting network/OTA work.
+It accepts an `application/json` object (also with `charset=utf-8`) with one numeric `idle_minutes`
+field equal to 0, 30, or 60. Bodies are bounded to 128 bytes; duplicate fields,
+unknown fields, invalid types/values, trailing data, and embedded or escaped NUL
+are rejected. Successful saves return the current settings object. Unsupported
+hardware or unavailable storage returns an error rather than pretending to save.
+Settings admission checks active jobs separately from the sleep grace deadline,
+so a save is not rejected merely because its authenticated request opens that
+grace window.
+
+The browser preserves unsaved choices during polling, prevents stale GET
+responses from overwriting a newer save, and reconciles lost responses by
+reading settings without replaying the mutation. No shutdown key, automatic
+re-arming, or host HID power command is added.
+
+### Software Validation
+
+Local validation on 2026-09-18:
+
+- All 18 native suites passed with ASan/UBSan, including enabled/disabled board
+  drivers, real USB service blocks, network reservation/stop/restore races,
+  strict request parsing, coordinator failure paths, SDK-backed OTA checks, and
+  SDK EXT1 mux/input/hold preparation with rejected-entry cleanup.
+- All 26 existing keyboard model tests passed.
+- All 88 full browser/API/provisioning tests passed, including the power cases
+  below and existing keyboard, layout, authentication, network, and OTA flows.
+- All 10 power-focused API/model/Chromium/WebKit tests passed, covering timeout
+  choices, physical-wake simulation, held-input/OTA blockers, revoked sessions,
+  lost replies, stale reads, storage errors, and unsupported boards.
+- Chromium and WebKit settings screenshots and bounds checks passed at
+  320x568 and 1280x800, using the existing settings layout.
+- The local generic ESP-IDF build succeeded with signed application size 987,136 bytes
+  and 84% free per application slot. Required CI also builds the explicit
+  XinluCity profile; its final result is recorded on the implementation PR.
+
+The loopback preview models sleep/wake; its `/__test__/power` clock/wake controls
+exist only in the development preview, never in firmware. These results do not
+measure current, validate real GPIO wake or USB reconnection, or establish USB
+suspend-current compliance. Every physical check above remains outstanding.
+
 ## Deferred Scope
 
 Manual Sleep now, a long-press BOOT gesture, true power-switch hardware, host
 remote wakeup, timed/network wake, further connected-idle optimization, and
-brightness control are not part of the initial proposal. The timeout setting's
-UI and any pre-sleep warning require a later design decision; no new keyboard
-key or shutdown control is implied by this document.
+brightness control are not part of this implementation. A pre-sleep warning
+remains deferred; the timeout setting is implemented without adding a keyboard
+key or shutdown control.

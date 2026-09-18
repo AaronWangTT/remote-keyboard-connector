@@ -17,6 +17,9 @@ typedef int esp_err_t;
 #define ESP_ERR_INVALID_STATE 2
 #define ESP_ERR_NOT_SUPPORTED 3
 #define ESP_ERR_NO_MEM 4
+#define ESP_ERR_TIMEOUT 5
+#define ESP_ERR_NVS_NOT_FOUND 6
+#define ESP_ERR_SLEEP_REJECT 7
 
 typedef void *TaskHandle_t;
 typedef void (*TaskFunction_t)(void *);
@@ -36,6 +39,9 @@ void test_log(const char *tag, const char *format, ...);
 
 typedef int gpio_num_t;
 #define GPIO_NUM_48 48
+#define GPIO_NUM_0 0
+#define GPIO_MODE_INPUT 2
+#define GPIO_PULLUP_ENABLE 1
 #define GPIO_MODE_OUTPUT 1
 #define GPIO_PULLUP_DISABLE 0
 #define GPIO_PULLDOWN_DISABLE 0
@@ -50,6 +56,30 @@ typedef struct {
 
 esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level);
 esp_err_t gpio_config(const gpio_config_t *configuration);
+int gpio_get_level(gpio_num_t pin);
+esp_err_t gpio_hold_en(gpio_num_t pin);
+esp_err_t gpio_hold_dis(gpio_num_t pin);
+void gpio_deep_sleep_hold_en(void);
+void gpio_deep_sleep_hold_dis(void);
+esp_err_t rtc_gpio_deinit(gpio_num_t pin);
+esp_err_t rtc_gpio_pullup_en(gpio_num_t pin);
+esp_err_t rtc_gpio_pulldown_dis(gpio_num_t pin);
+esp_err_t rtc_gpio_hold_dis(gpio_num_t pin);
+#define ESP_SLEEP_WAKEUP_ALL 0
+#define ESP_EXT1_WAKEUP_ANY_LOW 0
+esp_err_t esp_sleep_disable_wakeup_source(int source);
+esp_err_t esp_sleep_enable_ext1_wakeup_io(uint64_t pins, int level);
+esp_err_t esp_sleep_disable_ext1_wakeup_io(uint64_t pins);
+esp_err_t esp_deep_sleep_try_to_start(void);
+typedef unsigned nvs_handle_t;
+typedef int nvs_open_mode_t;
+#define NVS_READONLY 0
+#define NVS_READWRITE 1
+esp_err_t nvs_open(const char *name, nvs_open_mode_t mode, nvs_handle_t *handle);
+esp_err_t nvs_get_u32(nvs_handle_t handle, const char *key, uint32_t *value);
+esp_err_t nvs_set_u32(nvs_handle_t handle, const char *key, uint32_t value);
+esp_err_t nvs_commit(nvs_handle_t handle);
+void nvs_close(nvs_handle_t handle);
 
 typedef int portMUX_TYPE;
 #define portMUX_INITIALIZER_UNLOCKED 0
