@@ -195,6 +195,51 @@ for (const environment of [{ PREVIEW_BOARD_POWER: "0" }, { PREVIEW_POWER_STORAGE
   });
 }
 
+for (const engine of [chromium, webkit]) test(`Settings remain usable after saved Wi-Fi startup in ${engine.name()}`, { timeout: 20000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_NETWORK_MODE: "station" });
+  const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+  context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  context.after(() => { if (errors.length) context.diagnostic(JSON.stringify(errors)); });
+  await page.goto(url);
+  await page.locator("#owner-password").fill("preview-owner-password");
+  await page.locator("#account-submit").click();
+  await expect(page.locator("#account-view")).toBeHidden();
+  const initial = await (await page.request.get(`${url}/api/v1/network/job`)).json();
+  assert.equal(initial.job_id, 0);
+  assert.equal(initial.job, "succeeded");
+  assert.equal(initial.busy, false);
+  await takeControl(page);
+  await page.locator("#network-settings").click();
+  await expect(page.locator("#connection-status")).toHaveText("Released");
+  await expect(page.locator("#usb-status")).toHaveText("USB unknown");
+  await expect(page.locator("#network-phase")).toHaveText("Connected to Wi-Fi");
+  await expect(page.locator("#network-job-status")).toHaveText("Settings ready");
+  await expect(page.locator("#network-retry")).toBeHidden();
+  for (const id of ["network-apply", "wifi-network", "wifi-ssid", "wifi-password", "network-hostname", "power-idle"]) {
+    await expect(page.locator(`#${id}`)).toBeEnabled();
+  }
+  await page.locator("#wifi-ssid").fill("Draft network");
+  await page.locator("#network-hostname").fill("keyboard-room");
+  await page.locator("#power-idle").selectOption("60");
+  await page.waitForResponse(response => response.url().endsWith("/api/v1/power") && response.request().method() === "GET");
+  await expect(page.locator("#wifi-ssid")).toHaveValue("Draft network");
+  await expect(page.locator("#network-hostname")).toHaveValue("keyboard-room");
+  await expect(page.locator("#power-idle")).toHaveValue("60");
+  await page.locator("#power-save").click();
+  await expect(page.locator("#power-status")).toHaveText("Saved");
+  assert.equal((await (await page.request.get(`${url}/api/v1/power`)).json()).idle_minutes, 60);
+  await page.getByRole("button", { name: "Save name", exact: true }).click();
+  await expect(page.locator("#network-name")).toHaveText("keyboard-room.local");
+  await expect(page.locator("#network-job-status")).toHaveText("Settings ready");
+  const saved = await (await page.request.get(`${url}/api/v1/network/job`)).json();
+  assert(saved.job_id > 0);
+  assert.equal(saved.requested_hostname, "keyboard-room");
+  assert.deepEqual(errors, []);
+});
+
 for (const engine of [chromium, webkit]) test(`Power settings UI saves, preserves drafts and reconciles lost responses in ${engine.name()}`, { timeout: 30000 }, async context => {
   const url = await startPreview(context);
   const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
@@ -204,6 +249,7 @@ for (const engine of [chromium, webkit]) test(`Power settings UI saves, preserve
   page.on("pageerror", error => errors.push(error.message));
   await page.request.post(`${url}/api/v1/session`, { headers: { Origin: url }, data: { password: "preview-owner-password" } });
   await page.goto(url);
+  await takeControl(page);
   await page.locator("#network-settings").click();
   const select = page.getByLabel("Auto sleep", { exact: true });
   await expect(select).toBeEnabled();

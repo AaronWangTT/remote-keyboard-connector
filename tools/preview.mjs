@@ -53,7 +53,7 @@ const updateStagedTtl = Math.max(100, Number(process.env.PREVIEW_UPDATE_STAGED_M
 const updateIdleTtl = Math.max(100, Number(process.env.PREVIEW_UPDATE_IDLE_MS) || 10000);
 if (process.env.PREVIEW_NETWORK_MODE === "station") Object.assign(network, {
   ap_active: false, ap_ip: "", station_online: true, station_ip: "192.168.1.50", desired_station: true,
-  has_profile: true, phase: "station", saved_ssid: "Home Wi-Fi", station_ssid: "Home Wi-Fi" });
+  has_profile: true, phase: "station", job: "succeeded", saved_ssid: "Home Wi-Fi", station_ssid: "Home Wi-Fi" });
 
 function powerActivity() {
   if (power.available && !powerSleeping) powerLastActivity = performance.now() + powerOffset;
