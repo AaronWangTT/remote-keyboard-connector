@@ -57,7 +57,7 @@ const backspace = Object.freeze({ ...physicalKeys.get("Backspace"), icon: "backs
 const mode = (page, label) => Object.freeze({ action: "page", page, label });
 
 export const layouts = {
-  letters: [row("qwertyuiop"), row("asdfghjkl"), [shift, ...row("zxcvbnm"), backspace]],
+  letters: [row("1234567890"), row("qwertyuiop"), row("asdfghjkl"), [shift, ...row("zxcvbnm"), backspace]],
   numbers: [row("1234567890"), row('-/:;()$&@"'), [mode("symbols", "#+="), ...row(".,?!'"), backspace]],
   symbols: [row("[]{}#%^*+="), row("_\\|~<>$&@`"), [mode("numbers", "123"), ...row(".,?!'"), backspace]],
 };

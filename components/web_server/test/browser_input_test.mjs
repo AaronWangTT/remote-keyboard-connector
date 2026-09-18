@@ -5,7 +5,7 @@ import { KeyboardInput, characterKey, physicalKeys, layouts, bottomRow,
   utilityKeys, updateLocalEcho } from "../www/keyboard.mjs";
 
 const neutral = { modifiers: 0, keys: [] };
-const shift = layouts.letters[2][0];
+const shift = layouts.letters.flat().find(key => key.action === "shift");
 
 test("all printable US-ANSI characters have an allowed HID mapping", () => {
   for (let code = 32; code < 127; code++) {
@@ -20,8 +20,11 @@ test("all printable US-ANSI characters have an allowed HID mapping", () => {
 });
 
 test("iPhone pages contain all base printable keys", () => {
-  assert.equal(layouts.letters[0].map(key => key.label).join(""), "qwertyuiop");
-  assert.equal(layouts.letters[1].map(key => key.label).join(""), "asdfghjkl");
+  assert.equal(layouts.letters.length, 4);
+  assert.equal(layouts.letters[0].map(key => key.label).join(""), "1234567890");
+  assert.equal(layouts.letters[1].map(key => key.label).join(""), "qwertyuiop");
+  assert.equal(layouts.letters[2].map(key => key.label).join(""), "asdfghjkl");
+  assert.equal(layouts.letters[3].slice(1, -1).map(key => key.label).join(""), "zxcvbnm");
   assert.equal(layouts.numbers[0].map(key => key.label).join(""), "1234567890");
   const labels = new Set(Object.values(layouts).flat(2).map(key => key.label));
   for (let code = 33; code < 127; code++) {
@@ -30,6 +33,25 @@ test("iPhone pages contain all base printable keys", () => {
   }
   assert.deepEqual(bottomRow("letters").map(key => key.label), ["123", "space", "return"]);
   assert.equal(bottomRow("symbols")[0].label, "ABC");
+});
+
+test("letter-page digits preserve HID, Shift and Caps Lock behavior", () => {
+  for (const profile of ["ios", "windows"]) for (const capsLock of [false, true]) {
+    const keyboard = new KeyboardInput();
+    keyboard.setCapsLock(capsLock);
+    for (const [index, key] of layouts.letters[0].entries()) {
+      assert.equal(key.code, `Digit${"1234567890"[index]}`);
+      assert.deepEqual(keyboard.press("digit", key, 0, profile), [{ modifiers: 0, keys: [30 + index] }]);
+      assert.equal(updateLocalEcho("", neutral, keyboard.report, capsLock), "1234567890"[index]);
+      assert.deepEqual(keyboard.release("digit", 10), [neutral]);
+      keyboard.press("shift", shift, 20, profile);
+      keyboard.press("digit", key, 30, profile);
+      assert.deepEqual(keyboard.report, { modifiers: SHIFT_LEFT, keys: [30 + index] });
+      assert.equal(updateLocalEcho("", neutral, keyboard.report, capsLock), "!@#$%^&*()"[index]);
+      keyboard.release("digit", 40);
+      assert.deepEqual(keyboard.release("shift", 50), [neutral]);
+    }
+  }
 });
 
 test("overlapping physical and pointer holds release independently", () => {

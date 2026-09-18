@@ -301,9 +301,9 @@ function drawLayout() {
   layout.forEach((keys, rowIndex) => {
     const row = document.createElement("div");
     row.className = "key-row";
-    if (rowIndex === 1 && page === "letters") row.classList.add("home");
-    if (rowIndex === 2) row.classList.add(page === "letters" ? "lower" : "punctuation");
-    if (rowIndex === 3) row.classList.add("bottom", "controls");
+    if (rowIndex === layout.length - 3 && page === "letters") row.classList.add("home");
+    if (rowIndex === layout.length - 2) row.classList.add(page === "letters" ? "lower" : "punctuation");
+    if (rowIndex === layout.length - 1) row.classList.add("bottom", "controls");
     keys.forEach((key, keyIndex) => {
       const button = document.createElement("button");
       const id = `${rowIndex}:${keyIndex}`;
@@ -357,6 +357,10 @@ function render() {
     }
     if (key.code?.startsWith("Key")) {
       button.querySelector(".key-label").textContent = keyboard.uppercase ? key.upper : key.label;
+    } else if (page === "letters" && key.code?.startsWith("Digit")) {
+      const label = keyboard.shiftActive ? key.upper : key.label;
+      button.querySelector(".key-label").textContent = label;
+      button.setAttribute("aria-label", label);
     }
   }
   capsStatus.textContent = keyboard.capsPending ? "Caps pending" : keyboard.capsLock === null ? "Caps unknown" :

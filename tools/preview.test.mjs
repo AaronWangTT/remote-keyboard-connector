@@ -1307,6 +1307,64 @@ test("iPhone Shift, Caps feedback, symbols and typing controls send the expected
 });
 
 for (const browserType of [chromium, webkit]) {
+  for (const profile of ["iOS", "Win"]) test(`${browserType.name()} ${profile} number row stays above QWERTY and sends digits and symbols`, { timeout: 45000 }, async context => {
+    const url = await startPreview(context);
+    const browser = await browserType.launch(browserType === webkit ?
+      { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+    context.after(() => browser.close());
+    const page = await browser.newPage({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+    page.setDefaultTimeout(5000);
+    const errors = [];
+    const states = [];
+    page.on("pageerror", error => errors.push(error.message));
+    page.on("websocket", socket => socket.on("framesent", frame => {
+      const message = JSON.parse(String(frame.payload));
+      if (message.type === "state") states.push({ modifiers: message.modifiers, keys: message.keys });
+    }));
+    const neutral = { modifiers: 0, keys: [] };
+    const counters = async () => (await fetch(new URL("/__test__/input", url))).json();
+    const expectReports = async (activate, expected) => {
+      const start = states.length;
+      await activate();
+      await expect.poll(() => states.slice(start)).toEqual(expected);
+      await expect.poll(counters).toMatchObject({ report: neutral, pressed: false });
+    };
+    await page.goto(url);
+    await page.bringToFront();
+    await signIn(page);
+    await page.getByRole("switch", { name: "Local echo", exact: true }).setChecked(true);
+    const rows = page.locator("#key-rows .key-row");
+    await expect(rows).toHaveCount(5);
+    await expect(rows.nth(0).locator("button")).toHaveText([..."1234567890"]);
+    await expect(rows.nth(1).locator("button")).toHaveText([..."qwertyuiop"]);
+    const digitsBox = await rows.nth(0).boundingBox();
+    const lettersBox = await rows.nth(1).boundingBox();
+    assert.ok(digitsBox.y + digitsBox.height <= lettersBox.y);
+    const shift = page.getByRole("button", { name: "Shift", exact: true });
+    await page.getByRole("radio", { name: profile, exact: true }).tap();
+    for (const [index, digit] of [..."1234567890"].entries()) {
+      const key = page.locator(`[data-code="Digit${digit}"]`);
+      await expect(key).toHaveText(digit);
+      await expect(key).toHaveAccessibleName(digit);
+      await expectReports(() => key.tap(), [{ modifiers: 0, keys: [30 + index] }, neutral]);
+      await expectReports(() => shift.tap(), profile === "iOS" ? [{ modifiers: 2, keys: [] }, neutral] : []);
+      await expect(shift).toHaveAttribute("data-shift", "latched");
+      await expect(key).toHaveText("!@#$%^&*()"[index]);
+      await expect(key).toHaveAccessibleName("!@#$%^&*()"[index]);
+      await expectReports(() => key.click(), [{ modifiers: 2, keys: [30 + index] }, neutral]);
+      await expect(shift).toHaveAttribute("data-shift", "off");
+      await expect(key).toHaveText(digit);
+    }
+    await shift.dblclick({ delay: 60 });
+    await expect(page.locator("#caps-status")).toHaveText("Caps on");
+    await expect(rows.nth(0).locator("button")).toHaveText([..."1234567890"]);
+    await expectReports(() => page.getByRole("button", { name: "1", exact: true }).tap(),
+      [{ modifiers: 0, keys: [30] }, neutral]);
+    await expect(page.locator("#local-echo-text")).toHaveText("1!2@3#4$5%6^7&8*9(0)1");
+    await expect(page.locator("#key-rows")).toHaveAttribute("data-page", "letters");
+    assert.deepEqual(errors, []);
+  });
+
   test(`${browserType.name()} Windows Shift separates capitalization from the IME hold gesture`, { timeout: 30000 }, async context => {
     const url = await startPreview(context);
     const browser = await browserType.launch(browserType === webkit ?
@@ -1952,9 +2010,10 @@ for (const [engineName, engine] of [["Chromium", chromium], ["WebKit", webkit]])
   });
 }
 
-test("all keyboard pages fit phone, tablet and desktop viewports without overlapping keys", { timeout: 45000 }, async (context) => {
+for (const browserType of [chromium, webkit]) test(`all keyboard pages fit phone, tablet and desktop viewports without overlapping keys in ${browserType.name()}`, { timeout: browserType === webkit ? 90000 : 45000 }, async (context) => {
   const url = await startPreview(context);
-  const browser = await chromium.launch();
+  const browser = await browserType.launch(browserType === webkit ?
+    { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
   context.after(() => browser.close());
   const page = await browser.newPage({ hasTouch: true });
   const errors = [];
@@ -1989,6 +2048,12 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
         const header = document.querySelector("header").getBoundingClientRect();
         const footer = document.querySelector("footer").getBoundingClientRect();
         const problems = [];
+        const rows = [...document.querySelectorAll("#key-rows .key-row")];
+        const letters = document.querySelector("#key-rows").dataset.page === "letters";
+        if (rows.length !== (letters ? 5 : 4)) problems.push("row count");
+        if (letters && (rows[0].textContent !== "1234567890" || rows[1].textContent !== "qwertyuiop" ||
+          !rows[2].classList.contains("home") || !rows[3].classList.contains("lower"))) problems.push("letter row order");
+        if (!rows.at(-1).classList.contains("controls")) problems.push("controls row order");
         const metadata = [...document.querySelectorAll(".keyboard-meta > span, .host-profile-field, .echo-toggle")];
         const metaBounds = metadata.map(element => element.getBoundingClientRect());
         metadata.forEach((element, index) => {
@@ -2007,7 +2072,10 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
         const echo = document.querySelector("#local-echo-window");
         if (!echo.hidden) {
           const box = echo.getBoundingClientRect();
-          if (box.left < 0 || box.right > innerWidth || box.top < header.bottom || box.bottom > bounds[0].top) problems.push("echo bounds");
+          if (box.left < 0 || box.right > innerWidth || box.top < header.bottom || box.bottom > footer.top) problems.push("echo bounds");
+          for (const key of bounds) {
+            if (box.left < key.right && box.right > key.left && box.top < key.bottom && box.bottom > key.top) problems.push("echo key overlap");
+          }
           for (const other of metaBounds) {
             if (box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top) problems.push("echo metadata overlap");
           }
@@ -2056,7 +2124,7 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
       assert.ok(layout.width <= width, `Horizontal scrolling at ${width}x${height} ${mode}`);
       assert.ok(layout.height <= layout.viewportHeight + 1, `Vertical scrolling at ${width}x${height} ${mode}: ${layout.height}`);
       if ([320, 390, 568, 768, 1366].includes(width)) {
-        await page.screenshot({ path: fileURLToPath(new URL(`keyboard-${width}-${mode}${echoEnabled ? "-echo" : ""}.png`, screenshots)) });
+        await page.screenshot({ path: fileURLToPath(new URL(`keyboard-${browserType.name()}-${width}-${mode}${echoEnabled ? "-echo" : ""}.png`, screenshots)) });
       }
     }
   }
@@ -2066,6 +2134,7 @@ test("all keyboard pages fit phone, tablet and desktop viewports without overlap
     assert.match(response.headers.get("content-type"), /image\/svg\+xml/);
     assert.match(await response.text(), /<svg/);
   }
+  await page.getByRole("button", { name: "ABC", exact: true }).click();
   for (const [width, height, top, right, bottom, left] of [[390, 844, 59, 0, 34, 0], [844, 390, 0, 59, 21, 59]]) {
     await page.setViewportSize({ width, height });
     await page.evaluate(insets => {

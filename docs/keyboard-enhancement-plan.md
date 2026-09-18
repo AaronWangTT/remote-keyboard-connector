@@ -131,9 +131,16 @@ Status: automated gate passed on 2026-09-14.
 
 ## Typing Behavior
 
-The main page uses iPhone-style QWERTY rows. `123`, `#+=`, and `ABC` switch
-between letters, numbers, and symbols. These controls stay local; switching pages
-clears active input rather than carrying hidden holds onto the new page.
+The main page uses iPhone-style QWERTY rows with a `1 2 3 4 5 6 7 8 9 0` row
+directly above QWERTY. Shift changes that row's labels and accessible names to
+`! @ # $ % ^ & * ( )`, matching its US-ANSI HID reports; Caps Lock alone leaves
+the digits unchanged. `123`, `#+=`, and `ABC` still switch between letters,
+numbers, and symbols. These controls stay local; switching pages clears active
+input rather than carrying hidden holds onto the new page.
+
+Short portrait screens use compact spacing and 44-pixel-high keys. On very short
+landscape screens, the Host controls, Caps status, and optional local echo sit
+beside the keys so the extra row fits without scrolling or reducing key heights.
 
 Tap Shift for the next chord, hold it for simultaneous input, or double-tap it
 within 300 ms to request Caps Lock. A single Shift tap while Caps is on requests

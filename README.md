@@ -4,9 +4,10 @@ ESP32-S3 Wi-Fi USB keyboard prototype using ESP-IDF v6.1. The firmware provides
 standalone AP and saved Wi-Fi station modes, temporary AP+STA setup/recovery,
 and the preferred name `kb.local`. Sender-provisioned private AP credentials,
 one-time owner claim, browser login, and explicit keyboard control are included.
-The iPhone-first US-ANSI keyboard provides letters, numbers, symbols,
-Shift/Caps Lock, Backspace, Space, Return, host input-source switching, and
-Cancel/Escape with bounded six-key USB reports.
+The iPhone-first US-ANSI keyboard provides QWERTY letters with a `1`-`0` row
+above them, separate number/symbol pages, Shift/Caps Lock, Backspace, Space,
+Return, host input-source switching, and Cancel/Escape with bounded six-key
+USB reports.
 
 The Wi-Fi enhancement passes automated native/browser checks and an ESP32-S3
 build. It has not been provisioned or tested on the physical board. The earlier
