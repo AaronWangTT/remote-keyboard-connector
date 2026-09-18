@@ -40,6 +40,7 @@ void test_log(const char *tag, const char *format, ...);
 typedef int gpio_num_t;
 #define GPIO_NUM_48 48
 #define GPIO_NUM_0 0
+#define GPIO_MODE_DISABLE 0
 #define GPIO_MODE_INPUT 2
 #define GPIO_PULLUP_ENABLE 1
 #define GPIO_MODE_OUTPUT 1

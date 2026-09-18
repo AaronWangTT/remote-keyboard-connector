@@ -305,8 +305,17 @@ detaching USB and entering deep sleep. HTTP/mDNS tasks are not destroyed during
 preparation; Wi-Fi stop removes reachability, and deep sleep ends execution.
 This preserves a recovery path when entry is rejected.
 
-G48 rendering is paused under its output lock, driven HIGH, and held through
-deep sleep. Startup releases that retention before normal status rendering.
+G48 rendering is paused under its output lock and driven HIGH while still awake.
+The pin is then changed to `GPIO_MODE_DISABLE`, with input, output, and both
+pulls disabled, before enabling pad and deep-sleep hold. This replaces retaining
+a driven HIGH output, which left the LED lit in the user's PC and iPad sleep
+tests. The new state is a candidate correction; its optical/electrical result
+still needs physical verification. No pad-supply or flash/PSRAM setting changes.
+
+If sleep is rejected, the driver restores the HIGH output latch and output
+configuration before releasing pad hold, then resumes status rendering. Every
+cleanup step is attempted even if an earlier step fails; the first cleanup
+error is retained. Startup also sets HIGH/output before releasing retention.
 GPIO0, not the USB host or a timer, is the configured wake source. The wake path
 is the ordinary application startup, with a fresh policy interval and no saved
 controller/session state. RST and BOOT+RST recovery retain their hardware roles.
@@ -371,7 +380,33 @@ Local validation on 2026-09-18:
 The loopback preview models sleep/wake; its `/__test__/power` clock/wake controls
 exist only in the development preview, never in firmware. These results do not
 measure current, validate real GPIO wake or USB reconnection, or establish USB
-suspend-current compliance. Every physical check above remains outstanding.
+suspend-current compliance. The user subsequently confirmed an idle sleep/BOOT
+recovery cycle but reported G48 remaining lit on both PC and iPad, as recorded
+in the [hardware results](../hardware/README.md#hardware-test-status). This does
+not complete the remaining electrical, USB, timing, and endurance checks.
+
+### G48 Sleep Follow-up
+
+On 2026-09-18 the GPIO48-only candidate changed the retained state from driven
+HIGH to high impedance with no pulls. A native regression requiring that state
+before hold failed on the original implementation and passes with the change.
+The board tests also cover disable/hold failures, HIGH/output restoration on
+rejected entry, independent cleanup attempts, and error precedence. These checks
+verify API sequencing with mocked GPIO operations, not LED current or brightness.
+
+Follow-up software validation passed all 18 native ASan/UBSan suites and 26
+keyboard model tests, including normal G48 startup, unsupported/disabled
+profiles, and the SDK GPIO0 wake path. The isolated XinluCity 0.1.2 test build
+produced a 1,052,672-byte signed application with 83% free per slot. Offline
+artifact validation passed against the prior local 0.1.1 public verification
+key. This is a local test image, not a release or evidence of physical LED-off
+acceptance; no board was flashed.
+
+The 30/60/Never policy, Wi-Fi/USB shutdown, GPIO0 wake, normal awake LED patterns,
+PWR circuit, and all flash/PSRAM/eFuse settings are unchanged. High impedance
+does not disconnect pad protection paths, so the earlier supply-domain leakage
+hypothesis remains unverified rather than proven fixed. A new physical check
+must confirm G48 is dark throughout sleep and BOOT restores normal operation.
 
 ## Deferred Scope
 
