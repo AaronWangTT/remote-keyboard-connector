@@ -20,6 +20,7 @@
 #include "mbedtls/platform_util.h"
 #include "lwip/sockets.h"
 #include "network.h"
+#include "power_control.h"
 #include "usb_keyboard.h"
 
 extern const char index_start[] asm("_binary_index_html_start");
@@ -97,6 +98,7 @@ typedef struct {
     int64_t last_seen;
     access_session_t *owner;
     uint32_t owner_generation;
+    keyboard_report_t last_report;
 } input_client_t;
 
 static input_client_t *active_client;
@@ -118,6 +120,8 @@ static uint32_t update_owner_address;
 
 static void response_headers(httpd_req_t *request);
 static cJSON *network_json(void);
+static cJSON *power_json(void);
+static void release_control(void);
 
 web_server_status_t web_server_status(void)
 {
@@ -137,6 +141,7 @@ bool web_server_service_healthy(void)
 static void publish_status(void *argument)
 {
     (void)argument;
+    power_control_poll(device_identity_ready() && device_identity_claimed(), pending_owner != NULL, release_control);
     int64_t now = esp_timer_get_time();
     usb_keyboard_status_t usb = usb_keyboard_status();
     network_control_status_t network = network_control_status(active_client != NULL ? active_client->generation : 0);
@@ -237,6 +242,10 @@ static bool request_allowed(httpd_req_t *request, bool mutation)
     if (mutation) valid = valid && header(request, "Origin", origin, sizeof(origin)) &&
                           access_origin_allowed(host, origin, allowed, allowed_count, false);
     if (!valid) problem(request, "403 Forbidden", "origin_denied");
+    if (valid && mutation && power_control_status().preparing) {
+        problem(request, "503 Service Unavailable", "device_sleeping");
+        return false;
+    }
     return valid;
 }
 
@@ -445,6 +454,10 @@ static esp_err_t input_handler(httpd_req_t *request)
         return input_fault(client);
     }
     client->last_sequence = message.sequence;
+    if (memcmp(&message.report, &client->last_report, sizeof(message.report)) != 0) {
+        client->last_report = message.report;
+        power_control_activity();
+    }
     snprintf(reply, sizeof(reply), "{\"v\":1,\"type\":\"queued\",\"seq\":%" PRIu32 "}", message.sequence);
     return input_reply(request, reply);
 }
@@ -481,9 +494,68 @@ static esp_err_t status_handler(httpd_req_t *request)
         cJSON_Delete(network);
         return problem(request, "503 Service Unavailable", "unavailable");
     }
+    cJSON *power = power_json();
+    if (power == NULL || !cJSON_AddItemToObject(root, "power", power)) {
+        cJSON_Delete(root);
+        cJSON_Delete(power);
+        return problem(request, "503 Service Unavailable", "unavailable");
+    }
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json == NULL) return problem(request, "503 Service Unavailable", "unavailable");
+    esp_err_t result = httpd_resp_sendstr(request, json);
+    cJSON_free(json);
+    return result;
+}
+
+static cJSON *power_json(void)
+{
+    power_control_status_t power = power_control_status();
+    cJSON *result = cJSON_CreateObject();
+    if (result == NULL) return NULL;
+    bool valid = cJSON_AddBoolToObject(result, "supported", power.supported) &&
+        cJSON_AddBoolToObject(result, "available", power.available) &&
+        cJSON_AddBoolToObject(result, "preparing", power.preparing) &&
+        cJSON_AddNumberToObject(result, "idle_minutes", power.idle_minutes) &&
+        cJSON_AddStringToObject(result, "error", power.error);
+    if (!valid) { cJSON_Delete(result); return NULL; }
+    return result;
+}
+
+static esp_err_t power_handler(httpd_req_t *request)
+{
+    bool mutation = request->method != HTTP_GET;
+    if (!request_allowed(request, mutation) || request_session(request, mutation) == NULL) return ESP_OK;
+    if (mutation) {
+        expire_control(NULL);
+        if (active_client != NULL || pending_owner != NULL) return problem(request, "409 Conflict", "release_control_first");
+        firmware_update_status_t update = firmware_update_status();
+        if (update.busy || update.trial_boot || !update.available || network_sleep_blocked()) {
+            return problem(request, "409 Conflict", "device_busy");
+        }
+        char type[48];
+        if (request->content_len == 0 || request->content_len > 128 ||
+            !header(request, "Content-Type", type, sizeof(type)) || strcmp(type, "application/json") != 0) {
+            return problem(request, "400 Bad Request", "invalid_power_request");
+        }
+        uint8_t payload[128];
+        size_t received = 0;
+        while (received < request->content_len) {
+            int count = httpd_req_recv(request, (char *)payload + received, request->content_len - received);
+            if (count <= 0) return ESP_FAIL;
+            received += (size_t)count;
+        }
+        uint32_t idle_minutes;
+        if (!power_control_parse_request(payload, received, &idle_minutes)) return problem(request, "400 Bad Request", "invalid_power_request");
+        esp_err_t result = power_control_configure(idle_minutes);
+        if (result != ESP_OK) return problem(request, "503 Service Unavailable", "power_unavailable");
+    }
+    cJSON *root = power_json();
+    char *json = root != NULL ? cJSON_PrintUnformatted(root) : NULL;
+    cJSON_Delete(root);
+    if (json == NULL) return problem(request, "503 Service Unavailable", "unavailable");
+    response_headers(request);
+    httpd_resp_set_type(request, "application/json");
     esp_err_t result = httpd_resp_sendstr(request, json);
     cJSON_free(json);
     return result;
@@ -570,6 +642,7 @@ static esp_err_t network_handler(httpd_req_t *request)
     if (result == ESP_ERR_INVALID_ARG) return problem(request, "400 Bad Request", "invalid_network_request");
     if (result == ESP_FAIL) return problem(request, "503 Service Unavailable", "storage_failed");
     if (result != ESP_OK) return problem(request, "409 Conflict", "network_busy");
+    power_control_activity();
     response_headers(request);
     httpd_resp_set_status(request, "202 Accepted");
     httpd_resp_set_type(request, "application/json");
@@ -694,6 +767,7 @@ static esp_err_t update_upload_handler(httpd_req_t *request)
         return ESP_FAIL;
     }
     update_owner = session;
+    power_control_activity();
     update_owner_generation = session->generation;
     update_owner_address = local_address(request);
     result = httpd_req_async_handler_begin(request, &upload->request);
@@ -754,6 +828,7 @@ static esp_err_t update_management_handler(httpd_req_t *request)
     if (!update_command(request, activation, &job_id, digest)) return problem(request, "400 Bad Request", "invalid_update_request");
     bool accepted = activation ? firmware_update_activate(job_id, digest) == ESP_OK : firmware_update_cancel(job_id);
     if (!accepted) return problem(request, "409 Conflict", "update_not_ready");
+    power_control_activity();
     httpd_resp_set_status(request, "202 Accepted");
     esp_err_t result = update_reply(request, true, job_id);
     if (activation) firmware_update_restart();
@@ -779,6 +854,7 @@ static esp_err_t issue_session(httpd_req_t *request)
     random_token(csrf);
     access_session_t *session = access_session_create(&access_control, token, csrf, esp_timer_get_time());
     if (session == NULL) return problem(request, "503 Service Unavailable", "session_capacity");
+    power_control_activity();
     char cookie[192];
     snprintf(cookie, sizeof(cookie), "kb_session=%s; Path=/; HttpOnly; SameSite=Strict", token);
     httpd_resp_set_hdr(request, "Set-Cookie", cookie);
@@ -822,6 +898,7 @@ static esp_err_t session_handler(httpd_req_t *request)
         if ((active_client != NULL && active_client->owner == session) || pending_owner == session) release_control();
         if (update_owner == session && update_owner_generation == session->generation) firmware_update_cancel(firmware_update_status().policy.job_id);
         access_session_revoke(session);
+        power_control_activity();
         httpd_resp_set_hdr(request, "Set-Cookie", "kb_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
         return session_reply(request, NULL);
     }
@@ -870,6 +947,7 @@ static esp_err_t control_handler(httpd_req_t *request)
         pending_usb_generation = generation;
         pending_until = esp_timer_get_time() + INT64_C(5000000);
     }
+    power_control_activity();
     response_headers(request);
     httpd_resp_set_type(request, "application/json");
     return httpd_resp_sendstr(request, "{\"ok\":true}");
@@ -881,8 +959,9 @@ esp_err_t web_server_start(void)
     return ESP_ERR_NOT_SUPPORTED;
 #endif
     if (!device_identity_ready()) return ESP_ERR_INVALID_STATE;
+    power_control_init();
     httpd_config_t configuration = HTTPD_DEFAULT_CONFIG();
-    configuration.max_uri_handlers = sizeof(assets) / sizeof(assets[0]) + 16;
+    configuration.max_uri_handlers = sizeof(assets) / sizeof(assets[0]) + 18;
     configuration.max_open_sockets = 7;
     configuration.stack_size = 8192;
     configuration.recv_wait_timeout = 2;
@@ -924,6 +1003,8 @@ esp_err_t web_server_start(void)
         {.uri = "/api/v1/network", .method = HTTP_POST, .handler = network_handler},
         {.uri = "/api/v1/network/scan", .method = HTTP_POST, .handler = network_handler},
         {.uri = "/api/v1/network/job", .method = HTTP_GET, .handler = network_handler},
+        {.uri = "/api/v1/power", .method = HTTP_GET, .handler = power_handler},
+        {.uri = "/api/v1/power", .method = HTTP_POST, .handler = power_handler},
         {.uri = "/api/v1/firmware", .method = HTTP_GET, .handler = update_management_handler},
         {.uri = "/api/v1/update", .method = HTTP_POST, .handler = update_upload_handler},
         {.uri = "/api/v1/update/job", .method = HTTP_GET, .handler = update_management_handler},

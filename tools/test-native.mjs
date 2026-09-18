@@ -19,7 +19,22 @@ const boardDriver = {
   includes: [".cache/tests/board-stubs", "components/board/include", "components/board/test"],
   sources: ["components/board/board_status_logic.c", "components/board/board_status.c", "components/board/test/board_driver_test.c"],
 };
+const boardPower = {
+  includes: boardDriver.includes,
+  sources: ["components/board/board_power_policy.c", "components/board/board_power.c", "components/board/test/board_power_test.c"],
+};
 const suites = {
+  power_control: { includes: [...boardDriver.includes, "components/web_server", "components/network/include",
+      "components/firmware_update/include", "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON"],
+    sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/board/board_power_policy.c", "components/web_server/test/power_control_test.c"],
+    flags: ["-DCJSON_NESTING_LIMIT=4"], linkFlags: ["-lm"] },
+  usb_power: { includes: [...usbIncludes, ...boardDriver.includes, ".cache/tests"],
+    sources: ["components/usb_keyboard/keyboard_state.c", "components/usb_keyboard/test/usb_power_test.c"] },
+  board_power_policy: { includes: ["components/board/include"],
+    sources: ["components/board/board_power_policy.c", "components/board/test/board_power_policy_test.c"] },
+  board_power: { ...boardPower, flags: ["-DCONFIG_BOARD_POWER_MANAGEMENT=1", "-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1", "-DCONFIG_IDF_TARGET_ESP32S3=1"] },
+  board_power_disabled: { ...boardPower, flags: ["-DCONFIG_IDF_TARGET_ESP32S3=1"] },
+  board_power_unsupported: { ...boardPower, flags: ["-DCONFIG_BOARD_POWER_MANAGEMENT=1", "-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1"] },
   update_service: { includes: [".cache/tests/update-stubs", ".cache/tests", "components/firmware_update/test", "components/firmware_update/include",
       "components/network/include", "components/usb_keyboard/include"],
     sources: ["components/firmware_update/update_policy.c", "components/firmware_update/test/update_service_test.c"] },
@@ -63,7 +78,7 @@ const compilationDatabase = Object.entries(suites).flatMap(([name, suite]) =>
       arguments: [compiler, ...compilerArguments(suite), "-c", source, "-o", output],
     };
   }));
-for (const header of ["sdkconfig.h", "esp_err.h", "esp_log.h", "esp_timer.h", "driver/gpio.h", "freertos/FreeRTOS.h", "freertos/task.h"]) {
+for (const header of ["sdkconfig.h", "esp_err.h", "esp_log.h", "esp_timer.h", "esp_sleep.h", "nvs.h", "driver/gpio.h", "driver/rtc_io.h", "freertos/FreeRTOS.h", "freertos/task.h"]) {
   const path = resolve(".cache/tests/board-stubs", header);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, '#include "idf_stubs.h"\n');
@@ -83,6 +98,10 @@ const section = (source, start, end) => {
 };
 const network = await readFile("components/network/network.c", "utf8");
 const web = await readFile("components/web_server/web_server.c", "utf8");
+const usb = await readFile("components/usb_keyboard/usb_keyboard.c", "utf8");
+await writeFile(".cache/tests/usb_power.inc",
+  section(usb, "static void set_usb_online(", "\nconst uint8_t *tud_hid_descriptor_report_cb") +
+  section(usb, "static void keyboard_worker(", "\nbool usb_keyboard_service_healthy"));
 const skippedSdkBootloader = selected.includes("update_service") && !process.env.IDF_PATH;
 let bootloaderFixture = "";
 let signatureFixture = "";
@@ -111,6 +130,7 @@ await writeFile(".cache/tests/network_effect_decision.inc",
   `static network_effect_t network_test_effect(int64_t now)\n{\n${
     section(network, "        bool was_testing = testing;", "\n        if (effect == NETWORK_OPEN_AP)")
   }\n    (void)was_testing;\n    return effect;\n}\n`);
+await writeFile(".cache/tests/network_sleep_worker.inc", section(network, "static bool sleep_step(void)", "\nstatic void network_worker"));
 await writeFile(".cache/tests/input_client.inc",
   section(web, "typedef struct {\n    int socket;", "\nstatic input_client_t *active_client;"));
 await writeFile(".cache/tests/web_observer.inc",

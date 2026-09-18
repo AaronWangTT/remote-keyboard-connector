@@ -1,4 +1,4 @@
-menu "Board status LED"
+menu "Board controls"
 
 choice BOARD_STATUS_PROFILE
     prompt "Board profile"
@@ -16,5 +16,15 @@ config BOARD_XINLUCITY_ESP32S3_NANO
         This does not control PWR or configure flash/PSRAM capacity.
 
 endchoice
+
+config BOARD_POWER_MANAGEMENT
+    bool "Automatic deep sleep with BOOT wake"
+    depends on BOARD_XINLUCITY_ESP32S3_NANO && IDF_TARGET_ESP32S3
+    default y
+    help
+        Enable the documented GPIO0 BOOT wake and GPIO48 sleep controls only
+        on the selected XinluCity board. The default idle timeout is 30 minutes;
+        the owner can select 60 minutes or Never. PWR remains powered.
+        Physical power, USB reconnection and wake acceptance are still required.
 
 endmenu

@@ -6,3 +6,4 @@
 typedef board_status_snapshot_t (*board_status_source_t)(void);
 
 esp_err_t board_status_start(board_status_source_t source);
+esp_err_t board_status_pause(bool paused);

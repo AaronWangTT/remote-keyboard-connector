@@ -48,6 +48,15 @@ typedef struct {
 	bool controller_path_ready;
 } network_control_status_t;
 
+typedef enum {
+	NETWORK_SLEEP_AWAKE,
+	NETWORK_SLEEP_RESERVED,
+	NETWORK_SLEEP_STOPPING,
+	NETWORK_SLEEP_STOPPED,
+	NETWORK_SLEEP_FAILED,
+	NETWORK_SLEEP_RESUMING,
+} network_sleep_state_t;
+
 esp_err_t network_start(void);
 void network_status(network_status_t *status);
 network_control_status_t network_control_status(uint32_t generation);
@@ -58,3 +67,8 @@ void network_control_end(uint32_t generation);
 bool network_update_begin(uint32_t local_address);
 void network_update_end(void);
 bool network_service_healthy(void);
+bool network_sleep_begin(void);
+bool network_sleep_blocked(void);
+bool network_sleep_stop(void);
+void network_sleep_end(void);
+network_sleep_state_t network_sleep_state(void);
