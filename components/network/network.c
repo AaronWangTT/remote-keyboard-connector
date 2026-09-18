@@ -177,12 +177,13 @@ network_sleep_state_t network_sleep_state(void)
     return current;
 }
 
-bool network_sleep_begin(void)
+bool network_sleep_begin(uint32_t generation)
 {
     int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&lock);
     bool accepted = sleep_state == NETWORK_SLEEP_AWAKE && control_ready && snapshot.available && !snapshot.busy &&
-        !command_pending && !guarded && !update_reserved && now >= management_until && snapshot_seen_at != 0 && now >= snapshot_seen_at &&
+        !command_pending && (!guarded || (generation != 0 && guard_generation == generation)) &&
+        !update_reserved && now >= management_until && snapshot_seen_at != 0 && now >= snapshot_seen_at &&
         now - snapshot_seen_at < INT64_C(1000000);
     if (accepted) {
         sleep_state = NETWORK_SLEEP_RESERVED;

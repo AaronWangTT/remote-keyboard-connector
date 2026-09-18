@@ -64,6 +64,7 @@ void gpio_deep_sleep_hold_dis(void);
 esp_err_t rtc_gpio_deinit(gpio_num_t pin);
 esp_err_t rtc_gpio_pullup_en(gpio_num_t pin);
 esp_err_t rtc_gpio_pulldown_dis(gpio_num_t pin);
+esp_err_t rtc_gpio_hold_dis(gpio_num_t pin);
 #define ESP_SLEEP_WAKEUP_ALL 0
 #define ESP_EXT1_WAKEUP_ANY_LOW 0
 esp_err_t esp_sleep_disable_wakeup_source(int source);

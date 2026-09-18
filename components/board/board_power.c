@@ -25,7 +25,8 @@ esp_err_t board_power_init(void)
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    esp_err_t result = rtc_gpio_deinit(GPIO_NUM_0);
+    esp_err_t result = rtc_gpio_hold_dis(GPIO_NUM_0);
+    if (result == ESP_OK) result = rtc_gpio_deinit(GPIO_NUM_0);
     if (result == ESP_OK) result = gpio_config(&configuration);
     initialized = result == ESP_OK;
     return result;

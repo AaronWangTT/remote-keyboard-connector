@@ -18,6 +18,7 @@ static bool network_ready;
 static bool network_busy;
 static bool management_grace;
 static bool network_stops;
+static bool reserve_allowed;
 static bool fail_task;
 static bool detached;
 static bool entered;
@@ -46,6 +47,7 @@ esp_err_t board_power_enter_sleep(void)
     return ESP_ERR_SLEEP_REJECT;
 }
 bool usb_keyboard_quiescent(void) { return quiescent; }
+usb_keyboard_status_t usb_keyboard_status(void) { return (usb_keyboard_status_t){.generation = 9}; }
 bool usb_keyboard_begin_maintenance(void) { quiescent = false; return true; }
 esp_err_t usb_keyboard_sleep(bool sleeping)
 {
@@ -56,7 +58,7 @@ esp_err_t usb_keyboard_sleep(bool sleeping)
 bool network_sleep_blocked(void) { return network_busy || management_grace; }
 void network_status(network_status_t *snapshot) { *snapshot = (network_status_t){.available = true, .busy = network_busy}; }
 network_control_status_t network_control_status(uint32_t generation) { (void)generation; return (network_control_status_t){.ready = network_ready}; }
-bool network_sleep_begin(void) { if (network_busy) return false; fake_network_state = NETWORK_SLEEP_RESERVED; return true; }
+bool network_sleep_begin(uint32_t generation) { assert(generation == 9); if (network_busy || !reserve_allowed) return false; fake_network_state = NETWORK_SLEEP_RESERVED; return true; }
 bool network_sleep_stop(void) { assert(fake_network_state == NETWORK_SLEEP_RESERVED); fake_network_state = NETWORK_SLEEP_STOPPING; return true; }
 network_sleep_state_t network_sleep_state(void) { return fake_network_state; }
 void network_sleep_end(void) { fake_network_state = NETWORK_SLEEP_AWAKE; }
@@ -146,13 +148,13 @@ static esp_err_t httpd_resp_sendstr(httpd_req_t *request, const char *value)
 
 #include "power_http.inc"
 
-static void release_input(void) { release_calls++; }
+static void release_input(void) { assert(fake_network_state == NETWORK_SLEEP_RESERVED); release_calls++; }
 static void poll(void) { power_control_poll(true, false, release_input); }
 
 static void reset(void)
 {
     now = 1000000;
-    supported = wake_released = quiescent = release_completes = network_ready = network_stops = true;
+    supported = wake_released = quiescent = release_completes = network_ready = network_stops = reserve_allowed = true;
     network_busy = management_grace = fail_task = detached = entered = false;
     load_result = store_result = prepare_result = ESP_OK;
     release_calls = store_calls = 0;
@@ -284,6 +286,16 @@ int main(void)
     network_ready = true;
     poll();
     assert(worker != NULL);
+
+    reset();
+    now += timeout;
+    reserve_allowed = false;
+    int64_t last_activity = policy.last_activity_us;
+    poll();
+    assert(worker == NULL && release_calls == 0 && policy.last_activity_us == last_activity);
+    reserve_allowed = true;
+    poll();
+    assert(worker != NULL && release_calls == 1);
 
     reset();
     assert(power_control_configure(42) == ESP_ERR_INVALID_ARG && store_calls == 0);

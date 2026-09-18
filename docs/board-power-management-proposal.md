@@ -293,8 +293,11 @@ is changed.
 
 ### Shutdown And Recovery
 
-Once sleep is admitted, the HTTP owner revokes control and rejects new mutation
-requests. A dedicated worker configures GPIO0 low-level EXT1 wake and waits up to
+Sleep admission atomically reserves the network using the current USB/controller
+generation before revoking control. A rejected reservation preserves the live
+controller and original inactivity deadline, allowing the next valid attempt
+without another full timeout. Once admitted, the HTTP owner revokes control and
+rejects new mutation requests. A dedicated worker configures GPIO0 low-level EXT1 wake and waits up to
 two seconds for USB neutral completion. The network reservation excludes OTA,
 management, and control admission; only the network worker stops/restores Wi-Fi.
 The sleep worker waits up to three seconds for the stopped acknowledgment before
@@ -307,6 +310,14 @@ deep sleep. Startup releases that retention before normal status rendering.
 GPIO0, not the USB host or a timer, is the configured wake source. The wake path
 is the ordinary application startup, with a fresh policy interval and no saved
 controller/session state. RST and BOOT+RST recovery retain their hardware roles.
+
+ESP-IDF v6.1's `ext1_wakeup_prepare()` selects the RTC mux, enables input, and
+holds the wake-pin configuration inside sleep entry. BOOT remains a digital
+input for the pre-entry held-button checks; an early `rtc_gpio_init()` is not
+required. On rejected entry or startup, the board driver explicitly releases
+GPIO0's RTC hold before returning the pin to digital input. A native fixture
+executes the SDK's actual EXT1 preparation with its ESP32-S3 capability header;
+register operations are mocked, so this is not a physical wake test.
 
 If preparation fails, the worker removes the wake configuration and attempts
 network/USB restoration without restoring control. After a software USB detach,
@@ -343,7 +354,8 @@ Local validation on 2026-09-18:
 
 - All 18 native suites passed with ASan/UBSan, including enabled/disabled board
   drivers, real USB service blocks, network reservation/stop/restore races,
-  strict request parsing, coordinator failure paths, and SDK-backed OTA checks.
+  strict request parsing, coordinator failure paths, SDK-backed OTA checks, and
+  SDK EXT1 mux/input/hold preparation with rejected-entry cleanup.
 - All 26 existing keyboard model tests passed.
 - All 88 full browser/API/provisioning tests passed, including the power cases
   below and existing keyboard, layout, authentication, network, and OTA flows.

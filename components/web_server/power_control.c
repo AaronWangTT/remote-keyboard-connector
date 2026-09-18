@@ -139,12 +139,9 @@ void power_control_poll(bool owner_ready, bool pending_control, void (*release_c
     bool blocked = !owner_ready || pending_control || !update.available || update.trial_boot || update.busy ||
         network_sleep_blocked() || !usb_keyboard_quiescent() || !wake_ready;
     if (!board_power_policy_due(&policy, now, blocked) || !network_control_status(0).ready) return;
-    release_control();
-    if (!network_sleep_begin()) {
-        power_control_activity();
-        return;
-    }
+    if (!network_sleep_begin(usb_keyboard_status().generation)) return;
     power_status.preparing = true;
+    release_control();
     portENTER_CRITICAL(&worker_lock);
     worker_finished = false;
     portEXIT_CRITICAL(&worker_lock);

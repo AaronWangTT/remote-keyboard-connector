@@ -20,7 +20,7 @@ const boardDriver = {
   sources: ["components/board/board_status_logic.c", "components/board/board_status.c", "components/board/test/board_driver_test.c"],
 };
 const boardPower = {
-  includes: boardDriver.includes,
+  includes: [...boardDriver.includes, ".cache/tests"],
   sources: ["components/board/board_power_policy.c", "components/board/board_power.c", "components/board/test/board_power_test.c"],
 };
 const suites = {
@@ -32,7 +32,10 @@ const suites = {
     sources: ["components/usb_keyboard/keyboard_state.c", "components/usb_keyboard/test/usb_power_test.c"] },
   board_power_policy: { includes: ["components/board/include"],
     sources: ["components/board/board_power_policy.c", "components/board/test/board_power_policy_test.c"] },
-  board_power: { ...boardPower, flags: ["-DCONFIG_BOARD_POWER_MANAGEMENT=1", "-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1", "-DCONFIG_IDF_TARGET_ESP32S3=1"] },
+  board_power: { ...boardPower, flags: ["-DCONFIG_BOARD_POWER_MANAGEMENT=1", "-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1", "-DCONFIG_IDF_TARGET_ESP32S3=1",
+    ...(process.env.IDF_PATH ? ["-DBOARD_POWER_TEST_SDK_SLEEP=1",
+      `-I${resolve(process.env.IDF_PATH, "components/soc/esp32s3/include")}`,
+      `-I${resolve(process.env.IDF_PATH, "components/soc/include")}`] : [])] },
   board_power_disabled: { ...boardPower, flags: ["-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1", "-DCONFIG_IDF_TARGET_ESP32S3=1"] },
   board_power_unsupported: { ...boardPower, flags: ["-DCONFIG_BOARD_POWER_MANAGEMENT=1", "-DCONFIG_BOARD_XINLUCITY_ESP32S3_NANO=1"] },
   update_service: { includes: [".cache/tests/update-stubs", ".cache/tests", "components/firmware_update/test", "components/firmware_update/include",
@@ -107,7 +110,13 @@ await writeFile(".cache/tests/usb_power.inc",
 const skippedSdkBootloader = selected.includes("update_service") && !process.env.IDF_PATH;
 let bootloaderFixture = "";
 let signatureFixture = "";
+let sleepFixture = "";
 if (process.env.IDF_PATH) {
+  const sleep = await readFile(resolve(process.env.IDF_PATH, "components/esp_hw_support/sleep_modes.c"), "utf8");
+  assert.match(sleep, /if \(s_config\.wakeup_triggers & RTC_EXT1_TRIG_EN\) \{\s*ext1_wakeup_prepare\(\);/);
+  assert.ok(sleep.includes("esp_sleep_start(sleep_flags, ESP_SLEEP_MODE_DEEP_SLEEP, allow_sleep_rejection)"));
+  sleepFixture = '#include "soc/soc_caps.h"\n' +
+    section(sleep, "static void ext1_wakeup_prepare(void)\n{", "\nuint64_t esp_sleep_get_ext1_wakeup_status(void)");
   const bootloader = await readFile(resolve(process.env.IDF_PATH, "components/bootloader_support/src/bootloader_utility.c"), "utf8");
   bootloaderFixture = "#define UPDATE_TEST_SDK_BOOTLOADER 1\nstatic bool ota_has_initial_contents;\n" +
     section(bootloader, "int bootloader_utility_get_selected_boot_partition(const bootloader_state_t *bs)", "\n}\n") + "\n}\n" +
@@ -123,6 +132,7 @@ if (process.env.IDF_PATH) {
   ].map(anchor => section(signatures, anchor, "\n}\n") + "\n}\n").join("");
 }
 await writeFile(".cache/tests/sdk_bootloader.inc", bootloaderFixture);
+await writeFile(".cache/tests/sdk_sleep_prepare.inc", sleepFixture);
 await writeFile(".cache/tests/sdk_signature_verifier.inc", signatureFixture);
 await writeFile(".cache/tests/network_observer.inc",
   section(network, "network_control_status_t network_control_status(uint32_t generation)", "\nbool network_control_begin") +
@@ -154,4 +164,7 @@ for (const name of selected) {
 console.log(`PASS: ${selected.length} native suite(s) executed${process.platform === "win32" ? " (Windows, without sanitizers)" : " with ASan/UBSan"}.`);
 if (skippedSdkBootloader) {
   console.warn("SKIP: SDK erased-otadata first-boot and running-image trust-key checks (IDF_PATH unset). Run from an activated ESP-IDF terminal for this coverage.");
+}
+if (selected.includes("board_power") && !process.env.IDF_PATH) {
+  console.warn("SKIP: SDK EXT1 RTC mux/input/hold preparation (IDF_PATH unset). Run from an activated ESP-IDF terminal for this coverage.");
 }

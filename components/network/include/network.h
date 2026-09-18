@@ -67,7 +67,7 @@ void network_control_end(uint32_t generation);
 bool network_update_begin(uint32_t local_address);
 void network_update_end(void);
 bool network_service_healthy(void);
-bool network_sleep_begin(void);
+bool network_sleep_begin(uint32_t generation);
 bool network_sleep_blocked(void);
 bool network_sleep_stop(void);
 void network_sleep_end(void);
