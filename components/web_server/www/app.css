@@ -237,7 +237,7 @@ footer { border-top: 1px solid var(--line); padding: 14px 6px 0; color: var(--mu
   .key { font-size: 26px; }
 }
 
-@media (max-height: 480px) {
+@media (max-height: 580px) {
   main { padding-top: max(4px, var(--safe-top)); padding-bottom: max(4px, var(--safe-bottom)); }
   header { padding-bottom: 0; }
   .identity { display: block; }
@@ -257,7 +257,7 @@ footer { border-top: 1px solid var(--line); padding: 14px 6px 0; color: var(--mu
   footer { padding-top: 8px; }
 }
 
-@media (min-height: 481px) and (max-height: 680px) {
+@media (min-height: 581px) and (max-height: 820px) {
   main { padding-top: max(12px, var(--safe-top)); padding-bottom: max(8px, var(--safe-bottom)); }
   header { gap: 8px; padding-bottom: 8px; }
   .statuses { margin-top: 6px; }
@@ -268,6 +268,13 @@ footer { border-top: 1px solid var(--line); padding: 14px 6px 0; color: var(--mu
   footer { padding-top: 8px; }
 }
 
+@media (min-height: 581px) and (max-height: 640px) {
+  main { padding-top: max(8px, var(--safe-top)); }
+  .keyboard-surface { padding-block: 4px; }
+  .keyboard-meta { margin-bottom: 6px; }
+  #key-rows { --key-height: 44px; --row-gap: 6px; }
+}
+
 @media (orientation: landscape) {
   .key-row.controls {
     height: var(--key-height);
@@ -276,4 +283,14 @@ footer { border-top: 1px solid var(--line); padding: 14px 6px 0; color: var(--mu
     grid-template-rows: var(--key-height);
     column-gap: 6px;
   }
+}
+
+@media (orientation: landscape) and (max-height: 380px) {
+  .keyboard-surface { grid-template-columns: 176px minmax(0, 1fr); grid-template-rows: auto 1fr; align-items: start; }
+  .keyboard-meta { grid-template-columns: minmax(0, 1fr) 44px; grid-template-rows: 32px 22px 22px; }
+  .keyboard-meta .host-profile-field { grid-column: 1 / -1; }
+  .keyboard-meta #caps-status { grid-column: 1; grid-row: 3; }
+  .keyboard-meta .echo-toggle { grid-column: 2; grid-row: 2 / span 2; }
+  .local-echo-window { grid-column: 1; grid-row: 2; }
+  #key-rows { grid-column: 2; grid-row: 1 / span 2; }
 }
