@@ -22,6 +22,7 @@ encrypted credential storage remain lower-priority follow-up work.
 
 - [CI workflow setup proposal](docs/ci-workflow-proposal.md)
 - [Board status LED design, software validation, and remaining hardware gates](docs/board-status-led-proposal.md)
+- [Board power management proposal and sleep/wake validation gates](docs/board-power-management-proposal.md)
 - [Sender installation and firmware artifact guide](docs/sender-installation.md)
 - [OTA design, implementation, and hardware acceptance gates](docs/ota-proposal.md)
 - [Wi-Fi enhancement plan, implementation record, and remaining gates](docs/wifi-enhancement-plan.md)
