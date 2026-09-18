@@ -2015,6 +2015,8 @@ for (const browserType of [chromium, webkit]) for (const [group, viewports] of [
     [844, 390], [768, 1024], [1024, 768], [1366, 768], [1920, 1080]]],
   ["compact-height breakpoints", [[390, 600], [390, 601], [390, 640], [390, 641], [390, 680], [390, 681],
     [390, 820], [390, 821], [768, 769], [768, 820], [768, 821], [568, 360], [568, 361], [568, 380], [568, 381]]],
+  ["short portrait breakpoints", [[320, 480], [320, 481], [390, 480], [390, 481],
+    [320, 580], [320, 581], [390, 580], [390, 581]]],
 ]) test(`all keyboard pages fit ${group} without overlapping keys in ${browserType.name()}`, { timeout: browserType === webkit ? 90000 : 45000 }, async (context) => {
   const url = await startPreview(context);
   const browser = await browserType.launch(browserType === webkit ?
