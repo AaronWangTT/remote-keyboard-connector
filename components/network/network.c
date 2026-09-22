@@ -113,6 +113,14 @@ network_control_status_t network_control_status(uint32_t generation)
     return status;
 }
 
+bool network_operation_busy(void)
+{
+    portENTER_CRITICAL(&lock);
+    bool busy = snapshot.busy;
+    portEXIT_CRITICAL(&lock);
+    return busy;
+}
+
 void network_management_touch(uint32_t local_address)
 {
     portENTER_CRITICAL(&lock);

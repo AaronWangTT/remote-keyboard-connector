@@ -385,6 +385,27 @@ recovery cycle but reported G48 remaining lit on both PC and iPad, as recorded
 in the [hardware results](../hardware/README.md#hardware-test-status). This does
 not complete the remaining electrical, USB, timing, and endurance checks.
 
+### Power Settings Save Follow-up
+
+On 2026-09-22 the installed board consistently reset during
+`POST /api/v1/power`. A changed request and a same-value request that bypassed
+the NVS write both timed out after five seconds, cleared the in-memory owner
+session, and coincided with Windows reporting a fresh USB HID arrival. The saved
+timeout remained 30 minutes after each restart. Direct HTTP and mDNS probes
+continued to identify the board at `192.168.10.48`; the served `app.mjs` hash
+matched the working tree, although the complete installed firmware image was
+not independently identified.
+
+ESP32-S3 disassembly found a 3,520-byte `power_handler` stack frame nested with
+the 3,504-byte `request_allowed` frame on the 8,192-byte HTTP server task. The
+power handler copied the full `network_status_t`, including all scan results,
+only to read its `busy` flag. Replacing that copy with a locked scalar query
+reduced the handler frame to 400 bytes while preserving the admission check.
+All 19 native suites, the focused Chromium/WebKit power-settings tests, and the
+ESP-IDF v6.1 `esp32s3` application build passed. The signed application is
+1,052,672 bytes with 83% of the smallest application slot free. No firmware was
+flashed, so successful on-board save and reboot persistence remain pending.
+
 ### G48 Sleep Follow-up
 
 On 2026-09-18 the GPIO48-only candidate changed the retained state from driven
