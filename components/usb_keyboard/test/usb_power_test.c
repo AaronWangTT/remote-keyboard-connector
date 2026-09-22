@@ -118,9 +118,41 @@ int main(void)
     complete_report();
     assert(usb_keyboard_status().ready);
 
+    assert(usb_keyboard_wakeup_begin(&wakeup_id) == ESP_OK);
+    run_worker();
+    assert(submitted_report.keys[0] == HID_KEY_F24);
+    uint32_t stalled_generation = keyboard.generation;
+    now = keyboard.submitted_at + KEYBOARD_REPORT_TIMEOUT_US;
+    run_worker();
+    wake_status = usb_keyboard_wakeup_status(wakeup_id);
+    assert(wake_status.state == USB_KEYBOARD_WAKE_FAILED);
+    assert(keyboard.generation != stalled_generation && keyboard.in_flight &&
+           keyboard.flight_neutral && keyboard_report_empty(&submitted_report));
+    usb_keyboard_wakeup_finish(wakeup_id);
+    complete_report();
+    assert(usb_keyboard_status().ready);
+
+    unsigned previous_remote_wakeups = remote_wakeups;
     suspended = true;
     tud_suspend_cb(true);
-    assert(usb_keyboard_wakeup_begin(&wakeup_id) == ESP_OK && remote_wakeups == 1);
+    assert(usb_keyboard_wakeup_begin(&wakeup_id) == ESP_OK &&
+           remote_wakeups == previous_remote_wakeups + 1);
+    now = wakeup_deadline;
+    wake_status = usb_keyboard_wakeup_status(wakeup_id);
+    assert(wake_status.state == USB_KEYBOARD_WAKE_FAILED && !keyboard.in_flight);
+    usb_keyboard_wakeup_finish(wakeup_id);
+    suspended = false;
+    tud_resume_cb();
+    run_worker();
+    assert(keyboard_report_empty(&submitted_report));
+    complete_report();
+    assert(usb_keyboard_status().ready);
+
+    previous_remote_wakeups = remote_wakeups;
+    suspended = true;
+    tud_suspend_cb(true);
+    assert(usb_keyboard_wakeup_begin(&wakeup_id) == ESP_OK &&
+           remote_wakeups == previous_remote_wakeups + 1);
     wake_status = usb_keyboard_wakeup_status(wakeup_id);
     assert(wake_status.state == USB_KEYBOARD_WAKE_PENDING && wake_status.remote_wakeup_sent &&
            !wake_status.usb_active && !usb_keyboard_quiescent());
@@ -140,9 +172,11 @@ int main(void)
     usb_keyboard_wakeup_finish(wakeup_id);
     assert(usb_keyboard_status().ready);
 
+    previous_remote_wakeups = remote_wakeups;
     suspended = true;
     tud_suspend_cb(false);
-    assert(usb_keyboard_wakeup_begin(&wakeup_id) == ESP_ERR_NOT_SUPPORTED && remote_wakeups == 1);
+    assert(usb_keyboard_wakeup_begin(&wakeup_id) == ESP_ERR_NOT_SUPPORTED &&
+           remote_wakeups == previous_remote_wakeups);
     suspended = false;
     tud_resume_cb();
     run_worker();

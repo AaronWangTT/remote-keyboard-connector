@@ -17,6 +17,11 @@ int main(void)
     assert(!wakeup_origin_allowed("http://192.168.1.20"));
     assert(!wakeup_origin_allowed("http://istoreos"));
 
-    puts("wakeup_policy: source IPv4 and optional Origin allowlist passed");
+    assert(wakeup_body_allowed(0, false));
+    assert(!wakeup_body_allowed(1, false));
+    assert(!wakeup_body_allowed(0, true));
+    assert(!wakeup_body_allowed(1, true));
+
+    puts("wakeup_policy: source IPv4, optional Origin, and empty-body checks passed");
     return 0;
 }

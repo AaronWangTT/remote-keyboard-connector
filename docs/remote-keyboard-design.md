@@ -157,10 +157,11 @@ promise to bypass host security restrictions or support every OS shortcut.
   Wi-Fi peaks and board peripherals; USB power descriptors and pre-configuration
   behavior must match the actual power budget. Do not claim compliance from a
   successful desktop test alone.
-- On USB suspend, disarm input. For bus power, meet suspend-current limits even
-  if that requires stopping Wi-Fi; reconnect the controller after resume.
-  Remote wakeup is disabled in version 1. A self-powered design needs proper
-  VBUS detection and must not backfeed the USB host.
+- On USB suspend, disarm ordinary input. The source-restricted `/wakeup` hook may
+  request USB Remote Wakeup and sends F24 only after resume. For bus power, meet
+  suspend-current limits even if that requires stopping Wi-Fi; reconnect the
+  controller after resume. A self-powered design needs proper VBUS detection and
+  must not backfeed the USB host.
 - USB OTG HID and fixed-function USB Serial/JTAG share the S3's internal PHY.
   Do not depend on native Serial/JTAG remaining available while HID is running.
 - Keep a tested ROM download/recovery procedure. Prefer a separate UART bridge

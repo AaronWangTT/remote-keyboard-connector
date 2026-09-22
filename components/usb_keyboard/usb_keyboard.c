@@ -49,7 +49,7 @@ static bool keyboard_quiescent_locked(void)
 static void wakeup_fail_locked(void)
 {
     if (wakeup.state != USB_KEYBOARD_WAKE_PENDING) return;
-    if (wakeup_keyboard_generation == keyboard.generation) keyboard_state_release(&keyboard);
+    keyboard_state_submit_failed(&keyboard);
     wakeup.state = USB_KEYBOARD_WAKE_FAILED;
 }
 
@@ -155,8 +155,8 @@ void tud_hid_report_failed_cb(uint8_t instance, hid_report_type_t report_type,
     (void)transferred_bytes;
     if (instance == 0 && report_type == HID_REPORT_TYPE_INPUT) {
         xSemaphoreTake(state_mutex, portMAX_DELAY);
-        keyboard_state_submit_failed(&keyboard);
-        wakeup_fail_locked();
+        if (wakeup.state == USB_KEYBOARD_WAKE_PENDING) wakeup_fail_locked();
+        else keyboard_state_submit_failed(&keyboard);
         xSemaphoreGive(state_mutex);
     }
 }

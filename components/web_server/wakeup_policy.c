@@ -13,3 +13,8 @@ bool wakeup_origin_allowed(const char *origin)
            strcmp(origin, "http://192.168.1.2") == 0 ||
            strcmp(origin, "http://192.168.1.2:80") == 0;
 }
+
+bool wakeup_body_allowed(size_t content_length, bool transfer_encoding_present)
+{
+    return content_length == 0 && !transfer_encoding_present;
+}

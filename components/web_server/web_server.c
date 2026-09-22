@@ -537,17 +537,13 @@ static bool wakeup_peer_allowed(httpd_req_t *request)
 static bool wakeup_request_allowed(httpd_req_t *request)
 {
     if (!request_allowed(request, false)) return false;
-    char origin[64];
-    const char *origin_value = NULL;
-    size_t origin_length = httpd_req_get_hdr_value_len(request, "Origin");
-    if (origin_length > 0) {
-        if (origin_length >= sizeof(origin) ||
-            httpd_req_get_hdr_value_str(request, "Origin", origin, sizeof(origin)) != ESP_OK) {
-            problem(request, "403 Forbidden", "wakeup_source_denied");
-            return false;
-        }
-        origin_value = origin;
+    char origin[64] = {0};
+    esp_err_t origin_result = httpd_req_get_hdr_value_str(request, "Origin", origin, sizeof(origin));
+    if (origin_result != ESP_OK && origin_result != ESP_ERR_NOT_FOUND) {
+        problem(request, "403 Forbidden", "wakeup_source_denied");
+        return false;
     }
+    const char *origin_value = origin_result == ESP_OK ? origin : NULL;
     if (!wakeup_peer_allowed(request) || !wakeup_origin_allowed(origin_value)) {
         problem(request, "403 Forbidden", "wakeup_source_denied");
         return false;
@@ -589,7 +585,13 @@ static void wakeup_worker(void *argument)
 static esp_err_t wakeup_handler(httpd_req_t *request)
 {
     if (!wakeup_request_allowed(request)) return ESP_OK;
-    if (request->content_len != 0) return problem(request, "400 Bad Request", "wakeup_body_not_allowed");
+    char transfer_encoding[1];
+    bool transfer_encoding_present =
+        httpd_req_get_hdr_value_str(request, "Transfer-Encoding", transfer_encoding,
+                                    sizeof(transfer_encoding)) != ESP_ERR_NOT_FOUND;
+    if (!wakeup_body_allowed(request->content_len, transfer_encoding_present)) {
+        return problem(request, "400 Bad Request", "wakeup_body_not_allowed");
+    }
     if (power_control_status().preparing) return problem(request, "503 Service Unavailable", "device_sleeping");
     expire_control(NULL);
     firmware_update_status_t update = firmware_update_status();
