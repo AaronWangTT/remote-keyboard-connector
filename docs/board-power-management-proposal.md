@@ -177,10 +177,12 @@ down or suspends the connected host computer.
 ## USB Suspend Is Separate
 
 The inspected [USB implementation](../components/usb_keyboard/usb_keyboard.c)
-marks input offline in `tud_suspend_cb()` but does not stop Wi-Fi there. The
-[USB descriptor](../components/usb_keyboard/usb_descriptors.h) does not advertise
-remote wakeup. These facts are not evidence of measured suspend-current
-compliance.
+marks ordinary input offline in `tud_suspend_cb()` but does not stop Wi-Fi
+there. The [USB descriptor](../components/usb_keyboard/usb_descriptors.h) now
+advertises Remote Wakeup for the source-restricted `POST /wakeup` path. That
+path requests USB resume and confirms delivery of an F24 press and release while
+the board remains powered and network-reachable. These facts are not evidence
+of measured suspend-current compliance.
 
 The [existing power contract](remote-keyboard-design.md#power-debugging-and-recovery)
 already requires bus-powered suspend-current compliance and safe input release.
@@ -188,10 +190,12 @@ A 30-minute application timeout does not satisfy that separate requirement:
 host-directed USB suspend must be handled on its own required timing and power
 budget, including Wi-Fi shutdown if needed.
 
-Do not assume host USB resume can wake this GPIO-woken deep-sleep design, or that
-enabling generic CPU light sleep is compatible with a live TinyUSB connection.
-Define and validate the host-suspend/resume path separately. Waking the board
-with BOOT also does not promise to wake a sleeping host computer.
+Host USB Remote Wakeup cannot wake this GPIO-woken deep-sleep design because
+deep sleep stops the network endpoint and detaches USB. Enabling generic CPU
+light sleep is also not assumed compatible with a live TinyUSB connection. The
+separate host-suspend/resume path is implemented in software but still requires
+physical Windows and USB-port validation. Waking the board with BOOT does not
+itself promise to wake a sleeping host computer.
 
 ## Why Thirty Minutes
 
@@ -410,8 +414,9 @@ must confirm G48 is dark throughout sleep and BOOT restores normal operation.
 
 ## Deferred Scope
 
-Manual Sleep now, a long-press BOOT gesture, true power-switch hardware, host
-remote wakeup, timed/network wake, further connected-idle optimization, and
-brightness control are not part of this implementation. A pre-sleep warning
-remains deferred; the timeout setting is implemented without adding a keyboard
-key or shutdown control.
+Manual Sleep now, a long-press BOOT gesture, true power-switch hardware, timed
+board wake, further connected-idle optimization, and brightness control are not
+part of this implementation. Host Remote Wakeup is implemented separately by
+`POST /wakeup`, with physical Windows acceptance still pending. A pre-sleep
+warning remains deferred; the timeout setting is implemented without adding a
+keyboard key or shutdown control.
