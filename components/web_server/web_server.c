@@ -530,9 +530,7 @@ static esp_err_t power_handler(httpd_req_t *request)
         expire_control(NULL);
         if (active_client != NULL || pending_owner != NULL) return problem(request, "409 Conflict", "release_control_first");
         firmware_update_status_t update = firmware_update_status();
-        network_status_t network;
-        network_status(&network);
-        if (update.busy || update.trial_boot || !update.available || network.busy) {
+        if (update.busy || update.trial_boot || !update.available || network_operation_busy()) {
             return problem(request, "409 Conflict", "device_busy");
         }
         char type[48];

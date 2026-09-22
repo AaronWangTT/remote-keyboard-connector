@@ -60,6 +60,7 @@ typedef enum {
 esp_err_t network_start(void);
 void network_status(network_status_t *status);
 network_control_status_t network_control_status(uint32_t generation);
+bool network_operation_busy(void);
 esp_err_t network_submit(const uint8_t *payload, size_t length, bool scan, uint32_t *job_id);
 void network_management_touch(uint32_t local_address);
 bool network_control_begin(uint32_t local_address, uint32_t generation);

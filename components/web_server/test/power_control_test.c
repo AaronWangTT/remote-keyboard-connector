@@ -58,6 +58,7 @@ esp_err_t usb_keyboard_sleep(bool sleeping)
 bool network_sleep_blocked(void) { return network_busy || management_grace; }
 void network_status(network_status_t *snapshot) { *snapshot = (network_status_t){.available = true, .busy = network_busy}; }
 network_control_status_t network_control_status(uint32_t generation) { (void)generation; return (network_control_status_t){.ready = network_ready}; }
+bool network_operation_busy(void) { return network_busy; }
 bool network_sleep_begin(uint32_t generation) { assert(generation == 9); if (network_busy || !reserve_allowed) return false; fake_network_state = NETWORK_SLEEP_RESERVED; return true; }
 bool network_sleep_stop(void) { assert(fake_network_state == NETWORK_SLEEP_RESERVED); fake_network_state = NETWORK_SLEEP_STOPPING; return true; }
 network_sleep_state_t network_sleep_state(void) { return fake_network_state; }
