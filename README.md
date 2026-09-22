@@ -268,6 +268,21 @@ An iStoreOS service running at `192.168.1.2` can request a Windows host wake:
 curl --fail-with-body -X POST http://kb.local/wakeup
 ```
 
+When iStoreOS reaches the keyboard through a router port-forward, destination
+NAT does not normally rewrite the HTTP `Host` header. Set it explicitly to the
+keyboard's hostname (or its actual LAN IP):
+
+```bash
+curl --fail-with-body -X POST http://ROUTER_ADDRESS:FORWARDED_PORT/wakeup \
+  -H "Host: kb.local"
+```
+
+Ordinary destination NAT normally preserves the iStoreOS source address. If the
+router also applies source NAT, the keyboard will see the router's LAN address
+instead of `192.168.1.2`; either disable that source NAT for this rule or update
+the firmware allowlist after verifying the observed address. The forwarding
+rule should itself accept traffic only from the iStoreOS source.
+
 The request body must be empty. This route deliberately skips owner-session and
 CSRF checks. It accepts only a real TCP peer address of `192.168.1.2`, while the
 `Host` header must still identify this keyboard by its current hostname or IP.

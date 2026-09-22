@@ -26,6 +26,9 @@ const boardPower = {
 const suites = {
   wakeup_policy: { includes: ["components/web_server"],
     sources: ["components/web_server/wakeup_policy.c", "components/web_server/test/wakeup_policy_test.c"] },
+  wakeup_http: { includes: [".cache/tests/board-stubs", ".cache/tests", "components/board/test",
+      "components/usb_keyboard/include", "components/web_server"],
+    sources: ["components/web_server/wakeup_policy.c", "components/web_server/test/wakeup_http_test.c"] },
   power_control: { includes: [...boardDriver.includes, "components/web_server", "components/network/include",
       "components/firmware_update/include", "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON", ".cache/tests"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/board/board_power_policy.c", "components/web_server/test/power_control_test.c"],
@@ -106,6 +109,8 @@ const network = await normalizedSource("components/network/network.c");
 const web = await normalizedSource("components/web_server/web_server.c");
 await writeFile(".cache/tests/power_http.inc",
   section(web, "static cJSON *power_json(void)\n{", "\nstatic cJSON *network_json(void)\n{"));
+await writeFile(".cache/tests/wakeup_http.inc",
+  section(web, "static bool wakeup_peer_allowed(", "\nstatic cJSON *power_json(void)\n{"));
 const usb = await normalizedSource("components/usb_keyboard/usb_keyboard.c");
 await writeFile(".cache/tests/usb_power.inc",
   section(usb, "#define USB_KEYBOARD_WAKE_TIMEOUT_US", "\nconst uint8_t *tud_hid_descriptor_report_cb") +
