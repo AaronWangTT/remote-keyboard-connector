@@ -157,10 +157,11 @@ promise to bypass host security restrictions or support every OS shortcut.
   Wi-Fi peaks and board peripherals; USB power descriptors and pre-configuration
   behavior must match the actual power budget. Do not claim compliance from a
   successful desktop test alone.
-- On USB suspend, disarm input. For bus power, meet suspend-current limits even
-  if that requires stopping Wi-Fi; reconnect the controller after resume.
-  Remote wakeup is disabled in version 1. A self-powered design needs proper
-  VBUS detection and must not backfeed the USB host.
+- On USB suspend, disarm ordinary input. The source-restricted `/wakeup` hook may
+  request USB Remote Wakeup and sends F24 only after resume. For bus power, meet
+  suspend-current limits even if that requires stopping Wi-Fi; reconnect the
+  controller after resume. A self-powered design needs proper VBUS detection and
+  must not backfeed the USB host.
 - USB OTG HID and fixed-function USB Serial/JTAG share the S3's internal PHY.
   Do not depend on native Serial/JTAG remaining available while HID is running.
 - Keep a tested ROM download/recovery procedure. Prefer a separate UART bridge
@@ -279,8 +280,9 @@ board-specific. Unplugging USB is the immediate physical stop.
 
 ## 6. HTTP Interface
 
-All API routes use version prefix `/api/v1`. JSON bodies are bounded and schema
-validated. Network configuration is owner-only and unavailable while armed.
+All general API routes use version prefix `/api/v1`; the dedicated iStoreOS
+wake hook is `/wakeup`. JSON bodies are bounded and schema validated. Network
+configuration is owner-only and unavailable while armed.
 
 | Method and path | Purpose | Authorization |
 | --- | --- | --- |
@@ -293,11 +295,17 @@ validated. Network configuration is owner-only and unavailable while armed.
 | `GET /api/v1/network/job` | Poll the current configuration operation | Owner |
 | `POST /api/v1/control/stop` | Priority release and lease revocation, including from another owner session | Owner + CSRF |
 | `GET /api/v1/keyboard` | Upgrade to the input/status WebSocket | Session and exact allowed Origin |
+| `POST /wakeup` | Request USB Remote Wake when suspended, then send and release F24 | No session/CSRF; real TCP peer `192.168.1.2`, device Host, optional exact iStoreOS Origin |
 
 Use standard status codes: 400 invalid input, 401 missing/expired login, 403
 denied origin/permission, 409 busy/state conflict, 413 oversized body, 429 rate
 limit, and 503 USB/service unavailable. A credential-test job returns 202 and
 progress rather than blocking the HTTP server until Wi-Fi connects.
+
+The wake response is asynchronous and returns 2xx only after both the F24 press
+and release reports complete on USB. USB resume alone is not success. Completed
+HID transfers establish that the host is polling and accepting keyboard reports,
+not that the Windows display, sign-in UI, or user session is fully ready.
 
 Serve a fixed asset allowlist from firmware-embedded, optionally compressed
 files; a writable filesystem is unnecessary for version 1. Serve correct MIME

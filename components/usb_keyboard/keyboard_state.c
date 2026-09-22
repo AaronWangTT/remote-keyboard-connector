@@ -3,6 +3,8 @@
 #include <string.h>
 #include "class/hid/hid.h"
 
+_Static_assert(KEYBOARD_QUEUE_CAPACITY >= 2, "Wake tap requires two queued reports");
+
 static bool supported_usage(uint8_t usage)
 {
     return (usage >= HID_KEY_A && usage <= HID_KEY_ENTER) || usage == HID_KEY_ESCAPE ||
@@ -145,6 +147,30 @@ bool keyboard_state_input(keyboard_state_t *state, uint32_t generation,
     };
     state->count++;
     state->desired_report = *report;
+    return true;
+}
+
+bool keyboard_state_wakeup(keyboard_state_t *state, uint32_t generation, int64_t now)
+{
+    keyboard_state_tick(state, now);
+    if (!keyboard_state_ready(state) || generation != state->generation ||
+        state->in_flight || state->count != 0 ||
+        !keyboard_report_empty(&state->desired_report)) {
+        return false;
+    }
+    const keyboard_report_t pressed = {.keys = {HID_KEY_F24}};
+    const keyboard_report_t released = {0};
+    state->queue[state->head] = (keyboard_transition_t){
+        .report = pressed,
+        .queued_at = now,
+    };
+    state->queue[(state->head + 1) % KEYBOARD_QUEUE_CAPACITY] = (keyboard_transition_t){
+        .report = released,
+        .queued_at = now,
+    };
+    state->count = 2;
+    state->desired_report = released;
+    state->last_activity = now;
     return true;
 }
 

@@ -1,4 +1,4 @@
-idf_component_register(SRCS "web_server.c" "input_protocol.c" "access_control.c" "power_control.c"
+idf_component_register(SRCS "web_server.c" "input_protocol.c" "access_control.c" "power_control.c" "wakeup_policy.c"
                        INCLUDE_DIRS "include"
                        PRIV_REQUIRES esp_http_server esp_timer esp_netif esp_hw_support usb_keyboard device_identity network firmware_update board mbedtls
                        EMBED_TXTFILES "www/index.html" "www/ota.html" "www/ota.mjs" "www/app.css" "www/app.mjs" "www/keyboard.mjs"

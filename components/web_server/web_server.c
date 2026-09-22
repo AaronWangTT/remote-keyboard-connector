@@ -17,11 +17,13 @@
 #include "device_identity.h"
 #include "firmware_update.h"
 #include "input_protocol.h"
+#include "lwip/inet.h"
 #include "mbedtls/platform_util.h"
 #include "lwip/sockets.h"
 #include "network.h"
 #include "power_control.h"
 #include "usb_keyboard.h"
+#include "wakeup_policy.h"
 
 extern const char index_start[] asm("_binary_index_html_start");
 extern const char index_end[] asm("_binary_index_html_end");
@@ -122,6 +124,11 @@ static void response_headers(httpd_req_t *request);
 static cJSON *network_json(void);
 static cJSON *power_json(void);
 static void release_control(void);
+
+typedef struct {
+    httpd_req_t *request;
+    uint32_t request_id;
+} wakeup_job_t;
 
 web_server_status_t web_server_status(void)
 {
@@ -506,6 +513,116 @@ static esp_err_t status_handler(httpd_req_t *request)
     esp_err_t result = httpd_resp_sendstr(request, json);
     cJSON_free(json);
     return result;
+}
+
+static bool wakeup_peer_allowed(httpd_req_t *request)
+{
+    struct sockaddr_storage peer = {0};
+    socklen_t length = sizeof(peer);
+    if (getpeername(httpd_req_to_sockfd(request), (struct sockaddr *)&peer, &length) != 0) return false;
+    uint32_t address;
+    if (peer.ss_family == AF_INET) {
+        address = ((const struct sockaddr_in *)&peer)->sin_addr.s_addr;
+#if CONFIG_LWIP_IPV6
+    } else if (peer.ss_family == AF_INET6 &&
+               IN6_IS_ADDR_V4MAPPED(&((const struct sockaddr_in6 *)&peer)->sin6_addr)) {
+        memcpy(&address, &((const struct sockaddr_in6 *)&peer)->sin6_addr.s6_addr[12], sizeof(address));
+#endif
+    } else {
+        return false;
+    }
+    return wakeup_source_allowed(ntohl(address));
+}
+
+static bool wakeup_request_allowed(httpd_req_t *request)
+{
+    if (!request_allowed(request, false)) return false;
+    char origin[64] = {0};
+    esp_err_t origin_result = httpd_req_get_hdr_value_str(request, "Origin", origin, sizeof(origin));
+    if (origin_result != ESP_OK && origin_result != ESP_ERR_NOT_FOUND) {
+        problem(request, "403 Forbidden", "wakeup_source_denied");
+        return false;
+    }
+    const char *origin_value = origin_result == ESP_OK ? origin : NULL;
+    if (!wakeup_peer_allowed(request) || !wakeup_origin_allowed(origin_value)) {
+        problem(request, "403 Forbidden", "wakeup_source_denied");
+        return false;
+    }
+    return true;
+}
+
+static void wakeup_worker(void *argument)
+{
+    wakeup_job_t *job = argument;
+    usb_keyboard_wake_status_t status;
+    do {
+        status = usb_keyboard_wakeup_status(job->request_id);
+        if (status.state == USB_KEYBOARD_WAKE_PENDING) vTaskDelay(pdMS_TO_TICKS(10));
+    } while (status.state == USB_KEYBOARD_WAKE_PENDING);
+
+    esp_err_t response;
+    if (status.state == USB_KEYBOARD_WAKE_DELIVERED && status.usb_active) {
+        response_headers(job->request);
+        httpd_resp_set_type(job->request, "application/json");
+        char body[128];
+        snprintf(body, sizeof(body),
+                 "{\"ok\":true,\"remote_wakeup_sent\":%s,\"usb_active\":true,\"key\":\"F24\",\"key_delivered\":true}",
+                 status.remote_wakeup_sent ? "true" : "false");
+        response = httpd_resp_sendstr(job->request, body);
+    } else {
+        response = problem(job->request, "503 Service Unavailable", "wakeup_not_delivered");
+    }
+    usb_keyboard_wakeup_finish(job->request_id);
+    esp_err_t completed = httpd_req_async_handler_complete(job->request);
+    if (response != ESP_OK || completed != ESP_OK) {
+        ESP_LOGW("wakeup", "Wake response failed (%s, complete %s)",
+                 esp_err_to_name(response), esp_err_to_name(completed));
+    }
+    free(job);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t wakeup_handler(httpd_req_t *request)
+{
+    if (!wakeup_request_allowed(request)) return ESP_OK;
+    char transfer_encoding[1];
+    bool transfer_encoding_present =
+        httpd_req_get_hdr_value_str(request, "Transfer-Encoding", transfer_encoding,
+                                    sizeof(transfer_encoding)) != ESP_ERR_NOT_FOUND;
+    if (!wakeup_body_allowed(request->content_len, transfer_encoding_present)) {
+        return problem(request, "400 Bad Request", "wakeup_body_not_allowed");
+    }
+    if (power_control_status().preparing) return problem(request, "503 Service Unavailable", "device_sleeping");
+    expire_control(NULL);
+    firmware_update_status_t update = firmware_update_status();
+    if (active_client != NULL || pending_owner != NULL || update.busy || update.trial_boot) {
+        return problem(request, "409 Conflict", "device_busy");
+    }
+
+    wakeup_job_t *job = calloc(1, sizeof(*job));
+    if (job == NULL) return problem(request, "503 Service Unavailable", "unavailable");
+    esp_err_t result = usb_keyboard_wakeup_begin(&job->request_id);
+    if (result != ESP_OK) {
+        free(job);
+        return result == ESP_ERR_NOT_SUPPORTED ?
+            problem(request, "409 Conflict", "usb_remote_wakeup_disabled") :
+            problem(request, "409 Conflict", "wakeup_unavailable_or_busy");
+    }
+    power_control_activity();
+    network_management_touch(local_address(request));
+    result = httpd_req_async_handler_begin(request, &job->request);
+    if (result != ESP_OK) {
+        usb_keyboard_wakeup_finish(job->request_id);
+        free(job);
+        return problem(request, "503 Service Unavailable", "unavailable");
+    }
+    if (xTaskCreate(wakeup_worker, "usb_wakeup", 4096, job, 2, NULL) != pdPASS) {
+        usb_keyboard_wakeup_finish(job->request_id);
+        problem(job->request, "503 Service Unavailable", "unavailable");
+        httpd_req_async_handler_complete(job->request);
+        free(job);
+    }
+    return ESP_OK;
 }
 
 static cJSON *power_json(void)
@@ -962,7 +1079,7 @@ esp_err_t web_server_start(void)
     if (!device_identity_ready()) return ESP_ERR_INVALID_STATE;
     power_control_init();
     httpd_config_t configuration = HTTPD_DEFAULT_CONFIG();
-    configuration.max_uri_handlers = sizeof(assets) / sizeof(assets[0]) + 18;
+    configuration.max_uri_handlers = sizeof(assets) / sizeof(assets[0]) + 19;
     configuration.max_open_sockets = 7;
     configuration.stack_size = 8192;
     configuration.recv_wait_timeout = 2;
@@ -995,6 +1112,7 @@ esp_err_t web_server_start(void)
         return result;
     }
     const httpd_uri_t management_routes[] = {
+        {.uri = "/wakeup", .method = HTTP_POST, .handler = wakeup_handler},
         {.uri = "/api/v1/session", .method = HTTP_GET, .handler = session_handler},
         {.uri = "/api/v1/session", .method = HTTP_POST, .handler = session_handler},
         {.uri = "/api/v1/session", .method = HTTP_DELETE, .handler = session_handler},

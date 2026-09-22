@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+static keyboard_state_t ready_keyboard(void);
+
 static bool input_a(keyboard_state_t *state, uint32_t generation, bool pressed, int64_t now)
 {
     const keyboard_report_t report = {.keys = {pressed ? HID_KEY_A : 0}};
@@ -80,10 +82,31 @@ static void test_descriptors_and_reports(void)
     assert(memcmp(&report, neutral, sizeof(neutral)) == 0);
     assert(sizeof(keyboard_configuration_descriptor) == TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN);
     assert(keyboard_configuration_descriptor[4] == 1);
-    assert(keyboard_configuration_descriptor[7] == 0x80);
+    assert(keyboard_configuration_descriptor[7] == (0x80 | TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP));
     assert(keyboard_configuration_descriptor[TUD_CONFIG_DESC_LEN + 5] == TUSB_CLASS_HID);
     assert(keyboard_configuration_descriptor[TUD_CONFIG_DESC_LEN + 6] == HID_SUBCLASS_BOOT);
     assert(keyboard_configuration_descriptor[TUD_CONFIG_DESC_LEN + 7] == HID_ITF_PROTOCOL_KEYBOARD);
+}
+
+static void test_wakeup_report(void)
+{
+    keyboard_state_t state = ready_keyboard();
+    uint32_t generation = state.generation;
+    keyboard_report_t report;
+    assert(keyboard_state_wakeup(&state, generation, 100));
+    assert(!keyboard_state_wakeup(&state, generation, 100));
+    assert(keyboard_state_next(&state, 100, &report));
+    assert(report.modifiers == 0 && report.keys[0] == HID_KEY_F24 && report.keys[1] == 0);
+    keyboard_state_complete(&state);
+    assert(keyboard_state_next(&state, 101, &report) && keyboard_report_empty(&report));
+    keyboard_state_complete(&state);
+    assert(!keyboard_state_next(&state, 102, &report));
+
+    const keyboard_report_t pressed = {.keys = {HID_KEY_A}};
+    assert(keyboard_state_input(&state, generation, &pressed, 103));
+    assert(!keyboard_state_wakeup(&state, generation, 103));
+    keyboard_state_release(&state);
+    assert(!keyboard_state_wakeup(&state, generation, 104));
 }
 
 static keyboard_state_t ready_keyboard(void)
@@ -248,12 +271,13 @@ int main(void)
 {
     test_descriptors_and_reports();
     test_typing_reports();
+    test_wakeup_report();
     test_ordering();
     test_priority_release();
     test_overflow();
     test_deadlines();
     test_usb_recovery();
     test_invalid_state_release();
-    puts("keyboard_state: 8 tests passed (typing allowlist, six-key reports, 1000 ordered Shift chords)");
+    puts("keyboard_state: 9 tests passed (typing allowlist, F24 wake tap, six-key reports, 1000 ordered Shift chords)");
     return 0;
 }

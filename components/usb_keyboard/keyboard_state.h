@@ -36,6 +36,7 @@ void keyboard_state_release(keyboard_state_t *state);
 bool keyboard_state_ready(const keyboard_state_t *state);
 bool keyboard_state_input(keyboard_state_t *state, uint32_t generation,
                           const keyboard_report_t *report, int64_t now);
+bool keyboard_state_wakeup(keyboard_state_t *state, uint32_t generation, int64_t now);
 bool keyboard_state_heartbeat(keyboard_state_t *state, uint32_t generation,
                               int64_t now);
 void keyboard_state_tick(keyboard_state_t *state, int64_t now);
