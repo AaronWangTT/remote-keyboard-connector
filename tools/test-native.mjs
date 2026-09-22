@@ -24,6 +24,8 @@ const boardPower = {
   sources: ["components/board/board_power_policy.c", "components/board/board_power.c", "components/board/test/board_power_test.c"],
 };
 const suites = {
+  wakeup_policy: { includes: ["components/web_server"],
+    sources: ["components/web_server/wakeup_policy.c", "components/web_server/test/wakeup_policy_test.c"] },
   power_control: { includes: [...boardDriver.includes, "components/web_server", "components/network/include",
       "components/firmware_update/include", "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON", ".cache/tests"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/board/board_power_policy.c", "components/web_server/test/power_control_test.c"],
@@ -99,14 +101,15 @@ const section = (source, start, end) => {
   assert.ok(last > first, `Missing source boundary: ${end}`);
   return source.slice(first, last);
 };
-const network = await readFile("components/network/network.c", "utf8");
-const web = await readFile("components/web_server/web_server.c", "utf8");
+const normalizedSource = async path => (await readFile(path, "utf8")).replaceAll("\r\n", "\n");
+const network = await normalizedSource("components/network/network.c");
+const web = await normalizedSource("components/web_server/web_server.c");
 await writeFile(".cache/tests/power_http.inc",
   section(web, "static cJSON *power_json(void)\n{", "\nstatic cJSON *network_json(void)\n{"));
-const usb = await readFile("components/usb_keyboard/usb_keyboard.c", "utf8");
+const usb = await normalizedSource("components/usb_keyboard/usb_keyboard.c");
 await writeFile(".cache/tests/usb_power.inc",
-  section(usb, "static void set_usb_online(", "\nconst uint8_t *tud_hid_descriptor_report_cb") +
-  section(usb, "static void keyboard_worker(", "\nbool usb_keyboard_service_healthy"));
+  section(usb, "#define USB_KEYBOARD_WAKE_TIMEOUT_US", "\nconst uint8_t *tud_hid_descriptor_report_cb") +
+  section(usb, "void tud_hid_report_complete_cb(", "\nbool usb_keyboard_service_healthy"));
 const skippedSdkBootloader = selected.includes("update_service") && !process.env.IDF_PATH;
 let bootloaderFixture = "";
 let signatureFixture = "";

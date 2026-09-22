@@ -7,7 +7,8 @@ static const uint8_t keyboard_report_descriptor[] = {
 };
 
 static const uint8_t keyboard_configuration_descriptor[] = {
-    TUD_CONFIG_DESCRIPTOR(1, 1, 0, TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN, 0, 500),
+    TUD_CONFIG_DESCRIPTOR(1, 1, 0, TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN,
+                          TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 500),
     TUD_HID_DESCRIPTOR(0, 4, HID_ITF_PROTOCOL_KEYBOARD,
                        sizeof(keyboard_report_descriptor), 0x81, 8, 10),
 };

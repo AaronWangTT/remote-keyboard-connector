@@ -17,7 +17,9 @@ the previous keyboard-only firmware, not to these networking/authentication chan
 This is an authenticated HTTP/WS development prototype for protected, trusted
 personal test networks and authorized, non-sensitive USB hosts. HTTP does not
 protect passwords, sessions, or input from network interception. HTTPS/WSS and
-encrypted credential storage remain lower-priority follow-up work.
+encrypted credential storage remain lower-priority follow-up work. The dedicated
+`POST /wakeup` endpoint is intentionally unauthenticated and is instead restricted
+to TCP source address `192.168.1.2`; do not expose it through port forwarding.
 
 ## Documentation
 
@@ -257,6 +259,46 @@ keyboard. Ctrl/Alt/Command shortcuts and input in other form fields stay local;
 Left Control and Left GUI are generated only by the configured Globe action.
 No function/navigation panel, emoji, dictation, autocorrect engine, swipe
 typing, accented-key menus, or Unicode injection is included.
+
+### Windows Wake API
+
+An iStoreOS service running at `192.168.1.2` can request a Windows host wake:
+
+```bash
+curl --fail-with-body -X POST http://kb.local/wakeup
+```
+
+The request body must be empty. This route deliberately skips owner-session and
+CSRF checks. It accepts only a real TCP peer address of `192.168.1.2`, while the
+`Host` header must still identify this keyboard by its current hostname or IP.
+`Origin` may be omitted for a server-side request; if supplied, it must be
+`http://192.168.1.2` (optionally with explicit port `80`). Header values alone
+are not treated as proof of the caller address.
+
+The USB descriptor advertises Remote Wakeup. If USB is suspended and Windows
+enabled that feature, firmware first requests USB remote wake. Once USB is
+active, or immediately if it was already active, firmware sends one unmodified
+F24 press followed by release. F24 is chosen because Windows has no default
+system action for it, although installed software can register an F24 shortcut.
+
+A `200` response is sent only after both HID reports complete:
+
+```json
+{"ok":true,"remote_wakeup_sent":true,"usb_active":true,"key":"F24","key_delivered":true}
+```
+
+`remote_wakeup_sent` is `false` when USB was already active. Completion proves
+that the host resumed polling the HID endpoint and accepted the F24 tap. It does
+not prove that the display is on, the session is unlocked, or user applications
+are ready. A disabled Windows wake setting returns `409`; a report timeout,
+disconnect, or transfer failure returns a non-2xx response.
+
+Windows, the USB controller, firmware/BIOS, and the selected USB port must all
+allow keyboard wake, and the port must remain powered during sleep. Use Device
+Manager or `powercfg /devicequery wake_armed` to verify the wake-enabled device.
+Hibernate and shutdown wake are not guaranteed. Configure this board's Auto
+sleep setting to **Never** if `/wakeup` must remain reachable while the PC
+sleeps. Physical Windows sleep/wake validation is still required for each host.
 
 ## Host Validation
 
