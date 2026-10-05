@@ -528,7 +528,7 @@ remote-keyboard-connector/
 |-- .github/workflows/       PR/main firmware and browser CI
 |-- .vscode/                Portable extension recommendations
 |-- components/
-| |-- board/                Board LED/sleep drivers, shared status patterns, and native tests
+|   |-- board/             Board LED/sleep drivers, shared status patterns, and native tests
 |   |-- device_identity/   Private identity and one-time owner claim
 |   |-- network/           AP/STA, NVS settings, mDNS, and recovery jobs
 |   |-- usb_keyboard/      HID descriptors, ordered reports, safety tests

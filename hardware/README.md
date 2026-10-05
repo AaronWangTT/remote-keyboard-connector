@@ -36,7 +36,8 @@ board; first-install instructions were provided for user execution.
 | 2026-10-05 | Basic connection and USB typing after first-install guidance | Passed, user reported: "connected and typing is fine." This confirms a basic end-to-end hardware smoke test, not the full acceptance matrix. The exact installed-image hash, host/controller OS, and connection address were not independently confirmed. |
 | 2026-10-05 | Page-loading improvement with supplied antenna | Passed, user reported immediate page loading after attaching the antenna. Before attachment, WSL measurements showed approximately 2.4 seconds for a 39 KB script even over the direct IP. No post-attachment instrumented timings or RF measurements were supplied. |
 | 2026-10-05 | Physical `x.local` resolution, BOOT/RESET recovery, OTA/rollback, key/modifier and release behavior, USB suspend/resume, and endurance | Pending separate checks. Successful connection and typing alone do not establish these results. |
-| 2026-10-05 | New GPIO21 status patterns, dark sleep, BOOT wake, and persisted opt-in idle timeout | Pending. The LED/sleep follow-up has not been flashed by the assistant; earlier typing/antenna checks do not establish acceptance of this new firmware. |
+| 2026-10-05 | New GPIO21 status patterns | Passed, user confirmed: "Xiao's LED is working as expected." This is a user-observed visible-pattern check, not an instrumented timing/polarity measurement or independent installed-image identification. |
+| 2026-10-05 | Dark sleep, BOOT wake, and persisted opt-in idle timeout | Pending. The LED confirmation does not establish sleep/wake acceptance; the assistant has not flashed or reset the board. |
 
 Software validation on 2026-10-05 passed XIAO, generic, and XinluCity ESP-IDF
 v6.1 builds and offline signed-artifact verification. The XIAO application is
