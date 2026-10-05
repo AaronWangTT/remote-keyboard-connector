@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 idf_build_set_property(MINIMAL_BUILD ON)
 if(NOT DEFINED PROJECT_VER)
-	set(PROJECT_VER "0.1.0")
+	set(PROJECT_VER "0.1.1")
 endif()
 idf_build_get_property(idf_python PYTHON)
 execute_process(COMMAND "${idf_python}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/prepare-build.py"

@@ -11,7 +11,9 @@ Return, host input-source switching, and Cancel/Escape with bounded six-key
 USB reports.
 
 The Wi-Fi enhancement passes automated native/browser checks and an ESP32-S3
-build. It has not been provisioned or tested on the physical board. The earlier
+build. A user-reported XIAO connection/typing smoke test passed, with immediate
+page loading after its external antenna was attached; full acceptance remains
+pending. The earlier
 [hardware smoke-test record](hardware/README.md#hardware-test-status) applies to
 the previous keyboard-only firmware, not to these networking/authentication changes.
 
@@ -132,21 +134,44 @@ The existing rename and mDNS conflict-handling behavior still applies, and
 `http://192.168.4.1/` remains the AP fallback. Generic and XinluCity profiles
 continue to default to `kb.local`.
 
-Status LED and automatic deep sleep are intentionally unsupported on this
-initial XIAO profile; it does not claim GPIO21, GPIO48, or BOOT. PSRAM remains
-disabled because the application does not require it. Native USB HID uses the
-existing ESP32-S3 TinyUSB driver. USB recovery, HID, networking, and OTA still
-require physical acceptance testing before treating this profile as validated
-hardware support.
+The XIAO profile controls its active-low GPIO21 user LED: one 100 ms pulse
+every two seconds when ready/idle, steady ON during active keyboard control,
+and OFF when not ready. The battery-charge LED remains independent.
+`BOARD_POWER_MANAGEMENT` enables GPIO0 BOOT wake and the power-settings control,
+but fresh XIAO settings default to **Never**. Owners can save **30 minutes**,
+**60 minutes**, or **Never**. Saved timeouts take precedence over the default.
+GPIO48 is untouched. PSRAM remains disabled because the application does not
+require it. Native USB HID uses the existing ESP32-S3 TinyUSB driver.
+
+Use a fresh build/configuration directory to enable the new board controls;
+an older generated configuration may retain `BOARD_POWER_MANAGEMENT=false`:
+
+```bash
+idf.py -B .cache/xiao-led-sleep \
+  -D SDKCONFIG=.cache/xiao-led-sleep/sdkconfig \
+  -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.board-seeed-xiao-esp32s3' build
+node tools/install-device.mjs --firmware .cache/xiao-led-sleep \
+  --verification-key .cache/xiao-led-sleep/firmware-signing-public.pem
+```
+
+The default firmware version is now `0.1.1`, allowing an OTA update from
+`0.1.0` with the same signing key, board, and layout. Update through `/ota`
+using `firmware-ota.bin` to retain ownership and network settings; do not use
+the destructive first-install workflow for an ordinary update. These commands
+build and validate offline only. XIAO LED polarity/visibility, sleep darkness,
+BOOT wake, and USB reconnection still require physical acceptance.
+
+Connect the supplied external antenna for reliable Wi-Fi. The user reported
+slow page loading without it and immediate page loading after attaching it.
 
 For a local UI preview without hardware, run
 `PREVIEW_BOARD_PROFILE=seeed-xiao-esp32s3-8m npm --prefix tools run preview`.
-The preview advertises the XIAO's hostname/layout/image budget and disables its
-unsupported power control; it does not validate physical mDNS or USB behavior.
+The preview advertises the XIAO's hostname/layout/image budget and defaults its
+power control to Never; it does not validate physical mDNS, GPIO, or USB behavior.
 
 ### Optional Board Status LED
 
-Generic builds leave GPIO48 untouched. On a fresh configuration, plain
+Generic builds leave GPIO21 and GPIO48 untouched. On a fresh configuration, plain
 `idf.py build` selects `BOARD_STATUS_LED_DISABLED`; an existing generated
 `sdkconfig` retains whichever profile was selected previously.
 
@@ -167,9 +192,9 @@ Before flashing, verify the generated configuration reports
 `BOARD_XINLUCITY_ESP32S3_NANO=true` and `BOARD_STATUS_LED_DISABLED=false`.
 The profile uses the schematic's active-low, single-color G48: one short pulse
 every two seconds for ready/idle, steady ON for a valid live controller, and
-two short pulses for not ready. PWR remains independent. No brightness setting
-is included. The selected board also enables the automatic sleep feature below
-by default on a fresh configuration.
+OFF for not ready. PWR remains independent. No brightness setting
+is included. The selected board also exposes the automatic sleep feature below,
+with Never selected until the owner opts in.
 
 See the [profile build commands and validation record](docs/board-status-led-proposal.md#software-implementation-record).
 Focused software checks and a 2026-09-15 physical check of the previously
@@ -180,20 +205,26 @@ and endurance remain pending.
 
 ### Automatic Sleep
 
-On the explicit XinluCity profile, `BOARD_POWER_MANAGEMENT` enables automatic
-deep sleep after 30 minutes without meaningful activity. **Network settings >
+On the explicit XinluCity and XIAO profiles, `BOARD_POWER_MANAGEMENT` enables
+the automatic deep-sleep feature. Both boards default to Never until the owner
+opts into 30 or 60 minutes without meaningful activity. Existing saved timeout
+choices remain unchanged by an update.
+**Network settings >
 Power > Auto sleep** offers **30 minutes**, **60 minutes**, and **Never**; Save
 power setting persists the choice on the board. Generic and unsupported builds
 do not claim the BOOT pin or expose the control.
 
 Before sleeping, firmware revokes control, completes neutral USB input where
-possible, stops Wi-Fi, detaches USB HID, and holds G48 dark. Press BOOT to wake
+possible, stops Wi-Fi, detaches USB HID, and leaves the selected status LED off.
+XinluCity releases and holds GPIO48's drivers/pulls; XIAO holds GPIO21 HIGH/off.
+Press BOOT to wake
 and restart services, then sign in and Take Control again. RST retains hardware
 restart/recovery behavior. Saved owner and network settings survive; previous
 sessions and queued keys do not. Background polls and heartbeats do not reset
 the idle timer; valid held input and management/OTA work inhibit sleep.
 
-PWR remains lit while supplied. This is not a physical power switch. A host
+XinluCity PWR and XIAO's charge indicator remain independent of firmware.
+This is not a physical power switch. A host
 that removes USB power after disconnect may require cable reconnection instead
 of BOOT. Storage or sleep-preparation failures disable automatic sleep for the
 current boot without changing the saved timeout. No new manual shutdown key is
@@ -497,7 +528,7 @@ remote-keyboard-connector/
 |-- .github/workflows/       PR/main firmware and browser CI
 |-- .vscode/                Portable extension recommendations
 |-- components/
-|   |-- board/             Opt-in G48 driver, status patterns, and native tests
+| |-- board/                Board LED/sleep drivers, shared status patterns, and native tests
 |   |-- device_identity/   Private identity and one-time owner claim
 |   |-- network/           AP/STA, NVS settings, mDNS, and recovery jobs
 |   |-- usb_keyboard/      HID descriptors, ordered reports, safety tests

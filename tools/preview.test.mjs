@@ -67,7 +67,7 @@ test("Power API authenticates, validates and persists timeout choices", { timeou
   const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
   const read = async () => (await fetch(endpoint, { headers })).json();
   const save = body => fetch(endpoint, { method: "POST", headers, body });
-  assert.equal((await read()).idle_minutes, 30);
+  assert.equal((await read()).idle_minutes, 0);
   const charset = await fetch(endpoint, { method: "POST", headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
     body: '{"idle_minutes":60}' });
   assert.equal(charset.status, 200);
@@ -91,10 +91,35 @@ test("Power API authenticates, validates and persists timeout choices", { timeou
   assert.equal((await save('{"idle_minutes":0}')).status, 409);
 });
 
+for (const board of ["xinlucity-s3-nano-16m", "seeed-xiao-esp32s3-8m"]) {
+  test(`Power defaults to Never with opt-in settings on ${board}`, { timeout: 10000 }, async context => {
+    const url = await startPreview(context, { PREVIEW_BOARD_PROFILE: board });
+    let session = await loginRequest(url);
+    const headers = () => ({ Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" });
+    const read = async () => (await fetch(new URL("/api/v1/power", url), { headers: headers() })).json();
+    assert.equal((await read()).idle_minutes, 0);
+    const advance = await fetch(new URL("/__test__/power", url), {
+      method: "POST", headers: headers(), body: '{"advance_ms":86400000}',
+    });
+    assert.equal((await advance.json()).asleep, false);
+    for (const minutes of [30, 60, 0]) {
+      assert.equal((await fetch(new URL("/api/v1/power", url), {
+        method: "POST", headers: headers(), body: JSON.stringify({ idle_minutes: minutes }),
+      })).status, 200);
+      await fetch(new URL("/__test__/power", url), { method: "POST", headers: headers(), body: '{"action":"wake"}' });
+      session = await loginRequest(url);
+      assert.equal((await read()).idle_minutes, minutes);
+    }
+  });
+}
+
 test("Power model ignores heartbeats and polls, then wakes disarmed with fresh authentication", { timeout: 15000 }, async context => {
   const url = await startPreview(context);
   const session = await loginRequest(url);
   const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
+  assert.equal((await fetch(new URL("/api/v1/power", url), {
+    method: "POST", headers, body: '{"idle_minutes":30}',
+  })).status, 200);
   const advance = async advance_ms => (await fetch(new URL("/__test__/power", url), {
     method: "POST", headers, body: JSON.stringify({ advance_ms }) })).json();
   await takeRequest(url, session);
@@ -145,6 +170,9 @@ test("Power model holds input and OTA awake, then starts a fresh quiet interval"
   const url = await startPreview(context);
   let session = await loginRequest(url);
   const headers = () => ({ Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" });
+  assert.equal((await fetch(new URL("/api/v1/power", url), {
+    method: "POST", headers: headers(), body: '{"idle_minutes":30}',
+  })).status, 200);
   const advance = async advance_ms => (await fetch(new URL("/__test__/power", url), {
     method: "POST", headers: headers(), body: JSON.stringify({ advance_ms }) })).json();
   await takeRequest(url, session);
@@ -189,7 +217,7 @@ for (const environment of [{ PREVIEW_BOARD_POWER: "0" }, { PREVIEW_POWER_STORAGE
     assert.equal(saved.status, 503);
     const state = await (await fetch(new URL("/api/v1/power", url), { headers })).json();
     assert.equal(state.available, false);
-    assert.equal(state.idle_minutes, 30);
+    assert.equal(state.idle_minutes, 0);
     const elapsed = await fetch(new URL("/__test__/power", url), { method: "POST", headers, body: '{"advance_ms":3600001}' });
     assert.equal((await elapsed.json()).asleep, false);
   });
@@ -252,7 +280,16 @@ for (const engine of [chromium, webkit]) test(`XIAO settings display x.local and
   await page.locator("#network-settings").click();
   await expect(page.locator("#network-name")).toHaveText("x.local");
   await expect(page.locator("#network-hostname")).toHaveValue("x");
-  assert.equal((await (await page.request.get(`${url}/api/v1/power`)).json()).supported, false);
+  const power = await (await page.request.get(`${url}/api/v1/power`)).json();
+  assert.equal(power.supported, true);
+  assert.equal(power.idle_minutes, 0);
+  await expect(page.locator("#power-idle")).toHaveValue("0");
+  for (const minutes of ["30", "60", "0"]) {
+    await page.locator("#power-idle").selectOption(minutes);
+    await page.locator("#power-save").click();
+    await expect(page.locator("#power-status")).toHaveText("Saved");
+    assert.equal((await (await page.request.get(`${url}/api/v1/power`)).json()).idle_minutes, Number(minutes));
+  }
   const firmware = await (await page.request.get(`${url}/api/v1/firmware`)).json();
   assert.equal(firmware.board, "seeed-xiao-esp32s3-8m");
   assert.equal(firmware.layout, "kb8-ab3875-nvs64-v1");
@@ -263,6 +300,7 @@ for (const engine of [chromium, webkit]) test(`XIAO settings display x.local and
   await page.reload();
   await page.locator("#network-settings").click();
   await expect(page.locator("#network-hostname")).toHaveValue("owner-xiao");
+  await expect(page.locator("#power-idle")).toHaveValue("0");
 });
 
 for (const engine of [chromium, webkit]) test(`Power settings UI saves, preserves drafts and reconciles lost responses in ${engine.name()}`, { timeout: 30000 }, async context => {
@@ -278,11 +316,11 @@ for (const engine of [chromium, webkit]) test(`Power settings UI saves, preserve
   await page.locator("#network-settings").click();
   const select = page.getByLabel("Auto sleep", { exact: true });
   await expect(select).toBeEnabled();
-  await expect(select).toHaveValue("30");
+  await expect(select).toHaveValue("0");
   await select.selectOption("60");
   await page.waitForResponse(response => response.url().endsWith("/api/v1/power") && response.request().method() === "GET");
   await expect(select).toHaveValue("60");
-  assert.equal((await (await page.request.get(`${url}/api/v1/power`)).json()).idle_minutes, 30);
+  assert.equal((await (await page.request.get(`${url}/api/v1/power`)).json()).idle_minutes, 0);
   await page.getByRole("button", { name: "Save power setting", exact: true }).click();
   await expect(page.locator("#power-status")).toHaveText("Saved");
   await page.reload();
@@ -360,7 +398,7 @@ for (const failure of ["unsupported", "storage"]) test(`Power settings UI handle
     await page.locator("#power-idle").selectOption("60");
     await page.locator("#power-save").click();
     await expect(page.locator("#power-status")).toHaveText("Automatic sleep unavailable");
-    await expect(page.locator("#power-idle")).toHaveValue("30");
+    await expect(page.locator("#power-idle")).toHaveValue("0");
     await expect(page.locator("#power-idle")).toBeDisabled();
     await expect(page.locator("#network-apply")).toBeEnabled();
   }

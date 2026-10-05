@@ -21,10 +21,11 @@ static uint64_t stop_at_ms;
 static TaskFunction_t task_entry;
 static void *task_argument;
 static jmp_buf task_exit;
+static const gpio_num_t expected_status_gpio = CONFIG_BOARD_SEEED_XIAO_ESP32S3 ? GPIO_NUM_21 : GPIO_NUM_48;
 
 esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level)
 {
-    assert(pin == GPIO_NUM_48 && level <= 1);
+    assert(pin == expected_status_gpio && level <= 1);
     assert(gpio_calls < sizeof(levels) / sizeof(levels[0]));
     levels[gpio_calls] = level;
     edge_times[gpio_calls++] = now_ms;
@@ -34,7 +35,7 @@ esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level)
 esp_err_t gpio_config(const gpio_config_t *configuration)
 {
     assert(gpio_calls == 1 && levels[0] == 1);
-    assert(configuration->pin_bit_mask == (UINT64_C(1) << GPIO_NUM_48));
+    assert(configuration->pin_bit_mask == (UINT64_C(1) << expected_status_gpio));
     assert(configuration->mode == GPIO_MODE_OUTPUT);
     assert(configuration->pull_up_en == GPIO_PULLUP_DISABLE);
     assert(configuration->pull_down_en == GPIO_PULLDOWN_DISABLE);
@@ -50,7 +51,7 @@ void gpio_deep_sleep_hold_dis(void)
 
 esp_err_t gpio_hold_dis(gpio_num_t pin)
 {
-    assert(pin == GPIO_NUM_48 && configure_calls == 1 && levels[0] == 1);
+    assert(pin == expected_status_gpio && configure_calls == 1 && levels[0] == 1);
     return ESP_OK;
 }
 
@@ -123,7 +124,7 @@ static board_status_snapshot_t read_status(void)
 
 int main(void)
 {
-#if CONFIG_BOARD_XINLUCITY_ESP32S3_NANO && CONFIG_IDF_TARGET_ESP32S3
+#if (CONFIG_BOARD_XINLUCITY_ESP32S3_NANO || CONFIG_BOARD_SEEED_XIAO_ESP32S3) && CONFIG_IDF_TARGET_ESP32S3
     assert(board_status_start(NULL) == ESP_ERR_INVALID_ARG);
     assert(gpio_calls == 0 && configure_calls == 0 && task_calls == 0);
     fail_gpio_call = 1;
@@ -153,15 +154,15 @@ int main(void)
     assert(board_status_pause(false) == ESP_OK);
     gpio_calls = 1;
     now_ms = stop_at_ms = 0;
-    fail_gpio_call = 8;
+    fail_gpio_call = 5;
     if (setjmp(task_exit) == 0) task_entry(task_argument);
-    const uint32_t expected_levels[] = {1, 0, 1, 0, 1, 0, 1, 0, 1};
-    const uint64_t expected_times[] = {0, 0, 100, 200, 350, 450, 750, 850, 850};
+    const uint32_t expected_levels[] = {1, 0, 1, 0, 1, 1};
+    const uint64_t expected_times[] = {0, 250, 350, 450, 650, 650};
     assert(gpio_calls == sizeof(expected_levels) / sizeof(expected_levels[0]));
     assert(memcmp(levels, expected_levels, sizeof(expected_levels)) == 0);
     assert(memcmp(edge_times, expected_times, sizeof(expected_times)) == 0);
     assert(log_calls == 1 && deleted_tasks == 1);
-    puts("PASS: G48 initialization ordering, startup failures, live/stale patterns and update failure cleanup");
+    puts("PASS: board-specific GPIO, initialization ordering, startup failures, not-ready OFF and update failure cleanup");
 #else
     assert(board_status_pause(true) == ESP_ERR_NOT_SUPPORTED);
     assert(board_status_start(NULL) == ESP_ERR_NOT_SUPPORTED);

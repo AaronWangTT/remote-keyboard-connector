@@ -16,8 +16,8 @@ bool board_status_pattern_on(board_status_pattern_t *pattern, board_status_t sta
         pattern->cycle_started_ms = now_ms;
     }
     uint64_t phase_ms = (now_ms - pattern->cycle_started_ms) % 2000U;
-    return state == BOARD_STATUS_CONTROL_ACTIVE || phase_ms < 100U ||
-           (state == BOARD_STATUS_NOT_READY && phase_ms >= 200U && phase_ms < 300U);
+    return state == BOARD_STATUS_CONTROL_ACTIVE ||
+           (state == BOARD_STATUS_READY_IDLE && phase_ms < 100U);
 }
 
 int board_status_active_low_level(bool on)

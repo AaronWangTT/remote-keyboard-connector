@@ -1,14 +1,15 @@
 #include "board_status.h"
 #include "sdkconfig.h"
+#include "board_hardware.h"
 
-#if CONFIG_BOARD_XINLUCITY_ESP32S3_NANO && CONFIG_IDF_TARGET_ESP32S3
+#if BOARD_HARDWARE_SUPPORTED
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static const gpio_num_t STATUS_GPIO = GPIO_NUM_48;
+static const gpio_num_t STATUS_GPIO = BOARD_STATUS_GPIO;
 static board_status_source_t status_source;
 static TaskHandle_t status_task;
 static portMUX_TYPE output_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -32,9 +33,9 @@ static void render_status(void *argument)
         }
         portEXIT_CRITICAL(&output_lock);
         if (result != ESP_OK) {
-            ESP_LOGW("board", "G48 update failed (%s); disabling status LED", esp_err_to_name(result));
+            ESP_LOGW("board", "GPIO%d update failed (%s); disabling status LED", STATUS_GPIO, esp_err_to_name(result));
             result = board_status_pause(true);
-            if (result != ESP_OK) ESP_LOGW("board", "Could not leave G48 inactive (%s)", esp_err_to_name(result));
+            if (result != ESP_OK) ESP_LOGW("board", "Could not leave GPIO%d inactive (%s)", STATUS_GPIO, esp_err_to_name(result));
             vTaskDelete(NULL);
             return;
         }
