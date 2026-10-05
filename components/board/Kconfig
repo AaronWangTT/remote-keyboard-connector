@@ -15,6 +15,14 @@ config BOARD_XINLUCITY_ESP32S3_NANO
         board. GPIO48 LOW illuminates the LED; HIGH turns it off.
         This does not control PWR or configure flash/PSRAM capacity.
 
+config BOARD_SEEED_XIAO_ESP32S3
+    bool "Seeed Studio XIAO ESP32S3 (8 MiB flash)"
+    depends on IDF_TARGET_ESP32S3
+    help
+        Select only for the standard XIAO ESP32S3, not the 16 MiB Plus.
+        Use the tracked XIAO defaults overlay for its flash and OTA layout.
+        Status LED and automatic sleep remain unsupported; GPIOs are untouched.
+
 endchoice
 
 config BOARD_POWER_MANAGEMENT
