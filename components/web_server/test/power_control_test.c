@@ -224,6 +224,20 @@ static void test_power_http(void)
 
 int main(void)
 {
+    reset();
+    saved_timeout = BOARD_POWER_DEFAULT_IDLE_MINUTES;
+    power_control_init();
+    assert(power_control_status().idle_minutes == 0);
+    assert(store_calls == 0);
+    poll();
+    now += INT64_C(7200000000);
+    poll();
+    assert(worker == NULL && !entered);
+    assert(power_control_configure(30) == ESP_OK && saved_timeout == 30 && store_calls == 1);
+    assert(power_control_configure(60) == ESP_OK && saved_timeout == 60 && store_calls == 2);
+    assert(power_control_configure(0) == ESP_OK && saved_timeout == 0 && store_calls == 3);
+    power_control_init();
+    assert(power_control_status().idle_minutes == 0);
     test_power_http();
     const char *invalid[] = {"", "[]", "null", "{}", "{\"idle_minutes\":true}", "{\"idle_minutes\":\"30\"}",
         "{\"idle_minutes\":-1}", "{\"idle_minutes\":30.5}", "{\"idle_minutes\":1e309}",

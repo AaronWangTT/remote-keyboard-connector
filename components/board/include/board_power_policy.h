@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define BOARD_POWER_DEFAULT_IDLE_MINUTES 30
+#include "board_hardware.h"
 
 typedef struct {
     uint32_t idle_minutes;

@@ -34,6 +34,9 @@ static esp_err_t hold_release_result = ESP_OK;
 static unsigned unpause_calls;
 static unsigned output_configs;
 static unsigned hold_release_calls;
+static bool sleep_configuration_attempted;
+static const gpio_num_t expected_status_gpio = CONFIG_BOARD_SEEED_XIAO_ESP32S3 ? GPIO_NUM_21 : GPIO_NUM_48;
+static const int expected_sleep_mode = CONFIG_BOARD_SEEED_XIAO_ESP32S3 ? GPIO_MODE_OUTPUT : GPIO_MODE_DISABLE;
 
 #ifdef BOARD_POWER_TEST_SDK_SLEEP
 #define BIT(bit) (UINT32_C(1) << (bit))
@@ -67,15 +70,19 @@ _Static_assert(SOC_GPIO_PIN_COUNT == 49 && SOC_RTCIO_INPUT_OUTPUT_SUPPORTED && S
 esp_err_t gpio_config(const gpio_config_t *configuration)
 {
     hardware_calls++;
-    if (configuration->pin_bit_mask == (UINT64_C(1) << GPIO_NUM_48)) {
+    if (configuration->pin_bit_mask == (UINT64_C(1) << expected_status_gpio)) {
         assert(paused);
-        assert(configuration->mode == GPIO_MODE_DISABLE || configuration->mode == GPIO_MODE_OUTPUT);
-        if (configuration->mode == GPIO_MODE_DISABLE) assert(!held);
-        else assert(status_level == 1 && !deep_hold);
+        bool preparing = pause_result == ESP_OK && !sleep_configuration_attempted;
+        if (preparing) {
+            sleep_configuration_attempted = true;
+            assert(!held && configuration->mode == expected_sleep_mode && status_level == 1);
+        } else {
+            assert(configuration->mode == GPIO_MODE_OUTPUT && status_level == 1 && !deep_hold);
+            output_configs++;
+        }
         assert(configuration->pull_up_en == GPIO_PULLUP_DISABLE && configuration->pull_down_en == GPIO_PULLDOWN_DISABLE);
         assert(configuration->intr_type == GPIO_INTR_DISABLE);
-        if (configuration->mode == GPIO_MODE_OUTPUT) output_configs++;
-        esp_err_t result = configuration->mode == GPIO_MODE_DISABLE ? disable_result : output_result;
+        esp_err_t result = preparing ? disable_result : output_result;
         if (result != ESP_OK) return result;
         status_mode = configuration->mode;
         return ESP_OK;
@@ -86,7 +93,7 @@ esp_err_t gpio_config(const gpio_config_t *configuration)
 }
 esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level)
 {
-    assert(pin == GPIO_NUM_48 && level == 1 && paused);
+    assert(pin == expected_status_gpio && level == 1 && paused);
     if (level_result != ESP_OK) return level_result;
     status_level = level;
     return ESP_OK;
@@ -98,13 +105,13 @@ esp_err_t rtc_gpio_pullup_en(gpio_num_t pin) { assert(pin == GPIO_NUM_0); hardwa
 esp_err_t rtc_gpio_pulldown_dis(gpio_num_t pin) { assert(pin == GPIO_NUM_0); hardware_calls++; return ESP_OK; }
 esp_err_t gpio_hold_en(gpio_num_t pin)
 {
-    assert(pin == GPIO_NUM_48 && paused && status_mode == GPIO_MODE_DISABLE);
+    assert(pin == expected_status_gpio && paused && status_mode == expected_sleep_mode && status_level == 1);
     if (hold_result == ESP_OK) held = true;
     return hold_result;
 }
 esp_err_t gpio_hold_dis(gpio_num_t pin)
 {
-    assert(pin == GPIO_NUM_48 && !deep_hold && status_level == 1);
+    assert(pin == expected_status_gpio && !deep_hold && status_level == 1);
     assert(output_result != ESP_OK || status_mode == GPIO_MODE_OUTPUT);
     hold_release_calls++;
     if (hold_release_result == ESP_OK) held = false;
@@ -112,7 +119,13 @@ esp_err_t gpio_hold_dis(gpio_num_t pin)
 }
 void gpio_deep_sleep_hold_en(void) { assert(held); deep_hold = true; }
 void gpio_deep_sleep_hold_dis(void) { deep_hold = false; }
-esp_err_t board_status_pause(bool value) { paused = value; if (!value) unpause_calls++; return value ? pause_result : unpause_result; }
+esp_err_t board_status_pause(bool value)
+{
+    paused = value;
+    if (value) sleep_configuration_attempted = false;
+    else unpause_calls++;
+    return value ? pause_result : unpause_result;
+}
 esp_err_t esp_sleep_disable_wakeup_source(int source) { assert(source == ESP_SLEEP_WAKEUP_ALL); wake_enabled = false; return ESP_OK; }
 esp_err_t esp_sleep_enable_ext1_wakeup_io(uint64_t pins, int level)
 {
@@ -123,7 +136,7 @@ esp_err_t esp_sleep_enable_ext1_wakeup_io(uint64_t pins, int level)
 esp_err_t esp_sleep_disable_ext1_wakeup_io(uint64_t pins) { assert(pins == 1); wake_enabled = false; return ESP_OK; }
 esp_err_t esp_deep_sleep_try_to_start(void)
 {
-    assert(wake_enabled && paused && held && deep_hold && released && status_mode == GPIO_MODE_DISABLE);
+    assert(wake_enabled && paused && held && deep_hold && released && status_mode == expected_sleep_mode && status_level == 1);
 #ifdef BOARD_POWER_TEST_SDK_SLEEP
     assert(!rtc_mux && !rtc_hold);
     s_config.ext1_rtc_gpio_mask = 1;
@@ -156,7 +169,7 @@ esp_err_t nvs_set_u32(nvs_handle_t handle, const char *key, uint32_t value)
 esp_err_t nvs_commit(nvs_handle_t handle) { assert(handle == 1); commits++; return commit_result; }
 void nvs_close(nvs_handle_t handle) { assert(handle == 1); }
 
-#if CONFIG_BOARD_POWER_MANAGEMENT && CONFIG_BOARD_XINLUCITY_ESP32S3_NANO && CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_BOARD_POWER_MANAGEMENT && (CONFIG_BOARD_XINLUCITY_ESP32S3_NANO || CONFIG_BOARD_SEEED_XIAO_ESP32S3) && CONFIG_IDF_TARGET_ESP32S3
 static void check_sleep_failure(unsigned failure)
 {
     pause_result = unpause_result = disable_result = output_result = level_result = hold_result = hold_release_result = ESP_OK;
@@ -196,17 +209,17 @@ static void check_sleep_failure(unsigned failure)
 int main(void)
 {
     uint32_t timeout = 99;
-#if CONFIG_BOARD_POWER_MANAGEMENT && CONFIG_BOARD_XINLUCITY_ESP32S3_NANO && CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_BOARD_POWER_MANAGEMENT && (CONFIG_BOARD_XINLUCITY_ESP32S3_NANO || CONFIG_BOARD_SEEED_XIAO_ESP32S3) && CONFIG_IDF_TARGET_ESP32S3
     assert(board_power_supported());
     assert(!board_power_wake_released());
     assert(board_power_init() == ESP_OK && board_power_wake_released());
     open_result = ESP_ERR_NVS_NOT_FOUND;
-    assert(board_power_load_timeout(&timeout) == ESP_OK && timeout == 30);
+    assert(board_power_load_timeout(&timeout) == ESP_OK && timeout == 0);
     open_result = ESP_FAIL;
     assert(board_power_load_timeout(&timeout) == ESP_FAIL);
     open_result = ESP_OK;
     get_result = ESP_ERR_NVS_NOT_FOUND;
-    assert(board_power_load_timeout(&timeout) == ESP_OK && timeout == 30);
+    assert(board_power_load_timeout(&timeout) == ESP_OK && timeout == 0);
     get_result = ESP_FAIL;
     assert(board_power_load_timeout(&timeout) == ESP_FAIL);
     get_result = ESP_OK;
@@ -258,7 +271,7 @@ int main(void)
 #ifdef BOARD_POWER_TEST_SDK_SLEEP
     puts("PASS: actual SDK EXT1 preparation selects RTC mux/input/hold and abort restores digital BOOT");
 #endif
-    puts("PASS: board sleep wake, high-impedance G48 hold, output restoration, cleanup failures and NVS");
+    puts("PASS: board-specific LED sleep hold, BOOT wake, defaults, output restoration, cleanup failures and NVS");
 #else
     assert(!board_power_supported() && !board_power_wake_released());
     assert(board_power_init() == ESP_ERR_NOT_SUPPORTED);

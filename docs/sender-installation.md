@@ -118,6 +118,26 @@ Both SubjectPublicKeyInfo (`BEGIN PUBLIC KEY`) and PKCS#1 (`BEGIN RSA PUBLIC KEY
 PEM encodings of the same RSA-3072 public key are accepted. Private-key PEMs are
 rejected by the installer; do not supply or distribute the signing private key.
 
+### Keeping One Signing Key Across Boards
+
+The default local XIAO and XinluCity builds both use the same ignored
+`.cache/ota-test-signing-key.pem`. Preserve that file and keep a protected backup
+outside the repository and any disposable build/cache directory. Do not commit,
+paste, or publish the private key. Public keys and manifest public-key
+fingerprints can be compared safely; a public key cannot sign an update.
+
+Across build machines, use the same retained private signing key through
+`CONFIG_SECURE_BOOT_SIGNING_KEY`, rather than generating an independent key
+on each machine. Board/layout validation remains separate from signature trust:
+sharing a key does not make a XIAO image compatible with XinluCity.
+
+If the original private key is lost, a higher version signed with a different
+key will still be rejected by OTA. This installer's explicitly approved wired
+`--reset-layout` workflow can establish the shared key as a new baseline, but
+it erases the whole flash and provisions new ownership and Wi-Fi credentials.
+It is not a settings-preserving key migration. Retain the new private output
+and setup card, and keep using the new baseline key for subsequent OTA builds.
+
 ## One Initial Installation Command
 
 Only after completing the prerequisites, substitute your verified values:
@@ -215,9 +235,12 @@ not activate an image; a lost response is resolved through status, not by
 automatically repeating activation. Wi-Fi settings and ownership survive OTA
 and rollback. Do not use an install ZIP or a merged BIN as an OTA image.
 
-The default version is `0.1.0`. A subsequent build needs a higher numeric version,
-for example `idf.py -D PROJECT_VER=0.1.1 build`, with the same board/layout and
-signing key. Same-version and older OTA uploads are rejected. Full wired
+The default version is `0.1.1`. A subsequent build needs a numeric version
+higher than the version actually running on the device, for example
+`idf.py -D PROJECT_VER=0.1.2 build` when updating `0.1.1`, with the same
+board/layout and signing key. If the installed version is already `0.2.0`,
+build `0.2.1` or later instead; changing a version does not repair a signing-key
+mismatch. Same-version and older OTA uploads are rejected. Full wired
 replacement remains available for each normal build, with reset/reprovisioning.
 
 After successful installation, verify that the intended board boots, its private

@@ -74,7 +74,8 @@ const suites = {
 };
 const compilerArguments = suite => [...prefix, ...flags, ...suite.includes.map(path => `-I${path}`),
   ...(suite.flags ?? [])];
-for (const name of ["update_policy", "update_service", "board_disabled", "board_power_disabled"]) {
+for (const name of ["update_policy", "update_service", "board_driver", "board_unsupported",
+  "board_power", "board_power_disabled", "board_power_unsupported", "board_power_policy", "power_control"]) {
   suites[`${name}_xiao`] = { ...suites[name],
     flags: [...(suites[name].flags ?? []).filter(flag => !flag.includes("CONFIG_BOARD_XINLUCITY_ESP32S3_NANO")),
       "-DCONFIG_BOARD_SEEED_XIAO_ESP32S3=1"] };
@@ -186,6 +187,6 @@ console.log(`PASS: ${selected.length} native suite(s) executed${process.platform
 if (skippedSdkBootloader) {
   console.warn("SKIP: SDK erased-otadata first-boot and running-image trust-key checks (IDF_PATH unset). Run from an activated ESP-IDF terminal for this coverage.");
 }
-if (selected.includes("board_power") && !process.env.IDF_PATH) {
+if (selected.some(name => name === "board_power" || name === "board_power_xiao") && !process.env.IDF_PATH) {
   console.warn("SKIP: SDK EXT1 RTC mux/input/hold preparation (IDF_PATH unset). Run from an activated ESP-IDF terminal for this coverage.");
 }

@@ -10,7 +10,7 @@ const profiles = JSON.parse(await readFile(new URL("./firmware-profiles.json", i
 const previewBoard = process.env.PREVIEW_BOARD_PROFILE ?? "esp32s3-generic-16m";
 const previewProfile = profiles[previewBoard];
 if (!previewProfile) throw new Error(`Unsupported preview board profile: ${previewBoard}`);
-const boardPower = previewBoard !== "seeed-xiao-esp32s3-8m" && process.env.PREVIEW_BOARD_POWER !== "0";
+const boardPower = process.env.PREVIEW_BOARD_POWER !== "0";
 const usbReady = process.env.PREVIEW_USB_READY !== "0";
 const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 256 });
 let capsLock = process.env.PREVIEW_CAPS_LOCK === "unknown" ? null : process.env.PREVIEW_CAPS_LOCK === "1";
@@ -27,7 +27,7 @@ let pendingControl = null;
 let loginWindow = 0;
 let loginAttempts = 0;
 const power = { supported: boardPower, available: boardPower,
-  preparing: false, idle_minutes: 30, error: "" };
+  preparing: false, idle_minutes: 0, error: "" };
 let powerOffset = 0;
 let powerLastActivity = performance.now();
 let powerWasBlocked = false;

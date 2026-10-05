@@ -7,6 +7,12 @@ The first increment is implemented behind an explicit board profile, disabled
 by default. The web UI, stored settings, and firmware packaging are unchanged.
 This document does not authorize flashing or hardware modification.
 
+The 2026-10-05 follow-up extends the driver to the standard XIAO ESP32S3 and
+changes the shared `NOT_READY` pattern from two pulses to OFF, as requested by
+the user. Ready/idle remains one 100 ms pulse per two seconds, and active control
+remains steady ON. Historical software and hardware results below describe the
+earlier patterns unless explicitly identified as follow-up validation.
+
 ## Goal And Scope
 
 Use the board's two LEDs as power indication plus application status. Make it
@@ -50,11 +56,11 @@ from user-reported physical observations and remaining checks.
 Patterns use a two-second cycle and fixed full-on brightness initially.
 The timing below describes visible light, not the inverted GPIO level.
 
-| State | G48 pattern | Meaning |
+| State | Status LED pattern (XinluCity GPIO48 / XIAO GPIO21) | Meaning |
 | --- | --- | --- |
 | `READY_IDLE` | ON for 100 ms, OFF for 1900 ms | Control services and USB are ready; no live controlling browser connection exists. |
 | `CONTROL_ACTIVE` | Steady ON | An authenticated browser has a valid active control connection and USB is ready. |
-| `NOT_READY` | ON 100 ms, OFF 100 ms, ON 100 ms, OFF 1700 ms | A required capability is unavailable, unknown, or blocked. Consult the browser or logs for the reason. |
+| `NOT_READY` | OFF continuously | A required capability is unavailable, unknown, or blocked. Consult the browser or logs for the reason. |
 
 Start a new cycle when the state changes; do not restart it on every status
 refresh. Use monotonic time and skip missed edges after scheduling delays
@@ -65,6 +71,27 @@ service starts, default to `NOT_READY` until readiness has been established.
 An unlit G48 alone is not a fault diagnosis: the pattern may be in its OFF
 phase, the application may not have initialized it, or LED support may be
 disabled for the selected board profile. PWR retains its independent meaning.
+With the updated pattern, OFF also represents not-ready or deep sleep; the LED
+alone deliberately cannot distinguish those conditions.
+
+## XIAO Wiring And Shared Pattern Follow-up
+
+The official [Seeed XIAO ESP32S3 v1.2 schematic](https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/XIAO_ESP32S3_SCH_v1.2.pdf)
+was visually reviewed on 2026-10-05. It shows
+`VCC_3V3 -> R15 (1.5 kOhm) -> D3 (yellow) -> IO21/USER_LED`.
+The user LED is a discrete active-low LED, not an addressable RGB device.
+The separate charge indicator is connected to the battery charger and remains
+outside firmware control. The schematic is vendor evidence, not identification
+of the user's exact PCB revision or an on-board polarity measurement.
+
+One shared status selector and pattern renderer serves both boards. The
+board hardware definitions select GPIO21 for XIAO or GPIO48 for XinluCity;
+neither board gets a duplicate `board_status_logic.c`. Disabled and unsupported
+profiles leave GPIOs and the rendering task untouched. Invalid, future-dated,
+or stale snapshots still select `NOT_READY` and now force the LED OFF, including
+an immediate OFF edge after a previously active controller loses readiness.
+The driver's initialization, pause, and error handling use the selected pin
+and preserve active-low HIGH/off behavior.
 
 ## State Selection
 
@@ -196,10 +223,22 @@ and endurance remain pending. The later size-optimized image was not flashed.
 ## Software Implementation Record
 
 The [board profile choice](../components/board/Kconfig) defaults to disabled.
-Only `CONFIG_BOARD_XINLUCITY_ESP32S3_NANO=y` on ESP32-S3 enables G48. The
+`CONFIG_BOARD_XINLUCITY_ESP32S3_NANO=y` on ESP32-S3 enables G48;
+`CONFIG_BOARD_SEEED_XIAO_ESP32S3=y` enables the GPIO21 user LED. The
 [explicit overlay](../sdkconfig.board-xinlucity) selects that circuit without
 changing flash size, PSRAM, partitions, or any other pin. Generic CI artifacts
 remain LED-disabled; CI separately compiles the selected-board profile.
+
+The 2026-10-05 follow-up passed 18 targeted native suites with ASan/UBSan,
+including both production GPIO drivers, exhaustive not-ready OFF samples,
+idle pulse boundaries, stale/invalid snapshots, initialization failures,
+both sleep-hold modes, and cleanup failures. XIAO, XinluCity, and generic
+ESP-IDF v6.1 builds and signed packaging passed. This is software evidence.
+The user subsequently reported that the XIAO LED works as expected after the
+follow-up build was provided, but no installed version/source or image identity
+was recorded. The hardware record retains that preliminary observation while
+keeping revision-matched acceptance of the new patterns pending. Earlier
+typing/antenna smoke tests ran before GPIO21 support and cannot validate it.
 
 The renderer starts before USB/network startup and remains `NOT_READY` until
 successful service startup and current readiness are published. Its GPIO latch

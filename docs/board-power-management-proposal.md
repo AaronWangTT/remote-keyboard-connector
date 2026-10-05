@@ -8,6 +8,10 @@ and subsequently authorized software implementation. The implementation record
 below distinguishes software checks from pending physical acceptance. Flashing,
 hardware modification, and physical power measurements require separate approval.
 
+The 2026-10-05 follow-up extends support to XIAO and changes both boards' fresh
+settings to **Never**. The feature and settings remain available so the owner
+can opt into 30 or 60 minutes. Existing saved choices remain unchanged.
+
 ## Goal And Recommended Direction
 
 Allow the board to remain plugged in without keeping Wi-Fi and the USB keyboard
@@ -19,8 +23,8 @@ Continuous browser reachability is therefore not a requirement while asleep.
 
 The recommended baseline is:
 
-- Automatic deep sleep after **30 minutes** without meaningful activity.
-- Proposed timeout choices: **30 minutes / 60 minutes / Never**, with 30 minutes
+- Opt-in automatic deep sleep after **30 or 60 minutes** without meaningful activity.
+- Timeout choices: **30 minutes / 60 minutes / Never**, with Never
   as the default. The setting should survive ordinary restart and sleep/wake.
 - Press BOOT to wake; retain RST as the hardware restart/recovery control.
 - Stop Wi-Fi, deliberately disconnect USB HID, and turn the controllable G48
@@ -223,7 +227,7 @@ checks. Physical acceptance remains pending and requires separate approval.
 
 ### Software Checks
 
-- Test the 30-minute default, 60-minute option, `Never`, exact timeout boundaries,
+- Test the Never default, 30/60-minute opt-in, exact timeout boundaries,
   monotonic accounting, and fresh intervals after wake and maintenance.
 - Test meaningful activity versus heartbeats/polls, abandoned controller leases,
   held input and safety expiry, and all management/OTA sleep blockers.
@@ -260,10 +264,11 @@ timeout test would not complete the physical acceptance gate.
 
 ## Implementation Record
 
-The [board controls](../components/board/Kconfig) gate this feature on
-`CONFIG_BOARD_XINLUCITY_ESP32S3_NANO` and ESP32-S3. The new
-`CONFIG_BOARD_POWER_MANAGEMENT` defaults to enabled only for that selected
-profile and can be disabled at build time. Generic profiles leave BOOT/GPIO0
+The [board controls](../components/board/Kconfig) gate this feature on the
+explicit XinluCity or standard XIAO profile and ESP32-S3.
+`CONFIG_BOARD_POWER_MANAGEMENT` defaults to enabled for those selected
+profiles and can be disabled at build time. Its availability does not opt the
+owner into a timeout: missing saved settings select Never. Generic profiles leave BOOT/GPIO0
 untouched, report power management unsupported, and hide the settings control.
 Existing configurations should be checked explicitly; CI uses a fresh selected
 profile and asserts that power management is enabled before accepting its build.
@@ -271,8 +276,9 @@ profile and asserts that power management is enabled before accepting its build.
 ### Policy And Storage
 
 The [idle policy](../components/board/board_power_policy.c) uses monotonic time,
-with 30 minutes as the default, 60 minutes as the alternative, and zero for
-Never. Completed blocking work starts a fresh interval. Automatic Wi-Fi retries
+with zero/Never as the default on both boards. Both boards
+accept 30 minutes, 60 minutes, or Never. Completed blocking work starts a fresh
+interval. Automatic Wi-Fi retries
 do not count as user activity; unavailable networking delays admission without
 continually restarting the activity clock.
 
@@ -315,6 +321,15 @@ pulls disabled, before enabling pad and deep-sleep hold. This replaces retaining
 a driven HIGH output, which left the LED lit in the user's PC and iPad sleep
 tests. The new state is a candidate correction; its optical/electrical result
 still needs physical verification. No pad-supply or flash/PSRAM setting changes.
+
+The standard XIAO instead holds GPIO21 as a driven HIGH output with input and
+both pulls disabled. The [official v1.2 schematic](https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/XIAO_ESP32S3_SCH_v1.2.pdf)
+shows its 3V3-fed, active-low user LED and GPIO0 BOOT pull-down button with a
+10 kOhm pull-up. Shared board definitions choose each status pin and sleep mode;
+the XinluCity-specific GPIO48 high-impedance correction is not applied to XIAO.
+Both boards keep GPIO0 as the only wake source and retain the same rejected-entry
+cleanup order. XIAO sleep current, LED darkness, BOOT wake, reset/download
+recovery, and host USB re-enumeration are pending hardware checks.
 
 If sleep is rejected, the driver restores the HIGH output latch and output
 configuration before releasing pad hold, then resumes status rendering. Every
@@ -362,6 +377,21 @@ reading settings without replaying the mutation. No shutdown key, automatic
 re-arming, or host HID power command is added.
 
 ### Software Validation
+
+The 2026-10-05 follow-up passed 18 targeted native suites with ASan/UBSan and
+16 focused power/network/browser tests, including Chromium/WebKit settings.
+Both board drivers were checked for missing-record Never defaults, saved
+30/60/Never choices, held BOOT admission, SDK EXT1 preparation, sleep holds,
+and rejected-entry restoration. The coordinator tests check that default
+Never does not sleep and that opt-in choices persist; preview tests check
+both board profiles and settings across simulated wake.
+
+XIAO, XinluCity, and generic ESP-IDF v6.1 builds passed at version `0.1.1`.
+Offline signed-artifact checks passed, and the XIAO build retains the same
+signing key, 8 MiB partition layout, and compatibility fields as the earlier
+`0.1.0` build. Its signed application remains 1,052,672 bytes (74% free per
+3.875 MiB slot). No board was reset or flashed; physical sleep darkness,
+current, BOOT wake, USB reconnection, and OTA acceptance remain pending.
 
 Local validation on 2026-09-18:
 

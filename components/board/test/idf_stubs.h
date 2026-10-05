@@ -6,6 +6,9 @@
 #ifndef CONFIG_BOARD_XINLUCITY_ESP32S3_NANO
 #define CONFIG_BOARD_XINLUCITY_ESP32S3_NANO 0
 #endif
+#ifndef CONFIG_BOARD_SEEED_XIAO_ESP32S3
+#define CONFIG_BOARD_SEEED_XIAO_ESP32S3 0
+#endif
 #ifndef CONFIG_IDF_TARGET_ESP32S3
 #define CONFIG_IDF_TARGET_ESP32S3 0
 #endif
@@ -39,6 +42,7 @@ void test_log(const char *tag, const char *format, ...);
 
 typedef int gpio_num_t;
 #define GPIO_NUM_48 48
+#define GPIO_NUM_21 21
 #define GPIO_NUM_0 0
 #define GPIO_MODE_DISABLE 0
 #define GPIO_MODE_INPUT 2

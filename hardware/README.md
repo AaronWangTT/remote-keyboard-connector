@@ -8,16 +8,36 @@ lists 8 MiB flash and 8 MiB PSRAM for the standard board. The firmware does not
 require or enable PSRAM. The profile uses native ESP32-S3 USB HID, two 3.875 MiB
 OTA slots, and the initial mDNS name `x.local`. Owner renames remain persistent.
 
-Status LED and automatic sleep are not enabled on this profile. No GPIO21,
-GPIO48, or BOOT controls are configured by the board component. Confirm the
-physical revision, flash capacity/mode, antenna attachment, and BOOT/RESET
-recovery before installation. GPIO19/GPIO20 remain reserved for native USB.
+The LED/sleep follow-up controls the active-low yellow GPIO21 user LED and
+supports GPIO0 BOOT wake. Fresh XIAO sleep settings default to Never; owners
+can save 30 or 60 minutes. The user LED pulses for 100 ms every two seconds
+when ready/idle, stays ON for active control, and stays OFF when not ready.
+During deep sleep, GPIO21 is held HIGH/off; actual sleep darkness and wake
+behavior still require on-board acceptance. GPIO48 and the battery-charge
+indicator remain untouched. GPIO19/GPIO20 remain reserved for native USB.
 
-The user connected a XIAO to the PC, but it was not enumerated inside the
-Linux/WSL development environment during review. No chip identification,
-reset, flash, erase, or eFuse operation has been performed. Software builds
-and offline artifact checks do not establish hardware acceptance. USB HID,
-networking, recovery, and OTA must be tested separately on this board.
+The official [v1.2 schematic](https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/XIAO_ESP32S3_SCH_v1.2.pdf)
+was reviewed on 2026-10-05: `VCC_3V3 -> R15 (1.5 kOhm) -> D3 (yellow) ->
+IO21/USER_LED`, BOOT pulls GPIO0 to ground with a 10 kOhm external pull-up,
+and RESET controls EN. The exact physical revision remains unconfirmed.
+Use the supplied external antenna; successful communication without one does
+not establish a reliable Wi-Fi link.
+
+The XIAO was initially absent from the Linux/WSL development environment.
+After USB passthrough, read-only enumeration showed an Espressif USB
+JTAG/serial debug unit (`303a:1001`) at `/dev/ttyACM0`. The assistant refreshed
+and verified the installation bundle offline but did not reset or flash the
+board; first-install instructions were provided for user execution.
+
+### XIAO Hardware Test Status
+
+| Date | Check | Result and evidence |
+| --- | --- | --- |
+| 2026-10-05 | Basic connection and USB typing after first-install guidance | Passed, user reported: "connected and typing is fine." This confirms a basic end-to-end hardware smoke test, not the full acceptance matrix. The exact installed-image hash, host/controller OS, and connection address were not independently confirmed. |
+| 2026-10-05 | Page-loading improvement with supplied antenna | Passed, user reported immediate page loading after attaching the antenna. Before attachment, WSL measurements showed approximately 2.4 seconds for a 39 KB script even over the direct IP. No post-attachment instrumented timings or RF measurements were supplied. |
+| 2026-10-05 | Physical `x.local` resolution, BOOT/RESET recovery, OTA/rollback, key/modifier and release behavior, USB suspend/resume, and endurance | Pending separate checks. Successful connection and typing alone do not establish these results. |
+| 2026-10-05 | New GPIO21 status patterns | Pending revision-matched physical acceptance. After the LED/sleep build was provided, the user reported: "Xiao's LED is working as expected." This preliminary observation is retained, but the device's installed version/source and image identity were not recorded. It does not establish that a board running this PR revision passed the new patterns, nor instrumented timing/polarity acceptance. |
+| 2026-10-05 | Dark sleep, BOOT wake, and persisted opt-in idle timeout | Pending. The LED confirmation does not establish sleep/wake acceptance; the assistant has not flashed or reset the board. |
 
 Software validation on 2026-10-05 passed XIAO, generic, and XinluCity ESP-IDF
 v6.1 builds and offline signed-artifact verification. The XIAO application is
@@ -29,6 +49,12 @@ CI workflow YAML and its embedded profile-check Python were syntax-validated;
 the updated GitHub workflow itself has not been run remotely.
 
 ## XinluCity ESP32S3 NANO
+
+The LED/sleep follow-up also changes fresh XinluCity timeout settings to Never,
+matching XIAO; owners can still save 30 or 60 minutes. Existing saved settings
+remain unchanged. Both boards share the updated not-ready OFF pattern. The
+historical results below describe previously installed firmware, not physical
+acceptance of this follow-up.
 
 The user-supplied XinluCity resources identify the intended board as ESP32S3
 NANO / ESP32-S3-N16R8. The vendor schematic was reviewed on 2026-09-15; exact

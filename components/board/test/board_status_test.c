@@ -33,12 +33,11 @@ static void test_patterns(void)
 {
     const uint64_t phases[] = {0, 99, 100, 199, 200, 299, 300, 1999, 2000, 2099, 2100, 2200, 2300};
     const bool idle[] = {true, true, false, false, false, false, false, false, true, true, false, false, false};
-    const bool blocked[] = {true, true, false, false, true, true, false, false, true, true, false, true, false};
     for (board_status_t state = BOARD_STATUS_NOT_READY; state <= BOARD_STATUS_CONTROL_ACTIVE; state++) {
         board_status_pattern_t pattern = {0};
         for (size_t index = 0; index < sizeof(phases) / sizeof(phases[0]); index++) {
             bool expected = state == BOARD_STATUS_CONTROL_ACTIVE ||
-                            (state == BOARD_STATUS_READY_IDLE ? idle[index] : blocked[index]);
+                            (state == BOARD_STATUS_READY_IDLE && idle[index]);
             assert(board_status_pattern_on(&pattern, state, 1000 + phases[index]) == expected);
             assert(pattern.cycle_started_ms == 1000);
         }
@@ -46,11 +45,11 @@ static void test_patterns(void)
     board_status_pattern_t pattern = {0};
     assert(board_status_pattern_on(&pattern, BOARD_STATUS_READY_IDLE, 1000));
     assert(!board_status_pattern_on(&pattern, BOARD_STATUS_READY_IDLE, 1900));
-    assert(board_status_pattern_on(&pattern, BOARD_STATUS_NOT_READY, 1900));
+    assert(!board_status_pattern_on(&pattern, BOARD_STATUS_NOT_READY, 1900));
     assert(!board_status_pattern_on(&pattern, BOARD_STATUS_NOT_READY, 2000));
-    assert(board_status_pattern_on(&pattern, BOARD_STATUS_NOT_READY, 2100));
+    assert(!board_status_pattern_on(&pattern, BOARD_STATUS_NOT_READY, 2100));
     assert(!board_status_pattern_on(&pattern, BOARD_STATUS_NOT_READY, 2200));
-    assert(board_status_pattern_on(&pattern, BOARD_STATUS_NOT_READY, 1003900));
+    assert(!board_status_pattern_on(&pattern, BOARD_STATUS_NOT_READY, 1003900));
     assert(!board_status_pattern_on(&pattern, BOARD_STATUS_NOT_READY, 1004200));
     assert(pattern.cycle_started_ms == 1900);
     assert(board_status_pattern_on(&pattern, BOARD_STATUS_CONTROL_ACTIVE, 1004200));
@@ -58,10 +57,13 @@ static void test_patterns(void)
     assert(board_status_pattern_on(&pattern, BOARD_STATUS_READY_IDLE, 1004300));
     assert(!board_status_pattern_on(&pattern, BOARD_STATUS_READY_IDLE, 1004400));
     assert(board_status_pattern_on(&pattern, BOARD_STATUS_READY_IDLE, 0));
-    assert(board_status_pattern_on(&pattern, (board_status_t)99, 1));
+    assert(!board_status_pattern_on(&pattern, (board_status_t)99, 1));
     assert(pattern.state == BOARD_STATUS_NOT_READY);
     assert(board_status_active_low_level(true) == 0);
     assert(board_status_active_low_level(false) == 1);
+    for (uint64_t now_ms = 0; now_ms <= 6000; now_ms++) {
+        assert(!board_status_pattern_on(&pattern, BOARD_STATUS_NOT_READY, now_ms));
+    }
 }
 
 int main(void)

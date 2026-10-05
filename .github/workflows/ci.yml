@@ -82,7 +82,7 @@ jobs:
           assert config["ESPTOOLPY_FLASHSIZE"] == "8MB"
           assert config["PARTITION_TABLE_CUSTOM_FILENAME"] == "partitions.xiao-esp32s3.csv"
           assert config["NETWORK_DEFAULT_HOSTNAME"] == "x"
-          assert not config.get("BOARD_POWER_MANAGEMENT")
+          assert config["BOARD_POWER_MANAGEMENT"] is True
           assert not config.get("BOARD_XINLUCITY_ESP32S3_NANO")
           manifest = json.loads((build / "firmware-manifest.json").read_text())
           assert manifest["flashBytes"] == 0x800000
