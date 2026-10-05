@@ -26,7 +26,7 @@ Set up Ubuntu 24.04 x86_64 (including WSL) for ESP32-S3 development.
 Default: firmware tools, native-test tools, Node.js, and Playwright browsers.
 
   --firmware-only  Skip Node.js, npm dependencies, and host/browser tests
-  --check          Check existing tools without installing or writing files
+  --check          Check tools without installing packages or writing setup files
   --skip-system    Do not install apt packages or browser system libraries
   --verify         Build in .cache/setup-build and run applicable test suites
   --with-vscode    Install ESP-IDF and C/C++ extensions using the code CLI
@@ -34,6 +34,7 @@ Default: firmware tools, native-test tools, Node.js, and Playwright browsers.
 
 System packages may prompt for your sudo password. Do not run this script as root.
 No SDK is deleted, shell startup file edited, board flashed, or USB forwarded.
+Checks may update EIM's selection and create temporary browser runtime files.
 EOF
 }
 
@@ -81,20 +82,25 @@ if ((${#missing[@]})); then
 fi
 
 # Prefer the EIM registration to avoid creating a second SDK after VS Code setup.
-sdk=$(python3 - "$HOME/.espressif/tools/eim_idf.json" <<'PY'
+sdk=$(python3 - "$HOME/.espressif/tools/eim_idf.json" "$IDF_COMMIT" <<'PY'
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 registry = Path(sys.argv[1])
 if registry.exists():
     data = json.loads(registry.read_text())
     candidates = [item for item in data["idfInstalled"]
-                  if item["name"] == "v6.1" and item.get("status") == "finished"]
+                  if item.get("status") == "finished"]
     candidates.sort(key=lambda item: item["id"] != data.get("idfSelectedId"))
-    if candidates:
-        print(candidates[0]["path"])
-        print(candidates[0]["activationScript"])
+    for item in candidates:
+        commit = subprocess.check_output(
+            ["git", "-C", item["path"], "rev-parse", "HEAD"], text=True).strip()
+        if commit == sys.argv[2]:
+            print(item["path"])
+            print(item["activationScript"])
+            break
 PY
 )
 activation=
@@ -216,7 +222,33 @@ mkdir -p .cache
     if [[ $activation == "$sdk/export.sh" ]]; then
         printf 'export IDF_TOOLS_PATH=%q\nunset IDF_PYTHON_ENV_PATH\n' "$HOME/.espressif"
     fi
-    printf '. %q\n' "$activation"
+    cat <<'EOF'
+_remote_keyboard_activate() {
+    local restore_nounset=false activation_status=0
+    case $- in
+        *u*) restore_nounset=true ;;
+    esac
+    set +u
+EOF
+    printf '    if . %q; then\n' "$activation"
+    cat <<'EOF'
+        activation_status=0
+    else
+        activation_status=$?
+    fi
+    if "$restore_nounset"; then
+        set -u
+    else
+        set +u
+    fi
+    if ((activation_status != 0)); then
+        printf 'ESP-IDF activation failed (exit %s).\n' "$activation_status" >&2
+    fi
+    unset -f _remote_keyboard_activate
+    return "$activation_status"
+}
+_remote_keyboard_activate
+EOF
 } > .cache/development-env.sh
 
 if $verify; then

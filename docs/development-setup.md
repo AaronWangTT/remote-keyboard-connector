@@ -44,8 +44,10 @@ Chromium/WebKit with their system libraries. Node's Linux archive is checked
 against its pinned SHA-256. System package versions follow Ubuntu repositories;
 compiler/Python packages follow the pinned ESP-IDF release.
 
-If EIM already registered a completed v6.1 installation, setup uses its
-activation script and verifies its SDK commit. Otherwise it reuses the known
+If EIM already registered a completed installation at the pinned v6.1 SDK
+commit, setup uses its activation script regardless of its display name,
+preferring the currently selected installation among matching checkouts.
+Otherwise it reuses the known
 EIM or `~/esp/esp-idf-v6.1` location, or installs the official SDK using
 `install.sh esp32s3` at the latter location. An incomplete, incompatible, or
 malformed installation fails explicitly rather than silently installing a second
@@ -63,7 +65,8 @@ activation script, not the SDK's generic `export.sh`.
 # Firmware build tools only; no Node, host compiler, or browser installation.
 bash tools/setup-dev.sh --firmware-only
 
-# Read-only tool and browser smoke checks; optionally check VS Code extensions.
+# Check tools without installing packages or writing setup files.
+# EIM selection and temporary browser runtime files may still change.
 bash tools/setup-dev.sh --check --with-vscode
 
 # Reuse installed system packages without sudo or apt changes.
@@ -89,6 +92,9 @@ Setup writes ignored `.cache/development-env.sh`; source it from the project roo
 in each new Bash terminal. It selects the correct SDK/Python environment and,
 for full setup, prepends the pinned Linux Node installation to PATH. Shell
 startup files and existing `get_idf` aliases are not changed.
+The generated activation script temporarily disables Bash's `nounset` option
+while sourcing ESP-IDF, then restores the caller's original setting, including
+when activation returns an error.
 
 ### Existing Build Directories
 

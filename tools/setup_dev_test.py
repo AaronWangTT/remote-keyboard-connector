@@ -1,5 +1,6 @@
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,12 +17,51 @@ class SetupDevTest(unittest.TestCase):
         return subprocess.run(["bash", str(SCRIPT), *arguments],
                               capture_output=True, text=True, env=env, check=False)
 
+    @contextmanager
+    def eim_fixture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            binary = home / "bin"
+            binary.mkdir()
+            scripts = {
+                "dpkg-query": "echo 'install ok installed'",
+                "git": '[ "$1" = -C ] || { echo UNEXPECTED_CLONE >&2; exit 99; }\ncat "$2/commit"',
+                "idf.py": "echo 'ESP-IDF v6.1'",
+                "cmake": "echo 'cmake test'",
+                "ninja": "echo 'ninja test'",
+                "xtensa-esp-elf-gcc": "echo 'gcc test'",
+                "python": "echo 'Python signing dependencies: OK'",
+                "sudo": "echo UNEXPECTED_SUDO >&2; exit 99",
+            }
+            for name, body in scripts.items():
+                path = binary / name
+                path.write_text(f"#!/bin/sh\n{body}\n")
+                path.chmod(0o755)
+            tools = home / "project" / "tools"
+            tools.mkdir(parents=True)
+            script = tools / "setup-dev.sh"
+            shutil.copyfile(SCRIPT, script)
+            registry = home / ".espressif" / "tools" / "eim_idf.json"
+            registry.parent.mkdir(parents=True)
+            sdk = home / "custom sdk"
+            sdk.mkdir()
+            (sdk / "commit").write_text("fff9895c82d744c7237be8847347bdd1b07c6643\n")
+            activation = sdk / "activate.sh"
+            activation.write_text(f'optional_argument="$1"\nexport IDF_PATH="{sdk}"\n')
+            entry = {"id": "custom", "name": "My renamed SDK", "status": "finished",
+                     "path": str(sdk), "activationScript": str(activation)}
+            registry.write_text(json.dumps({"idfSelectedId": "custom", "idfInstalled": [entry]}))
+            env = {**os.environ, "HOME": str(home), "PATH": f"{binary}:/usr/bin:/bin"}
+            yield home, script, registry, entry, env
+
     def test_help_has_no_installation_side_effects(self):
         with tempfile.TemporaryDirectory() as home:
             result = self.run_setup("--help", env={**os.environ, "HOME": home})
             self.assertEqual(result.returncode, 0, result.stderr)
             for option in ("--firmware-only", "--check", "--skip-system", "--verify", "--with-vscode"):
                 self.assertIn(option, result.stdout)
+            self.assertNotIn("without installing or writing files", result.stdout)
+            self.assertIn("temporary browser runtime files", result.stdout)
             self.assertEqual(list(Path(home).iterdir()), [])
 
     def test_unknown_option_fails_explicitly(self):
@@ -96,6 +136,7 @@ class SetupDevTest(unittest.TestCase):
                 path.chmod(0o755)
             sdk = home / ".espressif" / "v6.1" / "esp-idf"
             sdk.mkdir(parents=True)
+            (sdk / "export.sh").touch()
             tools = home / ".espressif" / "tools"
             tools.mkdir()
             activation = tools / "activate_idf_v6.1.sh"
@@ -171,6 +212,81 @@ class SetupDevTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Downloaded SDK does not match", result.stderr)
             self.assertFalse((home / "UNEXPECTED_INSTALL").exists())
+
+    @unittest.skipIf(os.geteuid() == 0, "Installer intentionally rejects root")
+    def test_check_reuses_custom_named_eim_installation(self):
+        with self.eim_fixture() as (home, script, _, entry, env):
+            result = subprocess.run(
+                ["bash", str(script), "--check", "--firmware-only"], env=env,
+                capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f'Using ESP-IDF: {entry["path"]}', result.stdout)
+            self.assertFalse((home / "esp").exists())
+            self.assertFalse((script.parents[1] / ".cache").exists())
+
+    @unittest.skipIf(os.geteuid() == 0, "Installer intentionally rejects root")
+    def test_eim_selection_prefers_matching_selected_commit(self):
+        with self.eim_fixture() as (home, script, registry, entry, env):
+            other = home / "other sdk"
+            other.mkdir()
+            commit = other / "commit"
+            commit.write_text((Path(entry["path"]) / "commit").read_text())
+            activation = other / "activate.sh"
+            activation.write_text(f'export IDF_PATH="{other}"\n')
+            selected = {**entry, "id": "selected", "name": "ESP-IDF legacy display name",
+                        "path": str(other), "activationScript": str(activation)}
+            scenarios = [
+                ("selected", "finished", "matching", str(other)),
+                ("selected", "finished", "different", entry["path"]),
+                ("custom", "finished", "matching", entry["path"]),
+                ("selected", "installing", "matching", entry["path"]),
+            ]
+            for selected_id, status, revision, expected in scenarios:
+                with self.subTest(selected=selected_id, status=status, revision=revision):
+                    selected["status"] = status
+                    commit.write_text("different\n" if revision == "different" else
+                                      (Path(entry["path"]) / "commit").read_text())
+                    registry.write_text(json.dumps({
+                        "idfSelectedId": selected_id, "idfInstalled": [entry, selected],
+                    }))
+                    result = subprocess.run(
+                        ["bash", str(script), "--check", "--firmware-only"], env=env,
+                        capture_output=True, text=True, check=False)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(f"Using ESP-IDF: {expected}", result.stdout)
+                    self.assertFalse((home / "esp").exists())
+
+    @unittest.skipIf(os.geteuid() == 0, "Installer intentionally rejects root")
+    def test_generated_activation_preserves_nounset_and_errors(self):
+        with self.eim_fixture() as (_, script, _, entry, env):
+            result = subprocess.run(
+                ["bash", str(script), "--skip-system", "--firmware-only"], env=env,
+                capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            generated = script.parents[1] / ".cache" / "development-env.sh"
+            activation = Path(entry["activationScript"])
+            for fail in (False, True):
+                if fail:
+                    activation.write_text('optional_argument="$1"\nreturn 37\n')
+                for nounset in (False, True):
+                    with self.subTest(fail=fail, nounset=nounset):
+                        command = (
+                            f'set {"-u" if nounset else "+u"}; '
+                            'source "$1"; status=$?; '
+                            'printf "status=%s\\n" "$status"; '
+                            'case $- in *u*) echo nounset=on;; *) echo nounset=off;; esac; '
+                            'if declare -F _remote_keyboard_activate >/dev/null; then exit 99; fi')
+                        sourced = subprocess.run(
+                            ["bash", "-c", command, "bash", str(generated)], env=env,
+                            capture_output=True, text=True, check=False)
+                        self.assertEqual(sourced.returncode, 0, sourced.stderr)
+                        self.assertIn(f'status={37 if fail else 0}', sourced.stdout)
+                        self.assertIn(f'nounset={"on" if nounset else "off"}', sourced.stdout)
+                        self.assertNotIn("unbound variable", sourced.stderr)
+                        if fail:
+                            self.assertIn("ESP-IDF activation failed (exit 37)", sourced.stderr)
+                        else:
+                            self.assertEqual(sourced.stderr, "")
 
 
 if __name__ == "__main__":
