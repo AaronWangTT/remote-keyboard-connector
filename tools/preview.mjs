@@ -6,6 +6,11 @@ import { parseTree } from "jsonc-parser";
 import { WebSocket, WebSocketServer } from "ws";
 import { passwordIterations } from "./provision-device.mjs";
 
+const profiles = JSON.parse(await readFile(new URL("./firmware-profiles.json", import.meta.url), "utf8"));
+const previewBoard = process.env.PREVIEW_BOARD_PROFILE ?? "esp32s3-generic-16m";
+const previewProfile = profiles[previewBoard];
+if (!previewProfile) throw new Error(`Unsupported preview board profile: ${previewBoard}`);
+const boardPower = previewBoard !== "seeed-xiao-esp32s3-8m" && process.env.PREVIEW_BOARD_POWER !== "0";
 const usbReady = process.env.PREVIEW_USB_READY !== "0";
 const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 256 });
 let capsLock = process.env.PREVIEW_CAPS_LOCK === "unknown" ? null : process.env.PREVIEW_CAPS_LOCK === "1";
@@ -21,7 +26,7 @@ const drainingRequests = new WeakSet();
 let pendingControl = null;
 let loginWindow = 0;
 let loginAttempts = 0;
-const power = { supported: process.env.PREVIEW_BOARD_POWER !== "0", available: process.env.PREVIEW_BOARD_POWER !== "0",
+const power = { supported: boardPower, available: boardPower,
   preparing: false, idle_minutes: 30, error: "" };
 let powerOffset = 0;
 let powerLastActivity = performance.now();
@@ -33,7 +38,8 @@ const network = { available: true, ap_active: true, station_online: false, desir
   has_profile: false, busy: false, mdns: true,
   get can_control() { return !powerSleeping && this.available && !this.busy && !updateBusy() && pendingControl === null && controller?.readyState !== WebSocket.OPEN; },
   job_id: 0, phase: "ap", job: "idle", error: "",
-  hostname: "kb", requested_hostname: "kb", ap_ssid: "WiFiKeyboard-123456", saved_ssid: "", saved_ssid_hex: "", station_ssid: "",
+  hostname: previewProfile.hostname, requested_hostname: previewProfile.hostname,
+  ap_ssid: "WiFiKeyboard-123456", saved_ssid: "", saved_ssid_hex: "", station_ssid: "",
   ap_ip: "192.168.4.1", ap_reconnect_ip: "", station_ip: "", scan: [] };
 let pendingProfile = null;
 const networkDelay = Math.max(50, Number(process.env.PREVIEW_NETWORK_DELAY_MS) || 200);
@@ -96,8 +102,8 @@ function updateBusy() {
 }
 
 function firmwareInfo() {
-  return { version: firmwareVersion, board: "esp32s3-generic-16m", layout: "kb16-ab6-nvs64-v1", source: "0".repeat(40),
-    test_only: true, available: true, trial_boot: false, busy: updateBusy(), max_bytes: 0x4cc000 };
+  return { version: firmwareVersion, board: previewBoard, layout: previewProfile.layout, source: "0".repeat(40),
+    test_only: true, available: true, trial_boot: false, busy: updateBusy(), max_bytes: previewProfile.imageLimit };
 }
 
 function releaseUpload(job, abort = false) {
@@ -130,7 +136,7 @@ async function updateRequest(request, response) {
     if (updateBusy() || network.busy || !network.available) return sendJson(response, 409, { error: "update_unavailable_or_busy" });
     const expected = Number(request.headers["content-length"]);
     if (request.headers["content-type"] !== "application/octet-stream" || request.headers["transfer-encoding"] ||
-        !Number.isSafeInteger(expected) || expected < 8192 || expected > 0x4cc000 || expected % 4096) {
+        !Number.isSafeInteger(expected) || expected < 8192 || expected > previewProfile.imageLimit || expected % 4096) {
       return sendJson(response, 400, { error: "invalid_update_request" });
     }
     const current = updateJob = { job_id: updateJob.job_id + 1, phase: "receiving", received: 0, expected,

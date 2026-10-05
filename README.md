@@ -2,7 +2,8 @@
 
 ESP32-S3 Wi-Fi USB keyboard prototype using ESP-IDF v6.1. The firmware provides
 standalone AP and saved Wi-Fi station modes, temporary AP+STA setup/recovery,
-and the preferred name `kb.local`. Sender-provisioned private AP credentials,
+and the preferred name `kb.local` (`x.local` on the standard Seeed XIAO
+ESP32S3 profile). Sender-provisioned private AP credentials,
 one-time owner claim, browser login, and explicit keyboard control are included.
 The iPhone-first US-ANSI keyboard provides QWERTY letters with a `1`-`0` row
 above them, separate number/symbol pages, Shift/Caps Lock, Backspace, Space,
@@ -96,6 +97,52 @@ before evaluating capacity, verify that generated `build/config/sdkconfig.json`
 reports `COMPILER_OPTIMIZATION_SIZE=true`. A deliberate debug build can select
 the debug optimization profile through menuconfig, but its larger image may
 have substantially less partition headroom.
+
+### Seeed Studio XIAO ESP32S3 (8 MiB)
+
+The standard XIAO ESP32S3 uses the same `esp32s3` target but requires its own
+8 MiB flash layout. It is **not** the 16 MiB XIAO ESP32S3 Plus. Do not flash
+the default 16 MiB firmware on the standard XIAO.
+
+Build from a fresh configuration, keeping existing builds and local settings:
+
+```bash
+idf.py -B .cache/xiao-build \
+  -D SDKCONFIG=.cache/xiao-build/sdkconfig \
+  -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.board-seeed-xiao-esp32s3' build
+node tools/install-device.mjs --firmware .cache/xiao-build \
+  --verification-key .cache/xiao-build/firmware-signing-public.pem
+```
+
+The second command is an offline development check using the locally generated
+test key's public half. Installation still requires an independently trusted
+public key outside the candidate firmware directory and explicit erase consent.
+No command above connects to or flashes hardware.
+
+The XIAO profile retains 64 KiB NVS and two 3.875 MiB OTA slots, with a
+3,248,128-byte signed-image budget. Its compatibility identifiers are
+`seeed-xiao-esp32s3-8m` and `kb8-ab3875-nvs64-v1`. Artifacts are produced in
+`.cache/xiao-build`, including `firmware-install.zip` and `firmware-ota.bin`.
+Packaging, runtime startup, and installation check the exact board/layout and
+8 MiB capacity; cross-profile OTA updates are rejected.
+
+Fresh devices advertise **`x.local`** and their setup cards use
+`http://x.local/`. Saved owner-selected hostnames remain unchanged by OTA.
+The existing rename and mDNS conflict-handling behavior still applies, and
+`http://192.168.4.1/` remains the AP fallback. Generic and XinluCity profiles
+continue to default to `kb.local`.
+
+Status LED and automatic deep sleep are intentionally unsupported on this
+initial XIAO profile; it does not claim GPIO21, GPIO48, or BOOT. PSRAM remains
+disabled because the application does not require it. Native USB HID uses the
+existing ESP32-S3 TinyUSB driver. USB recovery, HID, networking, and OTA still
+require physical acceptance testing before treating this profile as validated
+hardware support.
+
+For a local UI preview without hardware, run
+`PREVIEW_BOARD_PROFILE=seeed-xiao-esp32s3-8m npm --prefix tools run preview`.
+The preview advertises the XIAO's hostname/layout/image budget and disables its
+unsupported power control; it does not validate physical mDNS or USB behavior.
 
 ### Optional Board Status LED
 

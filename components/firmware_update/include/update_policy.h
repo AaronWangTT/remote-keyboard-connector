@@ -4,8 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define UPDATE_SLOT_BYTES UINT32_C(0x600000)
-#define UPDATE_IMAGE_LIMIT UINT32_C(0x4cc000)
+#include "firmware_profile.h"
 #define UPDATE_DESCRIPTOR_OFFSET 0x120
 #define UPDATE_JOB_TIMEOUT_US INT64_C(300000000)
 #define UPDATE_STAGED_TIMEOUT_US INT64_C(120000000)

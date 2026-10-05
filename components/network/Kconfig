@@ -1,5 +1,13 @@
 menu "Wi-Fi keyboard networking"
 
+    config NETWORK_DEFAULT_HOSTNAME
+        string
+        default "x" if BOARD_SEEED_XIAO_ESP32S3
+        default "kb"
+        help
+            Initial mDNS hostname, without .local. Saved owner-selected names
+            take precedence. Packaged board profiles use x or kb.
+
     config KEYBOARD_HTTP_DEVELOPMENT
         bool "Allow authenticated HTTP/WS for isolated development"
         default n
