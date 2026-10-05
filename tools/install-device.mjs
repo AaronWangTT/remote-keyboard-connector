@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
+import { readFileSync } from "node:fs";
 import { copyFile, mkdir, open, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,13 @@ const sdkHelper = fileURLToPath(new URL("install_device.py", import.meta.url));
 const supportedSecurity = { secureBoot: false, flashEncryption: false, signedApps: false, antiRollback: false,
   httpDevelopment: true };
 const otaSecurity = { ...supportedSecurity, signedApps: true };
+export const firmwareProfiles = JSON.parse(readFileSync(new URL("./firmware-profiles.json", import.meta.url), "utf8"));
+
+export function descriptorProfile(descriptor) {
+  const profile = firmwareProfiles[descriptor?.board];
+  assert.ok(profile && descriptor.layout === profile.layout, "Unsupported OTA board or layout profile");
+  return profile;
+}
 
 export function firmwareSecurity(configuration) {
   assert.equal(configuration.IDF_TARGET, "esp32s3", "Build configuration targets another chip");
@@ -22,7 +30,11 @@ export function firmwareSecurity(configuration) {
     for (const name of ["SECURE_SIGNED_APPS_RSA_SCHEME", "SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT",
       "SECURE_BOOT_BUILD_SIGNED_BINARIES", "BOOTLOADER_APP_ROLLBACK_ENABLE", "BOOTLOADER_WDT_ENABLE",
       "BOOTLOADER_WDT_DISABLE_IN_USER_CODE"]) assert.equal(configuration[name], true, `Missing OTA setting: ${name}`);
-    assert.equal(configuration.ESPTOOLPY_FLASHSIZE, "16MB");
+    assert.ok(!(configuration.BOARD_SEEED_XIAO_ESP32S3 && configuration.BOARD_XINLUCITY_ESP32S3_NANO),
+      "Conflicting board profiles");
+    const board = configuration.BOARD_SEEED_XIAO_ESP32S3 === true ? "seeed-xiao-esp32s3-8m" :
+      configuration.BOARD_XINLUCITY_ESP32S3_NANO === true ? "xinlucity-s3-nano-16m" : "esp32s3-generic-16m";
+    assert.equal(configuration.ESPTOOLPY_FLASHSIZE, firmwareProfiles[board].flashSize);
     for (const name of ["SECURE_BOOT_V2_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK", "ESP_PHY_INIT_DATA_IN_PARTITION"]) {
       assert.ok(!configuration[name], `Unsupported OTA setting: ${name}`);
     }
@@ -43,10 +55,11 @@ export function firmwareManifest(firmware) {
     images: firmware.images.map(({ role, path, offset, bytes, sha256 }) => ({ role, path, offset, bytes, sha256 })) };
 }
 
-export function firmwareMetadata(flash) {
+export function firmwareMetadata(flash, otaFlashBytes = 0x1000000) {
   assert.equal(flash.extra_esptool_args?.chip, "esp32s3", "Only ESP32-S3 firmware is supported");
   const settings = flash.flash_settings;
   const ota = Object.hasOwn(flash, "otadata");
+  if (ota) assert.ok([0x800000, 0x1000000].includes(otaFlashBytes), "Unsupported OTA flash capacity");
   const roles = ota ? ["bootloader", "partition-table", "otadata", "app"] : ["bootloader", "partition-table", "app"];
   assert.ok(settings && ["dio", "dout", "qio", "qout"].includes(settings.flash_mode), "Invalid flash mode");
   assert.ok(["20m", "26m", "40m", "80m"].includes(settings.flash_freq), "Unsupported flash frequency");
@@ -84,14 +97,16 @@ export function firmwareMetadata(flash) {
   assert.equal(images[0].role, "bootloader", "Bootloader must be the first image");
   assert.equal(images[0].offset, 0, "ESP32-S3 bootloader must start at zero");
   return { settings: { flash_mode: settings.flash_mode, flash_size: settings.flash_size, flash_freq: settings.flash_freq },
-    flashBytes: ota ? 0x1000000 : Number.parseInt(settings.flash_size, 10) * 1048576,
+    flashBytes: ota ? otaFlashBytes : Number.parseInt(settings.flash_size, 10) * 1048576,
     writeFlashArgs, images };
 }
 
 export async function loadFirmware(directory) {
   const root = await realpath(resolve(directory));
   const flash = JSON.parse(await readFile(join(root, "flasher_args.json"), "utf8"));
-  const metadata = firmwareMetadata(flash);
+  const manifest = Object.hasOwn(flash, "otadata") ?
+    JSON.parse(await readFile(join(root, "firmware-manifest.json"), "utf8")) : undefined;
+  const metadata = firmwareMetadata(flash, manifest && descriptorProfile(manifest.descriptor).flashBytes);
   let previousEnd = 0;
   const images = [];
   for (const image of metadata.images) {
@@ -109,7 +124,6 @@ export async function loadFirmware(directory) {
   }
   const firmware = { ...metadata, root, images, security: { ...supportedSecurity } };
   if (Object.hasOwn(flash, "otadata")) {
-    const manifest = JSON.parse(await readFile(join(root, "firmware-manifest.json"), "utf8"));
     const signature = await readFile(join(root, "firmware-manifest.sig"));
     assert.equal(manifest.formatVersion, 3, "Unsupported OTA manifest schema");
     assert.equal(manifest.artifact, "keyboard-install");
@@ -299,7 +313,8 @@ Never upload private output to Git or CI.`);
   if (options.replaceNvs) log("NVS replacement requested: existing Wi-Fi settings and ownership will be discarded after backup.");
   if (options.resetLayout) log("Full layout reset requested: the board will be erased and provisioned with new credentials.");
   const prepareIdentity = dependencies.writeIdentity ?? (await import("./provision-device.mjs")).writeIdentity;
-  const directory = await prepareIdentity(options.deviceId, options.output, firmware.security.signedApps ? 10 : 100000);
+  const hostname = firmware.security.signedApps ? descriptorProfile(plan.descriptor).hostname : "kb";
+  const directory = await prepareIdentity(options.deviceId, options.output, firmware.security.signedApps ? 10 : 100000, hostname);
   log(`Private installation files: ${directory}. Credentials are not printed.`);
   try {
     const snapshot = await snapshotFirmware(firmware, directory);

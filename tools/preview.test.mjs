@@ -240,6 +240,31 @@ for (const engine of [chromium, webkit]) test(`Settings remain usable after save
   assert.deepEqual(errors, []);
 });
 
+for (const engine of [chromium, webkit]) test(`XIAO settings display x.local and preserve owner renames in ${engine.name()}`, { timeout: 20000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_BOARD_PROFILE: "seeed-xiao-esp32s3-8m" });
+  const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+  context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.goto(url);
+  await page.locator("#owner-password").fill("preview-owner-password");
+  await page.locator("#account-submit").click();
+  await expect(page.locator("#account-view")).toBeHidden();
+  await page.locator("#network-settings").click();
+  await expect(page.locator("#network-name")).toHaveText("x.local");
+  await expect(page.locator("#network-hostname")).toHaveValue("x");
+  assert.equal((await (await page.request.get(`${url}/api/v1/power`)).json()).supported, false);
+  const firmware = await (await page.request.get(`${url}/api/v1/firmware`)).json();
+  assert.equal(firmware.board, "seeed-xiao-esp32s3-8m");
+  assert.equal(firmware.layout, "kb8-ab3875-nvs64-v1");
+  assert.equal(firmware.max_bytes, 0x319000);
+  await page.locator("#network-hostname").fill("owner-xiao");
+  await page.getByRole("button", { name: "Save name", exact: true }).click();
+  await expect(page.locator("#network-name")).toHaveText("owner-xiao.local");
+  await page.reload();
+  await page.locator("#network-settings").click();
+  await expect(page.locator("#network-hostname")).toHaveValue("owner-xiao");
+});
+
 for (const engine of [chromium, webkit]) test(`Power settings UI saves, preserves drafts and reconciles lost responses in ${engine.name()}`, { timeout: 30000 }, async context => {
   const url = await startPreview(context);
   const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ? { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});

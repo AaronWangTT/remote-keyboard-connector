@@ -16,21 +16,35 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 import espsecure
 
 
-FLASH_BYTES = 0x1000000
-SLOT_BYTES = 0x600000
-IMAGE_LIMIT = 0x4CC000
+PROFILES = json.loads(Path(__file__).with_name("firmware-profiles.json").read_text())
 DESCRIPTOR_OFFSET = 0x120
 SECURITY = {"secureBoot": False, "flashEncryption": False, "signedApps": True,
             "antiRollback": False, "httpDevelopment": True}
-LAYOUT = [("nvs", 1, 2, 0x9000, 0x10000), ("otadata", 1, 0, 0x19000, 0x2000),
-          ("phy_init", 1, 1, 0x1B000, 0x1000), ("ota_0", 0, 16, 0x20000, SLOT_BYTES),
-          ("ota_1", 0, 17, 0x620000, SLOT_BYTES)]
 ROLES = {"bootloader": 0, "partition-table": 0x8000, "otadata": 0x19000, "app": 0x20000}
 
 
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+def descriptor_profile(descriptor):
+    profile = PROFILES.get(descriptor.get("board"))
+    require(profile is not None and descriptor.get("layout") == profile["layout"],
+            "Unsupported OTA board or layout profile")
+    return profile
+
+
+def configuration_profile(configuration):
+    xiao = configuration.get("BOARD_SEEED_XIAO_ESP32S3") is True
+    xinlucity = configuration.get("BOARD_XINLUCITY_ESP32S3_NANO") is True
+    require(not (xiao and xinlucity), "Conflicting OTA board profiles")
+    board = "seeed-xiao-esp32s3-8m" if xiao else "xinlucity-s3-nano-16m" if xinlucity else "esp32s3-generic-16m"
+    profile = PROFILES[board]
+    require(configuration.get("ESPTOOLPY_FLASHSIZE") == profile["flashSize"],
+            "Unsupported OTA hardware security, PHY, or flash profile")
+    require(configuration.get("NETWORK_DEFAULT_HOSTNAME") == profile["hostname"],
+            "Default hostname differs from packaged board profile")
+    return board, profile
 
 
 def canonical_json(value):
@@ -69,7 +83,7 @@ def version_valid(value):
 def parse_descriptor(data):
     require(len(data) >= DESCRIPTOR_OFFSET + 256 and data[0] == 0xE9, "Missing ESP application descriptor")
     fields = struct.unpack_from("<8s8I32s32s32s48s32s40s", data, DESCRIPTOR_OFFSET)
-    require(fields[0] == b"KBOTA001" and fields[1:8] == (1, 1, 1, 1, 10, FLASH_BYTES, SLOT_BYTES) and
+    require(fields[0] == b"KBOTA001" and fields[1:6] == (1, 1, 1, 1, 10) and
             fields[8] in (1, 2) and fields[14] == bytes(40), "Incompatible OTA descriptor")
 
     def text(value):
@@ -79,9 +93,10 @@ def parse_descriptor(data):
         return value.decode("ascii")
 
     product, board, layout, source, version = map(text, fields[9:14])
-    require(product == "remote-keyboard" and board in ("esp32s3-generic-16m", "xinlucity-s3-nano-16m") and
-            layout == "kb16-ab6-nvs64-v1" and re.fullmatch(r"[0-9a-f]{40}", source) and version_valid(version),
+    require(product == "remote-keyboard" and re.fullmatch(r"[0-9a-f]{40}", source) and version_valid(version),
             "Invalid OTA product, board, layout, source, or version")
+    profile = descriptor_profile({"board": board, "layout": layout})
+    require(fields[6:8] == (profile["flashBytes"], profile["slotBytes"]), "Incompatible OTA descriptor capacity")
     require(struct.unpack_from("<I", data, 32)[0] == 0xABCD5432 and text(data[48:80]) == version,
             "ESP application version differs from signed compatibility metadata")
     return {"product": product, "board": board, "layout": layout, "source": source, "version": version,
@@ -90,7 +105,8 @@ def parse_descriptor(data):
 
 
 def embedded_signing_key(data):
-    require(8192 <= len(data) <= IMAGE_LIMIT and len(data) % 4096 == 0,
+    profile = descriptor_profile(parse_descriptor(data))
+    require(8192 <= len(data) <= profile["imageLimit"] and len(data) % 4096 == 0,
             "Signed application exceeds its budget or is not sector aligned")
     require(data[-4096 + espsecure.SIG_BLOCK_SIZE:] == b"\xff" * (4096 - espsecure.SIG_BLOCK_SIZE),
             "Exactly one signature block is required")
@@ -117,26 +133,33 @@ def verify_application(data, key):
 
 
 def inspect_ota_firmware(firmware, sdk, key):
-    require(firmware.get("security") == SECURITY and firmware.get("flashBytes") == FLASH_BYTES,
+    images = {image["role"]: image for image in firmware["images"]}
+    require(len(firmware["images"]) == 4 and set(images) == set(ROLES), "Expected four OTA install image roles")
+    descriptor = verify_application(image_bytes(images["app"]), key)
+    profile = descriptor_profile(descriptor)
+    flash_bytes = profile["flashBytes"]
+    slot_bytes = profile["slotBytes"]
+    layout = [("nvs", 1, 2, 0x9000, 0x10000), ("otadata", 1, 0, 0x19000, 0x2000),
+              ("phy_init", 1, 1, 0x1B000, 0x1000), ("ota_0", 0, 16, 0x20000, slot_bytes),
+              ("ota_1", 0, 17, profile["secondSlotOffset"], slot_bytes)]
+    require(firmware.get("security") == SECURITY and firmware.get("flashBytes") == flash_bytes,
             "Unsupported OTA security or capacity profile")
     require(firmware.get("settings") == {"flash_mode": "dio", "flash_freq": "80m", "flash_size": "keep"},
             "Signed OTA images require DIO/80MHz with unchanged flash headers")
-    images = {image["role"]: image for image in firmware["images"]}
-    require(len(firmware["images"]) == 4 and set(images) == set(ROLES), "Expected four OTA install image roles")
     for role, offset in ROLES.items():
         require(images[role]["offset"] == offset, "Incorrect OTA install offset")
     sdk.partitions.offset_part_table = 0x8000
     table = sdk.partitions.PartitionTable.from_binary(image_bytes(images["partition-table"]))
     table.verify()
-    table.verify_size_fits(FLASH_BYTES)
-    require([(part.name, part.type, part.subtype, part.offset, part.size) for part in table] == LAYOUT and
+    table.verify_size_fits(flash_bytes)
+    require([(part.name, part.type, part.subtype, part.offset, part.size) for part in table] == layout and
             not any(part.encrypted or part.readonly for part in table), "Unexpected OTA partition layout")
     require(image_bytes(images["otadata"]) == b"\xff" * 8192, "Initial OTA data must be erased for ota_0 boot")
     previous_end = 0
     for image in sorted(images.values(), key=lambda value: value["offset"]):
         data = image_bytes(image)
         end = image["offset"] + (len(data) + 4095) // 4096 * 4096
-        require(data and image["offset"] >= previous_end and end <= FLASH_BYTES, "Overlapping OTA install images")
+        require(data and image["offset"] >= previous_end and end <= flash_bytes, "Overlapping OTA install images")
         if image["role"] == "bootloader":
             require(end <= 0x8000, "Bootloader overlaps partition table")
         if image["role"] == "partition-table":
@@ -147,10 +170,9 @@ def inspect_ota_firmware(firmware, sdk, key):
         require(image.chip_id == image.ROM_LOADER.IMAGE_CHIP_ID and image.checksum == image.calculate_checksum() and
                 image.append_digest and image.stored_digest == image.calc_digest,
                 "Invalid ESP32-S3 image checksum or digest")
-        require(image.flash_mode == 2 and image.flash_size_freq == 0x4F, "Incorrect embedded flash settings")
-    descriptor = verify_application(image_bytes(images["app"]), key)
+        require(image.flash_mode == 2 and image.flash_size_freq == profile["flashSizeFreq"], "Incorrect embedded flash settings")
     return {"nvs": {"offset": 0x9000, "size": 0x10000}, "partitionTable": {"offset": 0x8000, "size": 4096},
-            "settings": firmware["settings"], "flashBytes": FLASH_BYTES, "descriptor": descriptor,
+            "settings": firmware["settings"], "flashBytes": flash_bytes, "descriptor": descriptor,
             "verifiedSigningKeySha256": key_fingerprint(key),
             "observedSigningKeySha256": key_fingerprint(embedded_signing_key(image_bytes(images["app"])))}
 
@@ -166,8 +188,10 @@ def verify_manifest(firmware, key):
         raise ValueError("Install manifest signature verification failed") from error
     actual_images = [{field: image[field] for field in ("role", "path", "offset", "bytes", "sha256")}
                      for image in firmware["images"]]
+    profile = descriptor_profile(manifest.get("descriptor", {}))
     require(manifest.get("images") == actual_images and manifest.get("settings") == firmware["settings"] and
-            manifest.get("security") == firmware["security"] and manifest.get("flashBytes") == FLASH_BYTES,
+            manifest.get("security") == firmware["security"] and
+            manifest.get("flashBytes") == firmware.get("flashBytes") == profile["flashBytes"],
             "Authenticated manifest differs from install images")
 
 
@@ -185,8 +209,9 @@ def build_artifacts(build, sdk, project):
             "OTA startup watchdog must use the agreed 60000 ms timeout")
     forbidden = ("SECURE_BOOT", "SECURE_BOOT_V2_ENABLED", "SECURE_FLASH_ENC_ENABLED",
                  "BOOTLOADER_APP_ANTI_ROLLBACK", "ESP_PHY_INIT_DATA_IN_PARTITION")
-    require(not any(configuration.get(name) for name in forbidden) and configuration.get("ESPTOOLPY_FLASHSIZE") == "16MB",
+    require(not any(configuration.get(name) for name in forbidden),
             "Unsupported OTA hardware security, PHY, or flash profile")
+    board, profile = configuration_profile(configuration)
     key_path = (project / configuration["SECURE_BOOT_SIGNING_KEY"]).resolve()
     release = configuration.get("KEYBOARD_RELEASE") is True
     if release:
@@ -212,11 +237,12 @@ def build_artifacts(build, sdk, project):
         data = source.read_bytes()
         images.append({"role": role, "offset": offset, "path": relative.as_posix(), "source": str(source),
                        "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
-    firmware = {"security": SECURITY, "flashBytes": FLASH_BYTES, "settings": flash["flash_settings"], "images": images}
+    firmware = {"security": SECURITY, "flashBytes": profile["flashBytes"], "settings": flash["flash_settings"], "images": images}
     plan = inspect_ota_firmware(firmware, sdk, key)
     require(plan["descriptor"]["testOnly"] is not release, "Descriptor security profile differs from build")
+    require(plan["descriptor"]["board"] == board, "Descriptor board differs from build")
     manifest = {"formatVersion": 3, "artifact": "keyboard-install", "target": "esp32s3", "security": SECURITY,
-                "settings": firmware["settings"], "flashBytes": FLASH_BYTES, "descriptor": plan["descriptor"],
+                "settings": firmware["settings"], "flashBytes": profile["flashBytes"], "descriptor": plan["descriptor"],
                 "signingKeySha256": key_fingerprint(key),
                 "images": [{field: item[field] for field in ("role", "path", "offset", "bytes", "sha256")} for item in images]}
     signature = private.sign(canonical_json(manifest), padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32), hashes.SHA256())

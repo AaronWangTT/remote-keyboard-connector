@@ -665,6 +665,15 @@ class FakeOtaEsptool(FakeEsptool):
 
 
 class OtaArtifactTests(unittest.TestCase):
+    board = "esp32s3-generic-16m"
+    layout = "kb16-ab6-nvs64-v1"
+    flash_bytes = 0x1000000
+    slot_bytes = 0x600000
+    second_slot = 0x620000
+    flash_size = "16MB"
+    partition_file = "partitions.csv"
+    flash_size_freq = 0x4F
+
     @classmethod
     def setUpClass(cls):
         cls.sdk = load_sdk(os.environ["IDF_PATH"])
@@ -680,8 +689,8 @@ class OtaArtifactTests(unittest.TestCase):
         self.key_path.write_bytes(self.key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                                         serialization.NoEncryption()))
         self.key_path.chmod(0o600)
-        descriptor = struct.pack("<8s8I32s32s32s48s32s40s", b"KBOTA001", 1, 1, 1, 1, 10, 0x1000000, 0x600000, 1,
-                                 b"remote-keyboard", b"esp32s3-generic-16m", b"kb16-ab6-nvs64-v1",
+        descriptor = struct.pack("<8s8I32s32s32s48s32s40s", b"KBOTA001", 1, 1, 1, 1, 10, self.flash_bytes, self.slot_bytes, 1,
+                                 b"remote-keyboard", self.board.encode(), self.layout.encode(),
                                  b"0123456789abcdef0123456789abcdef01234567", b"0.1.0", bytes(40))
         app_description = bytearray(256)
         struct.pack_into("<I", app_description, 0, 0xABCD5432)
@@ -690,7 +699,7 @@ class OtaArtifactTests(unittest.TestCase):
         image = self.sdk.images.ESP32S3FirmwareImage()
         image.chip_id = image.ROM_LOADER.IMAGE_CHIP_ID
         image.flash_mode = 2
-        image.flash_size_freq = 0x4F
+        image.flash_size_freq = self.flash_size_freq
         image.segments.append(self.sdk.images.ImageSegment(0x3C020020, bytes(app_description) + descriptor))
         image.segments[0].name = "fixture"
         unsigned = image.save(None)
@@ -698,7 +707,7 @@ class OtaArtifactTests(unittest.TestCase):
         with self.key_path.open("rb") as keyfile, (self.build / "app-unsigned.bin").open("rb") as datafile:
             espsecure.sign_secure_boot_v2([keyfile], str(self.build / "app.bin"), False, False, None, [], [], datafile)
         self.sdk.partitions.offset_part_table = 0x8000
-        table = self.sdk.partitions.PartitionTable.from_csv((Path(__file__).resolve().parents[1] / "partitions.csv").read_text())
+        table = self.sdk.partitions.PartitionTable.from_csv((Path(__file__).resolve().parents[1] / self.partition_file).read_text())
         (self.build / "partition-table.bin").write_bytes(table.to_binary())
         (self.build / "bootloader.bin").write_bytes(unsigned)
         (self.build / "otadata.bin").write_bytes(b"\xff" * 8192)
@@ -713,14 +722,17 @@ class OtaArtifactTests(unittest.TestCase):
                          "SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT", "SECURE_BOOT_BUILD_SIGNED_BINARIES",
                          "BOOTLOADER_APP_ROLLBACK_ENABLE", "BOOTLOADER_WDT_ENABLE", "BOOTLOADER_WDT_DISABLE_IN_USER_CODE",
                          "ESP_PHY_CALIBRATION_AND_DATA_STORAGE", "KEYBOARD_HTTP_DEVELOPMENT")}
-        configuration.update(ESPTOOLPY_FLASHSIZE="16MB", SECURE_BOOT_SIGNING_KEY=str(self.key_path),
+        configuration.update(ESPTOOLPY_FLASHSIZE=self.flash_size, SECURE_BOOT_SIGNING_KEY=str(self.key_path),
+                     BOARD_SEEED_XIAO_ESP32S3=self.flash_bytes == 0x800000,
+                     NETWORK_DEFAULT_HOSTNAME="x" if self.flash_bytes == 0x800000 else "kb",
                      BOOTLOADER_WDT_TIME_MS=60000)
         (self.build / "config").mkdir()
         (self.build / "config/sdkconfig.json").write_text(json.dumps(configuration))
         self.firmware = build_artifacts(self.build, self.sdk, self.root)
         self.output = self.root / "installation"
-        self.device = FakeDevice(b"old!" * (0x1000000 // 4))
+        self.device = FakeDevice(b"old!" * (self.flash_bytes // 4))
         self.transport = FakeOtaEsptool(self.device, self.output)
+        self.transport.detected_size = self.flash_size
         self.connected_sdk = SimpleNamespace(partitions=self.sdk.partitions, images=self.sdk.images, esptool=self.transport)
         public_pem = self.key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
         self.csv = ("key,type,encoding,value\nkb_identity,namespace,,\nversion,data,u32,1\n"
@@ -868,7 +880,7 @@ class OtaArtifactTests(unittest.TestCase):
         self.assertEqual(self.transport.events, ["connect", "erase", "write", "verify", "readback", "reset"])
         self.assertFalse((self.output / "flash-backup.bin").exists())
         self.assertEqual(self.device.flash[0x9000:0x19000], (self.output / "identity.bin").read_bytes())
-        self.assertEqual(self.device.flash[0x620000:], b"\xff" * (0x1000000 - 0x620000))
+        self.assertEqual(self.device.flash[self.second_slot:], b"\xff" * (self.flash_bytes - self.second_slot))
         self.assertTrue(self.device.closed)
         recorded = json.loads((self.output / "install-plan.json").read_text())
         self.assertEqual(recorded["layout"]["verifiedSigningKeySha256"], self.firmware["manifest"]["signingKeySha256"])
@@ -925,10 +937,42 @@ class OtaArtifactTests(unittest.TestCase):
         self.assertEqual(self.device.flash[:4], b"old!")
 
     def test_wrong_capacity_never_erases(self):
-        self.transport.detected_size = "8MB"
-        with self.assertRaisesRegex(ValueError, "16 MiB"):
+        self.transport.detected_size = "8MB" if self.flash_bytes == 0x1000000 else "16MB"
+        with self.assertRaisesRegex(ValueError, f"{self.flash_bytes // 1048576} MiB"):
             install(self.request, self.connected_sdk)
         self.assertEqual(self.transport.events, ["connect"])
+
+    def test_descriptor_rejects_cross_profile_capacity_layout_and_board(self):
+        original = (self.build / "app.bin").read_bytes()
+        for offset, value in (
+            (0x120 + 28, struct.pack("<I", 0x800000 if self.flash_bytes == 0x1000000 else 0x1000000)),
+            (0x120 + 32, struct.pack("<I", self.slot_bytes + 4096)),
+            (0x120 + 72, b"unknown-board".ljust(32, b"\0")),
+            (0x120 + 104, b"wrong-layout".ljust(32, b"\0")),
+        ):
+            with self.subTest(offset=offset):
+                data = bytearray(original)
+                data[offset:offset + len(value)] = value
+                with self.assertRaises(ValueError):
+                    parse_descriptor(data)
+
+    def test_wrong_partition_layout_is_rejected(self):
+        image = next(item for item in self.firmware["images"] if item["role"] == "partition-table")
+        other = "partitions.csv" if self.flash_bytes == 0x800000 else "partitions.xiao-esp32s3.csv"
+        table = self.sdk.partitions.PartitionTable.from_csv((Path(__file__).resolve().parents[1] / other).read_text())
+        data = table.to_binary()
+        Path(image["source"]).write_bytes(data)
+        image.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+        with self.assertRaises((ValueError, self.sdk.partitions.InputError)):
+            inspect_ota_firmware(self.firmware, self.sdk, self.key.public_key())
+
+    def test_packaging_rejects_wrong_default_hostname(self):
+        path = self.build / "config/sdkconfig.json"
+        configuration = json.loads(path.read_text())
+        configuration["NETWORK_DEFAULT_HOSTNAME"] = "kb" if self.flash_bytes == 0x800000 else "x"
+        path.write_text(json.dumps(configuration))
+        with self.assertRaisesRegex(ValueError, "hostname"):
+            build_artifacts(self.build, self.sdk, self.root)
 
     def test_failed_fresh_install_never_resets_and_retains_prepared_credentials(self):
         self.transport.fail_verify = True
@@ -960,6 +1004,17 @@ class OtaArtifactTests(unittest.TestCase):
                 rejected = subprocess.run(command + ["--verification-key", str(public_path)], capture_output=True, text=True, check=False)
                 self.assertNotEqual(rejected.returncode, 0)
                 self.assertIn("public verification key", rejected.stderr)
+
+
+class XiaoOtaArtifactTests(OtaArtifactTests):
+    board = "seeed-xiao-esp32s3-8m"
+    layout = "kb8-ab3875-nvs64-v1"
+    flash_bytes = 0x800000
+    slot_bytes = 0x3E0000
+    second_slot = 0x400000
+    flash_size = "8MB"
+    partition_file = "partitions.xiao-esp32s3.csv"
+    flash_size_freq = 0x3F
 
 
 if __name__ == "__main__":

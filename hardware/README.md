@@ -1,5 +1,35 @@
 # Hardware
 
+## Seeed Studio XIAO ESP32S3
+
+The standard XIAO ESP32S3 profile targets 8 MiB flash, not the newer 16 MiB Plus.
+[Seeed's documentation](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/)
+lists 8 MiB flash and 8 MiB PSRAM for the standard board. The firmware does not
+require or enable PSRAM. The profile uses native ESP32-S3 USB HID, two 3.875 MiB
+OTA slots, and the initial mDNS name `x.local`. Owner renames remain persistent.
+
+Status LED and automatic sleep are not enabled on this profile. No GPIO21,
+GPIO48, or BOOT controls are configured by the board component. Confirm the
+physical revision, flash capacity/mode, antenna attachment, and BOOT/RESET
+recovery before installation. GPIO19/GPIO20 remain reserved for native USB.
+
+The user connected a XIAO to the PC, but it was not enumerated inside the
+Linux/WSL development environment during review. No chip identification,
+reset, flash, erase, or eFuse operation has been performed. Software builds
+and offline artifact checks do not establish hardware acceptance. USB HID,
+networking, recovery, and OTA must be tested separately on this board.
+
+Software validation on 2026-10-05 passed XIAO, generic, and XinluCity ESP-IDF
+v6.1 builds and offline signed-artifact verification. The XIAO application is
+1,052,672 signed bytes, leaving 74% of each 3.875 MiB OTA slot free. The software
+checks passed 26 native suites with ASan/UBSan, 91 Python installer/artifact
+tests, 13 Node provisioning/installer tests, and nine focused Chromium/WebKit
+network/UI tests, including `x.local` rendering and persistent owner renames.
+CI workflow YAML and its embedded profile-check Python were syntax-validated;
+the updated GitHub workflow itself has not been run remotely.
+
+## XinluCity ESP32S3 NANO
+
 The user-supplied XinluCity resources identify the intended board as ESP32S3
 NANO / ESP32-S3-N16R8. The vendor schematic was reviewed on 2026-09-15; exact
 PCB revision remains unverified. Local Windows checks subsequently confirmed

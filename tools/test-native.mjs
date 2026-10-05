@@ -74,6 +74,17 @@ const suites = {
 };
 const compilerArguments = suite => [...prefix, ...flags, ...suite.includes.map(path => `-I${path}`),
   ...(suite.flags ?? [])];
+for (const name of ["update_policy", "update_service", "board_disabled", "board_power_disabled"]) {
+  suites[`${name}_xiao`] = { ...suites[name],
+    flags: [...(suites[name].flags ?? []).filter(flag => !flag.includes("CONFIG_BOARD_XINLUCITY_ESP32S3_NANO")),
+      "-DCONFIG_BOARD_SEEED_XIAO_ESP32S3=1"] };
+}
+for (const [name, hostname] of [["network_defaults", "kb"], ["network_defaults_xiao", "x"]]) {
+  suites[name] = { ...suites.network_state,
+    includes: [...suites.network_state.includes, ".cache/tests"],
+    sources: [...suites.network_state.sources.slice(0, -1), "components/network/test/network_defaults_test.c"],
+    flags: [...suites.network_state.flags, `-DCONFIG_NETWORK_DEFAULT_HOSTNAME="${hostname}"`] };
+}
 const selected = process.argv.length > 2 ? process.argv.slice(2) : Object.keys(suites);
 await mkdir(".cache/tests", { recursive: true });
 const compilationDatabase = Object.entries(suites).flatMap(([name, suite]) =>
@@ -106,6 +117,8 @@ const section = (source, start, end) => {
 };
 const normalizedSource = async path => (await readFile(path, "utf8")).replaceAll("\r\n", "\n");
 const network = await normalizedSource("components/network/network.c");
+await writeFile(".cache/tests/network_defaults.inc",
+  section(network, "static esp_err_t load_configuration(void)", "\nstatic bool stage_configuration"));
 const web = await normalizedSource("components/web_server/web_server.c");
 await writeFile(".cache/tests/power_http.inc",
   section(web, "static cJSON *power_json(void)\n{", "\nstatic cJSON *network_json(void)\n{"));

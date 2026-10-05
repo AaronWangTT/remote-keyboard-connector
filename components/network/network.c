@@ -16,6 +16,7 @@
 #include "mbedtls/platform_util.h"
 #include "mdns.h"
 #include "nvs.h"
+#include "sdkconfig.h"
 #include "usb_keyboard.h"
 
 typedef struct {
@@ -249,7 +250,7 @@ static void job_result(const char *job, const char *error, bool busy)
 
 static esp_err_t load_configuration(void)
 {
-    saved = (network_config_t){.version = 1, .hostname = "kb"};
+    saved = (network_config_t){.version = 1, .hostname = CONFIG_NETWORK_DEFAULT_HOSTNAME};
     active_slot = 0;
     nvs_handle_t handle;
     esp_err_t result = nvs_open("kb_network", NVS_READONLY, &handle);

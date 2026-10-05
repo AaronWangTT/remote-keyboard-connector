@@ -1,0 +1,32 @@
+{
+  "esp32s3-generic-16m": {
+    "layout": "kb16-ab6-nvs64-v1",
+    "flashBytes": 16777216,
+    "slotBytes": 6291456,
+    "secondSlotOffset": 6422528,
+    "imageLimit": 5029888,
+    "flashSize": "16MB",
+    "flashSizeFreq": 79,
+    "hostname": "kb"
+  },
+  "xinlucity-s3-nano-16m": {
+    "layout": "kb16-ab6-nvs64-v1",
+    "flashBytes": 16777216,
+    "slotBytes": 6291456,
+    "secondSlotOffset": 6422528,
+    "imageLimit": 5029888,
+    "flashSize": "16MB",
+    "flashSizeFreq": 79,
+    "hostname": "kb"
+  },
+  "seeed-xiao-esp32s3-8m": {
+    "layout": "kb8-ab3875-nvs64-v1",
+    "flashBytes": 8388608,
+    "slotBytes": 4063232,
+    "secondSlotOffset": 4194304,
+    "imageLimit": 3248128,
+    "flashSize": "8MB",
+    "flashSizeFreq": 63,
+    "hostname": "x"
+  }
+}
