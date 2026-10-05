@@ -36,6 +36,26 @@ to TCP source address `192.168.1.2`; do not expose it through port forwarding.
 - [Development setup and proposed project structure](docs/development-setup.md)
 - [Hardware details to confirm](hardware/README.md)
 
+## Environment Setup
+
+On Ubuntu 24.04 x86_64 (including WSL), install the full development environment:
+
+```bash
+bash tools/setup-dev.sh --with-vscode
+source .cache/development-env.sh
+idf.py build
+```
+
+The installer reuses ESP-IDF v6.1, preferring an existing VS Code/EIM registration,
+and installs pinned Linux Node.js plus native/browser-test dependencies. It may
+request your sudo password for system libraries; run it as your normal user.
+It does not edit shell startup files, remove SDKs, or flash hardware.
+
+Use `--firmware-only` to omit host/browser tooling, `--check` to check without
+installing, or `--verify` to build in a separate directory and run applicable
+tests. See the [setup guide](docs/development-setup.md#repeatable-ubuntu-and-wsl-setup)
+for reruns, SDK selection, and existing build-cache handling.
+
 ## Build
 
 Open the `remote-keyboard-connector` folder itself as the VS Code workspace so

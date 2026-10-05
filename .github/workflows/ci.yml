@@ -142,6 +142,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test environment installer without downloads
+        run: |
+          bash -n tools/setup-dev.sh
+          python3 tools/setup_dev_test.py
+
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
