@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { pbkdf2Sync } from "node:crypto";
 import { access, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,7 +7,7 @@ import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
-import { firmwareManifest, firmwareMetadata, firmwareSecurity, installOptions, loadFirmware, runInstaller, syncPrivateDirectory } from "./install-device.mjs";
+import { descriptorProfile, firmwareManifest, firmwareMetadata, firmwareProfiles, firmwareSecurity, installOptions, loadFirmware, runInstaller, syncPrivateDirectory } from "./install-device.mjs";
 import { createIdentity, identityCsv, passwordIterations, wifiPayload, writeIdentity } from "./provision-device.mjs";
 
 test("identity generation uses independent device-bound AP and claim credentials", () => {
@@ -81,6 +82,17 @@ test("private setup files are outside Git, contain a PNG/card, and never overwri
     assert.ok(card.includes("data:image/png;base64,"));
     assert.ok(card.includes("http://kb.local/"));
     assert.ok(card.includes("WiFiKeyboard-334455"));
+    const xiaoDirectory = join(parent, "xiao");
+    await writeIdentity("001122334455", xiaoDirectory, passwordIterations, "x");
+    const xiaoCard = await readFile(join(xiaoDirectory, "setup-card.html"), "utf8");
+    assert.ok(xiaoCard.includes("http://x.local/"));
+    assert.ok(!xiaoCard.includes("http://kb.local/"));
+    const cliDirectory = join(parent, "xiao-cli");
+    execFileSync(process.execPath, [fileURLToPath(new URL("./provision-device.mjs", import.meta.url)),
+      "--device-id", "001122334455", "--output", cliDirectory, "--hostname", "x"], { stdio: "pipe" });
+    assert.ok((await readFile(join(cliDirectory, "setup-card.html"), "utf8")).includes("http://x.local/"));
+    await assert.rejects(writeIdentity("001122334455", join(parent, "invalid-host"), passwordIterations, "<script>"),
+      /Unsupported board setup hostname/);
     await assert.rejects(writeIdentity("001122334455", directory), { code: "EEXIST" });
     assert.equal(await readFile(join(directory, "identity.csv"), "utf8"), before);
   } finally {
@@ -103,6 +115,24 @@ function firmwareFixture() {
 
 const configurationFixture = { IDF_TARGET: "esp32s3", SECURE_BOOT: false, SECURE_FLASH_ENC_ENABLED: false,
   KEYBOARD_HTTP_DEVELOPMENT: true };
+
+test("signed firmware profiles require matching board, layout and flash capacity", () => {
+  const signed = { ...configurationFixture,
+    SECURE_SIGNED_APPS_NO_SECURE_BOOT: true, SECURE_SIGNED_APPS_RSA_SCHEME: true,
+    SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT: true, SECURE_BOOT_BUILD_SIGNED_BINARIES: true,
+    BOOTLOADER_APP_ROLLBACK_ENABLE: true, BOOTLOADER_WDT_ENABLE: true,
+    BOOTLOADER_WDT_DISABLE_IN_USER_CODE: true };
+  for (const [board, profile] of Object.entries(firmwareProfiles)) {
+    const config = { ...signed, ESPTOOLPY_FLASHSIZE: profile.flashSize,
+      BOARD_SEEED_XIAO_ESP32S3: board === "seeed-xiao-esp32s3-8m",
+      BOARD_XINLUCITY_ESP32S3_NANO: board === "xinlucity-s3-nano-16m" };
+    assert.equal(descriptorProfile({ board, layout: profile.layout }), profile);
+    assert.equal(firmwareSecurity(config).signedApps, true);
+    assert.throws(() => firmwareSecurity({ ...config, ESPTOOLPY_FLASHSIZE: profile.flashSize === "8MB" ? "16MB" : "8MB" }));
+    assert.throws(() => descriptorProfile({ board, layout: "wrong-layout" }));
+  }
+  assert.throws(() => descriptorProfile({ board: "unknown", layout: "unknown" }));
+});
 
 test("installer rejects bootloaders configured to provision security or burn rollback eFuses", () => {
   assert.equal(firmwareSecurity(configurationFixture).secureBoot, false);

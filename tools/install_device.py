@@ -301,7 +301,8 @@ def write_ota(request, sdk, plan, directory, payloads, manifest, connection):
     device.change_baud(request["baud"])
     sdk.esptool.attach_flash(device)
     detected_bytes = flash_capacity(sdk.esptool.detect_flash_size(device))
-    require(detected_bytes == plan["flashBytes"], "OTA target requires a detected 16 MiB flash")
+    require(detected_bytes == plan["flashBytes"],
+            f"OTA target requires a detected {plan['flashBytes'] // 1048576} MiB flash")
     sdk.esptool.erase_flash(device, force=False)
     sdk.esptool.write_flash(device, payloads, **plan["settings"], erase_all=False, force=False, no_progress=True)
     sdk.esptool.verify_flash(device, payloads, **plan["settings"])

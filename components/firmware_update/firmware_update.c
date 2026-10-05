@@ -52,13 +52,13 @@ esp_err_t firmware_update_init(void)
 {
     if (initialized || !update_descriptor_valid(firmware_update_descriptor())) return ESP_ERR_INVALID_STATE;
     uint32_t flash_bytes = 0;
-    if (esp_flash_get_size(NULL, &flash_bytes) != ESP_OK || flash_bytes != 0x1000000) return ESP_ERR_INVALID_SIZE;
+    if (esp_flash_get_size(NULL, &flash_bytes) != ESP_OK || flash_bytes != UPDATE_FLASH_BYTES) return ESP_ERR_INVALID_SIZE;
     const struct { const char *name; esp_partition_type_t type; esp_partition_subtype_t subtype; uint32_t offset; uint32_t size; } expected[] = {
         {"nvs", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, 0x9000, 0x10000},
         {"otadata", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, 0x19000, 0x2000},
         {"phy_init", ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_PHY, 0x1b000, 0x1000},
         {"ota_0", ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, 0x20000, UPDATE_SLOT_BYTES},
-        {"ota_1", ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, 0x620000, UPDATE_SLOT_BYTES},
+        {"ota_1", ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, UPDATE_SECOND_SLOT_OFFSET, UPDATE_SLOT_BYTES},
     };
     for (size_t index = 0; index < sizeof(expected) / sizeof(expected[0]); index++) {
         const esp_partition_t *partition = esp_partition_find_first(expected[index].type, expected[index].subtype, expected[index].name);
@@ -191,7 +191,7 @@ esp_err_t firmware_update_open(uint32_t job_id)
     target = esp_ota_get_next_update_partition(NULL);
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (target == NULL || running == NULL || target->address == running->address || target->size != UPDATE_SLOT_BYTES ||
-        (target->address != 0x20000 && target->address != 0x620000)) return ESP_ERR_INVALID_STATE;
+        (target->address != 0x20000 && target->address != UPDATE_SECOND_SLOT_OFFSET)) return ESP_ERR_INVALID_STATE;
     esp_err_t result = esp_ota_begin(target, current.policy.expected, &handle);
     handle_open = result == ESP_OK;
     if (result == ESP_OK && psa_hash_setup(&hash, PSA_ALG_SHA_256) != PSA_SUCCESS) return ESP_FAIL;

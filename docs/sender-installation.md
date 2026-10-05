@@ -57,13 +57,31 @@ slot and preserves identity, ownership, and Wi-Fi settings.
   requires its path outside the firmware directory. A private key is never sent
   to the device or through the installer helper.
 
-The target is exactly the committed 16 MiB layout: 64 KiB NVS, 8 KiB OTA metadata,
-and two 6 MiB app slots. It is validated independently against generated metadata.
-The board must report 16 MiB flash and support the DIO/80 MHz profile. The signed
+Signed OTA builds support only the exact committed board/layout profiles:
+
+| Board profile | Detected flash | OTA slots | Initial browser address |
+| --- | --- | --- | --- |
+| Generic ESP32-S3 / XinluCity ESP32S3 NANO | 16 MiB | Two 6 MiB slots | `http://kb.local/` |
+| Standard Seeed XIAO ESP32S3 (not Plus) | 8 MiB | Two 3.875 MiB slots | `http://x.local/` |
+
+Both layouts keep 64 KiB NVS and 8 KiB OTA metadata. The signed application,
+partition table, image headers, generated configuration, and manifest must agree
+on a known profile; arbitrary smaller partitions or larger capacities are not
+accepted. The board must report exactly the profile's flash capacity and support
+the DIO/80 MHz profile. The signed
 image's headers are retained using esptool's `flash_size=keep`, not rewritten.
 Hardware Secure Boot, flash encryption, security-force overrides, and eFuse
 anti-rollback are not part of this profile. Detecting capacity alone does not
 prove full-range operation or USB recovery.
+
+For the XIAO, use the fresh profile build in the [README](../README.md#seeed-studio-xiao-esp32s3-8-mib)
+and pass `.cache/xiao-build` to `--firmware` instead of `build` in the commands
+below. The installer derives the private setup card's address from the verified
+board profile. Standalone provisioning defaults to `kb.local`; pass `--hostname x`
+when preparing a XIAO setup card separately. Saved owner-selected network names
+take precedence over the firmware's initial hostname. Do not install default
+16 MiB images on a standard 8 MiB XIAO or use cross-profile OTA as a layout
+migration. First installation still requires explicit full-layout reset.
 
 The build must enable `KEYBOARD_HTTP_DEVELOPMENT`; otherwise the web server,
 setup card URL, and owner-claim flow are unavailable. Build validation requires
@@ -186,7 +204,8 @@ remains a hardware/environment gate, not something Linux mocks can prove.
 
 For ordinary updates, connect through either standalone AP or the device's
 station/LAN address. Release any active keyboard control, then open
-`http://kb.local/ota` directly, or use `/ota` on the current device hostname/IP.
+`http://kb.local/ota` directly (`http://x.local/ota` for a fresh XIAO), or use
+`/ota` on the current device hostname/IP.
 The standalone update page is not linked from the keyboard or network settings
 page, and has no navigation back to them. It accepts the existing owner session
 or prompts for owner login; omitting navigation does not bypass authentication.

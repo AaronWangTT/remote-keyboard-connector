@@ -66,6 +66,35 @@ jobs:
           source "$IDF_PATH/export.sh"
           bash tools/test-host.sh 2>&1 | tee .cache/ci/host-tests.log
 
+      - name: Build standard Seeed XIAO ESP32S3 profile
+        run: |
+          source "$IDF_PATH/export.sh"
+          idf.py -B .cache/ci/xiao \
+            -D SDKCONFIG=.cache/ci/xiao/sdkconfig \
+            -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.board-seeed-xiao-esp32s3' \
+            build 2>&1 | tee .cache/ci/xiao-build.log
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          build = Path(".cache/ci/xiao")
+          config = json.loads((build / "config/sdkconfig.json").read_text())
+          assert config["BOARD_SEEED_XIAO_ESP32S3"] is True
+          assert config["ESPTOOLPY_FLASHSIZE"] == "8MB"
+          assert config["PARTITION_TABLE_CUSTOM_FILENAME"] == "partitions.xiao-esp32s3.csv"
+          assert config["NETWORK_DEFAULT_HOSTNAME"] == "x"
+          assert not config.get("BOARD_POWER_MANAGEMENT")
+          assert not config.get("BOARD_XINLUCITY_ESP32S3_NANO")
+          manifest = json.loads((build / "firmware-manifest.json").read_text())
+          assert manifest["flashBytes"] == 0x800000
+          assert manifest["descriptor"]["board"] == "seeed-xiao-esp32s3-8m"
+          assert manifest["descriptor"]["layout"] == "kb8-ab3875-nvs64-v1"
+          assert (build / "firmware-ota.bin").stat().st_size <= 0x319000 < 0x3e0000
+          PY
+          node tools/install-device.mjs --firmware .cache/ci/xiao \
+            --verification-key .cache/ci/xiao/firmware-signing-public.pem \
+            2>&1 | tee .cache/ci/xiao-validation.log
+          git diff --exit-code -- dependencies.lock
+
       - name: Validate installer and firmware artifacts without hardware
         run: |
           source "$IDF_PATH/export.sh"
@@ -130,6 +159,23 @@ jobs:
             build/log/idf_py_*_output_*
           include-hidden-files: true
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload XIAO firmware
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: firmware-xiao-${{ env.BUILD_KIND }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            .cache/ci/xiao/firmware-install.zip
+            .cache/ci/xiao/firmware-install.zip.sha256
+            .cache/ci/xiao/firmware-ota.bin
+            .cache/ci/xiao/firmware-ota.bin.sha256
+            .cache/ci/xiao/firmware-ota.json
+            .cache/ci/xiao/firmware-manifest.json
+            .cache/ci/xiao/firmware-manifest.sig
+            .cache/ci/xiao/firmware-signing-public.pem
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 14
 
   browser:

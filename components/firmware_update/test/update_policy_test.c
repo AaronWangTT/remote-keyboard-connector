@@ -7,9 +7,9 @@
 static update_descriptor_t descriptor(void)
 {
     return (update_descriptor_t){.magic = {'K', 'B', 'O', 'T', 'A', '0', '0', '1'}, .format_version = 1, .bootstrap_version = 1,
-        .updater_version = 1, .settings_version = 1, .kdf_iterations = 10, .flash_bytes = 0x1000000,
-        .slot_bytes = UPDATE_SLOT_BYTES, .security_profile = 1, .product = "remote-keyboard", .board = "esp32s3-generic-16m",
-        .layout = "kb16-ab6-nvs64-v1", .source = "0123456789abcdef0123456789abcdef01234567", .version = "0.1.0"};
+        .updater_version = 1, .settings_version = 1, .kdf_iterations = 10, .flash_bytes = UPDATE_FLASH_BYTES,
+        .slot_bytes = UPDATE_SLOT_BYTES, .security_profile = 1, .product = "remote-keyboard", .board = UPDATE_BOARD,
+        .layout = UPDATE_LAYOUT, .source = "0123456789abcdef0123456789abcdef01234567", .version = "0.1.0"};
 }
 
 int main(void)
@@ -23,6 +23,15 @@ int main(void)
     update_descriptor_t running = descriptor();
     update_descriptor_t candidate = running;
     assert(update_descriptor_valid(&running));
+    candidate.flash_bytes = UPDATE_FLASH_BYTES == 0x800000 ? 0x1000000 : 0x800000;
+    assert(!update_descriptor_valid(&candidate));
+    candidate = running;
+    candidate.slot_bytes += 4096;
+    assert(!update_descriptor_valid(&candidate));
+    candidate = running;
+    strcpy(candidate.layout, "another-layout");
+    assert(!update_descriptor_valid(&candidate));
+    candidate = running;
     assert(!update_descriptor_compatible(&candidate, &running));
     strcpy(candidate.version, "4294967298.0.0");
     assert(!update_descriptor_valid(&candidate) && !update_descriptor_compatible(&candidate, &running));
@@ -41,6 +50,9 @@ int main(void)
     assert(!update_descriptor_valid(&candidate));
 
     update_policy_t policy = {0};
+    assert(update_image_size_valid(UPDATE_IMAGE_LIMIT));
+    assert(!update_image_size_valid(UPDATE_IMAGE_LIMIT + 4096));
+    assert(UPDATE_IMAGE_LIMIT < UPDATE_SLOT_BYTES);
     assert(!update_policy_begin(&policy, UPDATE_SLOT_BYTES, 0));
     assert(!update_policy_begin(&policy, 8193, 0));
     assert(update_policy_begin(&policy, 8192, 0));

@@ -10,7 +10,7 @@ static const update_descriptor_t descriptor __attribute__((section(".rodata_cust
     .updater_version = 1,
     .settings_version = 1,
     .kdf_iterations = DEVICE_KDF_ITERATIONS,
-    .flash_bytes = 0x1000000,
+    .flash_bytes = UPDATE_FLASH_BYTES,
     .slot_bytes = UPDATE_SLOT_BYTES,
 #if CONFIG_KEYBOARD_RELEASE
     .security_profile = 2,
@@ -18,12 +18,8 @@ static const update_descriptor_t descriptor __attribute__((section(".rodata_cust
     .security_profile = 1,
 #endif
     .product = "remote-keyboard",
-#if CONFIG_BOARD_XINLUCITY_ESP32S3_NANO
-    .board = "xinlucity-s3-nano-16m",
-#else
-    .board = "esp32s3-generic-16m",
-#endif
-    .layout = "kb16-ab6-nvs64-v1",
+    .board = UPDATE_BOARD,
+    .layout = UPDATE_LAYOUT,
     .source = FIRMWARE_SOURCE_COMMIT,
     .version = FIRMWARE_VERSION,
 };

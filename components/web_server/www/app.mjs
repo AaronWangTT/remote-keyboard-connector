@@ -278,7 +278,7 @@ function renderNetwork() {
     if (state.saved_ssid_hex) input.dataset.ssidHex = state.saved_ssid_hex;
     else delete input.dataset.ssidHex;
     document.querySelector("#wifi-network").value = "";
-    document.querySelector("#network-hostname").value = state.requested_hostname || "kb";
+    document.querySelector("#network-hostname").value = state.requested_hostname || state.hostname || "";
     networkFieldsInitialized = true;
     renderedProfile = committedProfile;
     if (!state.busy) networkFieldsJob = 0;

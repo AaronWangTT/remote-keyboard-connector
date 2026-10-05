@@ -32,7 +32,7 @@ static const esp_partition_t valid_partitions[] = {
     {.address = 0x9000, .size = 0x10000, .type = ESP_PARTITION_TYPE_DATA, .subtype = ESP_PARTITION_SUBTYPE_DATA_NVS, .label = "nvs"},
     {.address = 0x19000, .size = 0x2000, .type = ESP_PARTITION_TYPE_DATA, .subtype = ESP_PARTITION_SUBTYPE_DATA_OTA, .label = "otadata"},
     {.address = 0x20000, .size = UPDATE_SLOT_BYTES, .type = ESP_PARTITION_TYPE_APP, .subtype = ESP_PARTITION_SUBTYPE_APP_OTA_0, .label = "ota_0"},
-    {.address = 0x620000, .size = UPDATE_SLOT_BYTES, .type = ESP_PARTITION_TYPE_APP, .subtype = ESP_PARTITION_SUBTYPE_APP_OTA_1, .label = "ota_1"},
+    {.address = UPDATE_SECOND_SLOT_OFFSET, .size = UPDATE_SLOT_BYTES, .type = ESP_PARTITION_TYPE_APP, .subtype = ESP_PARTITION_SUBTYPE_APP_OTA_1, .label = "ota_1"},
     {.address = 0x1b000, .size = 0x1000, .type = ESP_PARTITION_TYPE_DATA, .subtype = ESP_PARTITION_SUBTYPE_DATA_PHY, .label = "phy_init"},
 };
 static esp_partition_t partitions[sizeof(valid_partitions) / sizeof(valid_partitions[0])];
@@ -98,7 +98,7 @@ esp_err_t esp_ota_end(esp_ota_handle_t value)
     return check_sdk_signature ? esp_secure_boot_verify_sbv2_signature_block(&candidate_signature, candidate_image_digest, NULL) : ESP_OK;
 }
 esp_err_t esp_image_verify(int mode, const esp_partition_pos_t *position, esp_image_metadata_t *metadata)
-{ assert(mode == ESP_IMAGE_VERIFY_SILENT && position->offset == 0x620000); metadata->image_len = extra_bytes ? 4096 : position->size; return ESP_OK; }
+{ assert(mode == ESP_IMAGE_VERIFY_SILENT && position->offset == UPDATE_SECOND_SLOT_OFFSET); metadata->image_len = extra_bytes ? 4096 : position->size; return ESP_OK; }
 esp_err_t esp_ota_abort(esp_ota_handle_t value) { assert(value == 42); aborts++; return ESP_OK; }
 esp_err_t esp_ota_get_partition_description(const esp_partition_t *partition, esp_app_desc_t *description)
 { assert(partition == &partitions[3]); *description = running_app; strcpy(description->version, "0.1.1"); return ESP_OK; }
@@ -205,7 +205,7 @@ esp_err_t esp_secure_boot_verify_sbv2_signature_block(const ets_secure_boot_sign
 static void reset(void)
 {
     memcpy(partitions, valid_partitions, sizeof(partitions));
-    flash_capacity = 0x1000000;
+    flash_capacity = UPDATE_FLASH_BYTES;
     flash_size_result = ESP_OK;
     status = (firmware_update_status_t){0}; worker_active = network_held = network_releasing = initialized = handle_open = false;
     boot_task = NULL; boot_entry = NULL; target = NULL; hash = (psa_hash_operation_t)PSA_HASH_OPERATION_INIT;
@@ -226,8 +226,8 @@ static void reset(void)
     memcpy(candidate_signature.block[0].key, running_key_digest, sizeof(running_key_digest));
     running_descriptor = (update_descriptor_t){.magic = {'K','B','O','T','A','0','0','1'}, .format_version = 1,
         .bootstrap_version = 1, .updater_version = 1, .settings_version = 1, .kdf_iterations = 10,
-        .flash_bytes = 0x1000000, .slot_bytes = UPDATE_SLOT_BYTES, .security_profile = 1,
-        .product = "remote-keyboard", .board = "esp32s3-generic-16m", .layout = "kb16-ab6-nvs64-v1",
+        .flash_bytes = UPDATE_FLASH_BYTES, .slot_bytes = UPDATE_SLOT_BYTES, .security_profile = 1,
+        .product = "remote-keyboard", .board = UPDATE_BOARD, .layout = UPDATE_LAYOUT,
         .source = "0123456789abcdef0123456789abcdef01234567", .version = "0.1.0"};
 }
 
@@ -248,7 +248,7 @@ static void test_layout_validation(void)
             assert(!firmware_update_status().available && !initialized && begins == 0);
         }
     }
-    const uint32_t capacities[] = {0, 0x800000, 0x2000000};
+    const uint32_t capacities[] = {0, UPDATE_FLASH_BYTES == 0x800000 ? 0x1000000 : 0x800000, 0x2000000};
     for (size_t index = 0; index < sizeof(capacities) / sizeof(capacities[0]); index++) {
         reset();
         flash_capacity = capacities[index];

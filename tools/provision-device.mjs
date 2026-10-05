@@ -4,6 +4,7 @@ import { pbkdf2Sync, randomBytes } from "node:crypto";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import QRCode from "qrcode";
 
 export const passwordIterations = 10;
@@ -49,7 +50,8 @@ function outsideRepository(directory) {
   return isAbsolute(contained) || contained === ".." || contained.startsWith(`..${sep}`);
 }
 
-export async function writeIdentity(deviceId, output, iterations = passwordIterations) {
+export async function writeIdentity(deviceId, output, iterations = passwordIterations, hostname = "kb") {
+  assert.ok(["kb", "x"].includes(hostname), "Unsupported board setup hostname");
   const directory = resolve(output);
   assert.ok(outsideRepository(directory), "Private provisioning output must be outside the repository");
   const identity = createIdentity(deviceId, iterations);
@@ -83,7 +85,7 @@ code{font-size:16px}small{display:block;margin-top:24px} @media print{body{margi
 </style></head><body><h1>Wi-Fi Keyboard</h1><p>Private setup card - keep for recovery.</p>
 <img src="data:image/png;base64,${png.toString("base64")}" alt="Wi-Fi connection QR code">
 <dl><dt>Wi-Fi network</dt><dd>${identity.ssid}</dd><dt>Wi-Fi password</dt><dd><code>${identity.apPassword}</code></dd>
-<dt>Browser address</dt><dd>http://kb.local/ (AP fallback: http://192.168.4.1/)</dd>
+<dt>Browser address</dt><dd>http://${hostname}.local/ (AP fallback: http://192.168.4.1/)</dd>
 <dt>One-time owner setup code</dt><dd><code>${identity.setupCode}</code></dd><dt>Device</dt><dd>${identity.deviceId}</dd></dl>
 <p>Join the protected Wi-Fi, open the browser address, and choose your own owner password. The setup code stops working after ownership is claimed. The Wi-Fi password remains useful for AP operation and recovery.</p>
 <small>HTTP/WS development firmware: use a protected, trusted test network. Application credentials and input are not protected against network interception. This card grants Wi-Fi access; keep it private.</small>
@@ -100,10 +102,13 @@ code{font-size:16px}small{display:block;margin-top:24px} @media print{body{margi
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [deviceFlag, deviceId, outputFlag, output, ...extra] = process.argv.slice(2);
-  assert.ok(deviceFlag === "--device-id" && outputFlag === "--output" && output && extra.length === 0,
-    "Usage: node tools/provision-device.mjs --device-id <factory-base-MAC> --output <new-private-directory-outside-repo>");
-  const directory = await writeIdentity(deviceId, output);
+  const { values } = parseArgs({ allowPositionals: false, options: {
+    "device-id": { type: "string" }, output: { type: "string" },
+    hostname: { type: "string", default: "kb" },
+  } });
+  assert.ok(values["device-id"] && values.output,
+    "Usage: node tools/provision-device.mjs --device-id <factory-base-MAC> --output <new-private-directory-outside-repo> [--hostname kb|x]");
+  const directory = await writeIdentity(values["device-id"], values.output, passwordIterations, values.hostname);
   console.log(`Private setup files prepared in ${directory}`);
   console.log("No secrets printed. No serial connection, NVS write, flash erase, or device operation performed.");
   console.log("An NVS image replaces partition contents; verify the board and partition layout before a separate sender-side provisioning step.");

@@ -39,14 +39,16 @@ bool update_descriptor_valid(const update_descriptor_t *descriptor)
         descriptor->format_version != 1 || (descriptor->security_profile != 1 && descriptor->security_profile != 2) ||
         descriptor->bootstrap_version != 1 || descriptor->updater_version != 1 ||
         descriptor->settings_version != 1 || descriptor->kdf_iterations != 10 ||
-        descriptor->flash_bytes != 0x1000000 || descriptor->slot_bytes != UPDATE_SLOT_BYTES ||
+        descriptor->flash_bytes != UPDATE_FLASH_BYTES || descriptor->slot_bytes != UPDATE_SLOT_BYTES ||
         !text_valid(descriptor->product, sizeof(descriptor->product)) ||
         !text_valid(descriptor->board, sizeof(descriptor->board)) ||
         !text_valid(descriptor->layout, sizeof(descriptor->layout)) ||
         !text_valid(descriptor->source, sizeof(descriptor->source)) ||
         !text_valid(descriptor->version, sizeof(descriptor->version)) ||
         !update_version_parse(descriptor->version, version)) return false;
-    if (strlen(descriptor->source) != 40) return false;
+    if (strcmp(descriptor->product, "remote-keyboard") != 0 ||
+        strcmp(descriptor->board, UPDATE_BOARD) != 0 ||
+        strcmp(descriptor->layout, UPDATE_LAYOUT) != 0 || strlen(descriptor->source) != 40) return false;
     for (size_t index = 0; index < 40; index++) {
         char character = descriptor->source[index];
         if (!((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f'))) return false;
