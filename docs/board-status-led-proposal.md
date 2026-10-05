@@ -233,8 +233,12 @@ The 2026-10-05 follow-up passed 18 targeted native suites with ASan/UBSan,
 including both production GPIO drivers, exhaustive not-ready OFF samples,
 idle pulse boundaries, stale/invalid snapshots, initialization failures,
 both sleep-hold modes, and cleanup failures. XIAO, XinluCity, and generic
-ESP-IDF v6.1 builds and signed packaging passed. This is software evidence;
-the changed pattern and XIAO LED have not yet been physically accepted.
+ESP-IDF v6.1 builds and signed packaging passed. This is software evidence.
+The user subsequently reported that the XIAO LED works as expected after the
+follow-up build was provided, but no installed version/source or image identity
+was recorded. The hardware record retains that preliminary observation while
+keeping revision-matched acceptance of the new patterns pending. Earlier
+typing/antenna smoke tests ran before GPIO21 support and cannot validate it.
 
 The renderer starts before USB/network startup and remains `NOT_READY` until
 successful service startup and current readiness are published. Its GPIO latch

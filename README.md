@@ -158,8 +158,11 @@ The default firmware version is now `0.1.1`, allowing an OTA update from
 `0.1.0` with the same signing key, board, and layout. Update through `/ota`
 using `firmware-ota.bin` to retain ownership and network settings; do not use
 the destructive first-install workflow for an ordinary update. These commands
-build and validate offline only. XIAO LED polarity/visibility, sleep darkness,
-BOOT wake, and USB reconnection still require physical acceptance.
+build and validate offline only. A subsequent user report says the XIAO LED
+works as expected, but its installed firmware identity was not recorded.
+Revision-matched LED acceptance, instrumented polarity/timing, sleep darkness,
+BOOT wake, and USB reconnection remain pending; the assistant has not flashed
+or reset the board.
 
 Connect the supplied external antenna for reliable Wi-Fi. The user reported
 slow page loading without it and immediate page loading after attaching it.
