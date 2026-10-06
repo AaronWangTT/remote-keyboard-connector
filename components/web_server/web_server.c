@@ -1058,6 +1058,16 @@ static esp_err_t control_handler(httpd_req_t *request)
         if (!firmware_update_status().available) return problem(request, "503 Service Unavailable", "device_starting");
         if (active_client != NULL || pending_owner != NULL) return problem(request, "409 Conflict", "busy");
         if (!usb_keyboard_status().ready) return problem(request, "503 Service Unavailable", "usb_unavailable");
+        int sockets[WEB_SERVER_MAX_OPEN_SOCKETS];
+        size_t socket_count = WEB_SERVER_MAX_OPEN_SOCKETS;
+        esp_err_t capacity = httpd_get_client_list(server, &socket_count, sockets);
+        if (capacity != ESP_OK) {
+            ESP_LOGW("web_control", "Connection capacity check failed (%s)", esp_err_to_name(capacity));
+            return problem(request, "503 Service Unavailable", "connection_capacity_unavailable");
+        }
+        if (socket_count >= WEB_SERVER_MAX_OPEN_SOCKETS) {
+            return problem(request, "503 Service Unavailable", "connection_capacity_exhausted");
+        }
         uint32_t generation = usb_keyboard_status().generation;
         if (!network_control_begin(local_address(request), generation)) return problem(request, "409 Conflict", "network_busy");
         pending_owner = session;
@@ -1080,7 +1090,7 @@ esp_err_t web_server_start(void)
     power_control_init();
     httpd_config_t configuration = HTTPD_DEFAULT_CONFIG();
     configuration.max_uri_handlers = sizeof(assets) / sizeof(assets[0]) + 19;
-    configuration.max_open_sockets = 7;
+    configuration.max_open_sockets = WEB_SERVER_MAX_OPEN_SOCKETS;
     configuration.stack_size = 8192;
     configuration.recv_wait_timeout = 2;
     configuration.send_wait_timeout = 2;

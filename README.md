@@ -319,9 +319,29 @@ do not extend the active controller's 1-second lease/reply deadline or the
 250 ms input acknowledgement deadline, and do not automatically retry or replay
 keys. A cancelled attempt can retain its pending reservation until it expires
 or an explicit Release clears it.
+Failures show a specific connection status and an alert: control request
+rejection/unreachability, HTTP connection capacity exhaustion, WebSocket setup timeout/failure, connection loss,
+missing replies/input confirmations, invalid responses, input safety limits,
+or USB becoming unavailable. `USB unknown` means no current USB status is
+available, not a confirmed HID fault; a known USB-not-ready rejection shows
+`USB waiting`. Failure status survives focus changes and session refresh while
+signed in, until another Take Control, explicit Release or sign-out.
+Normal Release clears the failure; foreground/background transitions do not
+create new failure notifications.
+These notifications do not retry, replay input, clear other controllers or
+change the pending-control cancellation protocol.
+Before creating a reservation, Take Control checks the HTTP server client count,
+including the current request. If all seven slots are occupied, it returns
+HTTP 503 with `connection_capacity_exhausted` and the page shows **Connections
+full**, rather than claiming successful acquisition. Failure to inspect capacity
+returns `connection_capacity_unavailable` and is logged. Stop remains available
+on existing connections. This is a preflight snapshot, not a reserved TCP slot:
+connections arriving later can still cause setup timeout. No connections are
+evicted and no socket limits are increased by this check.
 The local preview can simulate a delayed Upgrade with
 `PREVIEW_WEBSOCKET_DELAY_MS=5500`; it accepts 0-15000 ms and defaults to no
 injected delay. This test setting is not part of the firmware.
+`PREVIEW_HTTP_CAPACITY_FULL=1` simulates a full server for failure-message tests.
 
 The Network view offers Standalone AP or Join Wi-Fi, scan/manual SSID entry,
 credential testing, saved-network reuse, hostname changes, and confirmed Forget

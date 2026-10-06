@@ -2,6 +2,7 @@
 #include "access_control.h"
 #include "firmware_update.h"
 #include "usb_keyboard.h"
+#include "web_server.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -30,6 +31,10 @@ static usb_keyboard_status_t usb = { .ready = true, .generation = 7 };
 static unsigned network_ends;
 static unsigned usb_releases;
 static unsigned closed_sockets;
+static unsigned network_begins;
+static unsigned capacity_logs;
+static size_t socket_count = WEB_SERVER_MAX_OPEN_SOCKETS - 1;
+static esp_err_t capacity_result = ESP_OK;
 static int response_status;
 static const char *response_error;
 
@@ -40,7 +45,21 @@ void network_control_end(uint32_t generation) { assert(generation == usb.generat
 static bool network_control_begin(uint32_t address, uint32_t generation)
 {
     assert(address == 42 && generation == usb.generation);
+    network_begins++;
     return true;
+}
+static esp_err_t httpd_get_client_list(httpd_handle_t handle, size_t *count, int *sockets)
+{
+    assert(handle == server && *count == WEB_SERVER_MAX_OPEN_SOCKETS);
+    for (size_t index = 0; index < *count; index++) sockets[index] = (int)index + 10;
+    *count = socket_count;
+    return capacity_result;
+}
+const char *esp_err_to_name(esp_err_t result) { assert(result == ESP_FAIL); return "ESP_FAIL"; }
+void test_log(const char *tag, const char *format, ...)
+{
+    assert(strcmp(tag, "web_control") == 0 && strstr(format, "Connection capacity check failed") != NULL);
+    capacity_logs++;
 }
 esp_err_t httpd_sess_trigger_close(httpd_handle_t handle, int socket)
 {
@@ -83,8 +102,8 @@ static esp_err_t httpd_resp_sendstr(httpd_req_t *request, const char *body)
 static esp_err_t problem(httpd_req_t *request, const char *status, const char *code)
 {
     (void)request;
-    assert(strcmp(status, "409 Conflict") == 0);
-    response_status = 409;
+    assert(strcmp(status, "409 Conflict") == 0 || strcmp(status, "503 Service Unavailable") == 0);
+    response_status = strcmp(status, "409 Conflict") == 0 ? 409 : 503;
     response_error = code;
     return ESP_OK;
 }
@@ -96,6 +115,19 @@ int main(void)
 {
     httpd_req_t take = { .uri = "/api/v1/control/take" };
     httpd_req_t stop = { .uri = "/api/v1/control/stop" };
+    socket_count = WEB_SERVER_MAX_OPEN_SOCKETS;
+    assert(control_handler(&take) == ESP_OK && response_status == 503);
+    assert(strcmp(response_error, "connection_capacity_exhausted") == 0);
+    assert(pending_owner == NULL && network_begins == 0);
+    assert(control_handler(&stop) == ESP_OK && response_status == 200);
+    assert(pending_owner == NULL && network_ends == 0);
+    capacity_result = ESP_FAIL;
+    socket_count = WEB_SERVER_MAX_OPEN_SOCKETS - 1;
+    assert(control_handler(&take) == ESP_OK && response_status == 503);
+    assert(strcmp(response_error, "connection_capacity_unavailable") == 0 && capacity_logs == 1);
+    assert(pending_owner == NULL && network_begins == 0);
+    capacity_result = ESP_OK;
+    assert(WEB_SERVER_MAX_OPEN_SOCKETS == 7);
     assert(control_handler(&take) == ESP_OK && response_status == 200);
     assert(pending_owner == &owner && pending_generation == owner.generation);
     assert(pending_usb_generation == usb.generation && pending_until - now == INT64_C(10000000));

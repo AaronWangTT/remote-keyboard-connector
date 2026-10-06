@@ -12,6 +12,7 @@ const previewProfile = profiles[previewBoard];
 if (!previewProfile) throw new Error(`Unsupported preview board profile: ${previewBoard}`);
 const boardPower = process.env.PREVIEW_BOARD_POWER !== "0";
 const usbReady = process.env.PREVIEW_USB_READY !== "0";
+const httpCapacityFull = process.env.PREVIEW_HTTP_CAPACITY_FULL === "1";
 const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 256 });
 let capsLock = process.env.PREVIEW_CAPS_LOCK === "unknown" ? null : process.env.PREVIEW_CAPS_LOCK === "1";
 let controller = null;
@@ -587,6 +588,7 @@ const server = createServer(async (request, response) => {
       if (updateBusy()) return sendJson(response, 409, { error: "update_busy" });
       if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "busy" });
       if (!usbReady) return sendJson(response, 503, { error: "usb_unavailable" });
+      if (httpCapacityFull) return sendJson(response, 503, { error: "connection_capacity_exhausted" });
       if (!network.can_control || network.busy) return sendJson(response, 409, { error: "network_busy" });
       pendingControl = { session, until: performance.now() + controlReservationMs };
     }

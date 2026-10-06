@@ -116,7 +116,8 @@ for (const engine of [chromium, webkit]) {
       await recordHandshakeTiming(page);
       await page.locator("#take-control").click();
       await expect(page.locator("#connection-status")).toHaveText("Connecting");
-      await expect(page.locator("#connection-status")).toHaveText("Released", { timeout: 9500 });
+      await expect(page.locator("#connection-status")).toHaveText("Connection timed out", { timeout: 9500 });
+      await expect(page.locator("#ui-message")).toContainText("did not open within 8 seconds");
       const events = await page.evaluate(() => window.handshakeEvents);
       const closed = events.find(event => event.event === "client_close");
       assert.ok(closed && closed.state === 0 && closed.elapsed >= 8000 && closed.elapsed < 8750);
@@ -125,8 +126,223 @@ for (const engine of [chromium, webkit]) {
       const status = async () => (await (await page.request.get(`${url}/api/v1/status`)).json()).network.can_control;
       assert.equal(await status(), false);
       await expect.poll(status, { timeout: 3000 }).toBe(true);
+      for (const viewport of [{ width: 320, height: 568 }, { width: 844, height: 390 }]) {
+        await page.setViewportSize(viewport);
+        const layout = await page.evaluate(() => {
+          const status = document.querySelector("#connection-status").getBoundingClientRect();
+          const message = document.querySelector("#ui-message");
+          return { width: document.documentElement.scrollWidth, viewport: innerWidth,
+            left: status.left, right: status.right, messageClipped: message.scrollHeight > message.clientHeight + 1 };
+        });
+        assert.ok(layout.width <= layout.viewport && layout.left >= 0 && layout.right <= layout.viewport);
+        assert.equal(layout.messageClipped, false);
+      }
     });
 }
+
+async function failureStatusPage(context, engine) {
+  const url = await startPreview(context);
+  const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ?
+    { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+  context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.request.post(`${url}/api/v1/session`, {
+    headers: { Origin: url }, data: { password: "preview-owner-password" },
+  });
+  await page.goto(url);
+  await expect(page.locator("#take-control")).toBeVisible();
+  return { page, url };
+}
+
+async function releaseControlAndWait(page) {
+  const response = page.waitForResponse(response =>
+    response.url().endsWith("/api/v1/control/stop") && response.request().method() === "POST");
+  await page.locator("#release").click();
+  await response;
+  await expect(page.locator("#connection-status")).toHaveText("Released");
+  await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "false");
+  await expect(page.locator("#ui-message")).toBeHidden();
+}
+
+for (const engine of [chromium, webkit]) {
+  test(`Control failure statuses explain HTTP errors and survive focus/session refresh (${engine.name()})`,
+    { timeout: 20000 }, async context => {
+      const { page } = await failureStatusPage(context, engine);
+      const endpoint = "**/api/v1/control/take";
+      const cases = [
+        { http: 409, code: "busy", status: "Control unavailable", message: "Keyboard is in use" },
+        { http: 409, code: "network_busy", status: "Control unavailable", message: "Network operation in progress" },
+        { http: 503, code: "connection_capacity_exhausted", status: "Connections full", message: "All HTTP connection slots are in use" },
+        { http: 503, code: "connection_capacity_unavailable", status: "Control unavailable", message: "Connection capacity could not be checked" },
+        { http: 503, code: "usb_unavailable", status: "USB unavailable", message: "USB is not ready" },
+        { http: 503, code: "device_starting", status: "Control unavailable", message: "checking startup" },
+        { http: 0, status: "Control unavailable", message: "Control could not be requested" },
+      ];
+      for (const failure of cases) {
+        const handler = route => failure.http === 0 ? route.abort() : route.fulfill({
+          status: failure.http, contentType: "application/json", body: JSON.stringify({ error: failure.code }),
+        });
+        await page.route(endpoint, handler);
+        await page.locator("#take-control").click();
+        await expect(page.locator("#connection-status")).toHaveText(failure.status);
+        await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "true");
+        await expect(page.locator("#ui-message")).toContainText(failure.message);
+        await expect(page.locator("#usb-status")).toHaveText(failure.code === "usb_unavailable" ? "USB waiting" : "USB unknown");
+        await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
+        await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+        const session = page.waitForResponse(response =>
+          response.url().endsWith("/api/v1/session") && response.request().method() === "GET");
+        await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+        await session;
+        await expect(page.locator("#connection-status")).toHaveText(failure.status);
+        await expect(page.locator("#ui-message")).toContainText(failure.message);
+        await page.unroute(endpoint, handler);
+        await releaseControlAndWait(page);
+      }
+      const stalled = () => {};
+      await page.route(endpoint, stalled);
+      await page.locator("#take-control").click();
+      await expect(page.locator("#connection-status")).toHaveText("Requesting control");
+      await expect(page.locator("#connection-status")).toHaveText("Control unavailable", { timeout: 6500 });
+      await expect(page.locator("#ui-message")).toContainText("control request timed out");
+      await page.unroute(endpoint, stalled);
+      await releaseControlAndWait(page);
+      await takeControl(page);
+      await expect(page.locator("#connection-status")).toHaveText("Connected");
+      await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "false");
+      await expect(page.locator("#ui-message")).toBeHidden();
+      await releaseControlAndWait(page);
+      await page.route(endpoint, route => route.fulfill({
+        status: 401, contentType: "application/json", body: '{"error":"login_required"}',
+      }));
+      await page.locator("#take-control").click();
+      await expect(page.locator("#connection-status")).toHaveText("Signed out");
+      await expect(page.locator("#ui-message")).toContainText("Sign in to continue");
+    });
+
+  test(`Control failure statuses distinguish transport/protocol/USB/input failures (${engine.name()})`,
+    { timeout: 30000 }, async context => {
+      const { page, url } = await failureStatusPage(context, engine);
+      const pageErrors = [];
+      page.on("pageerror", error => pageErrors.push(error.message));
+      await page.evaluate(() => {
+        window.connectionFault = null;
+        const Original = window.WebSocket;
+        const send = Original.prototype.send;
+        const listen = Original.prototype.addEventListener;
+        Original.prototype.send = function (data) {
+          if (window.connectionFault === "send") throw new Error("Simulated send failure");
+          return send.call(this, data);
+        };
+        Original.prototype.addEventListener = function (type, callback, options) {
+          if (type !== "message") return listen.call(this, type, callback, options);
+          return listen.call(this, type, event => {
+            const message = JSON.parse(event.data);
+            if (window.connectionFault === "reply" && message.type === "status") return;
+            if (window.connectionFault === "ack" && message.type === "queued") return;
+            const data = window.connectionFault === "invalid" ? "{" :
+              window.connectionFault === "usb" && message.type === "status" ?
+                JSON.stringify({ ...message, usb_ready: false }) : event.data;
+            callback.call(this, new MessageEvent("message", { data }));
+          }, options);
+        };
+        window.WebSocket = class extends Original {
+          constructor(...args) {
+            if (window.connectionFault === "constructor") throw new Error("Simulated constructor failure");
+            if (window.connectionFault === "handshake") args[0] = new URL("/invalid-keyboard", args[0]);
+            super(...args);
+          }
+        };
+      });
+      await page.evaluate(() => { window.connectionFault = "handshake"; });
+      await page.locator("#take-control").click();
+      await expect(page.locator("#connection-status")).toHaveText("Connection failed");
+      await expect(page.locator("#ui-message")).toContainText("could not be established");
+      await page.evaluate(() => { window.connectionFault = null; });
+      await releaseControlAndWait(page);
+      await page.evaluate(() => { window.connectionFault = "constructor"; });
+      await page.locator("#take-control").click();
+      await expect(page.locator("#connection-status")).toHaveText("Connection failed");
+      await expect(page.locator("#ui-message")).toContainText("could not be established");
+      await page.evaluate(() => { window.connectionFault = null; });
+      await releaseControlAndWait(page);
+
+      for (const failure of [
+        { fault: "reply", status: "Connection lost", message: "Keyboard replies stopped" },
+        { fault: "invalid", status: "Invalid response", message: "invalid response" },
+        { fault: "usb", status: "USB unavailable", message: "USB is not ready" },
+        { fault: "ack", status: "Input stopped", message: "Input confirmation timed out" },
+        { fault: "send", status: "Connection lost", message: "Input could not be sent" },
+      ]) {
+        await takeControl(page);
+        await page.locator("#keyboard").focus();
+        await page.evaluate(fault => { window.connectionFault = fault; }, failure.fault);
+        if (failure.fault === "ack" || failure.fault === "send") await page.keyboard.down("a");
+        await expect(page.locator("#connection-status")).toHaveText(failure.status);
+        await expect(page.locator("#ui-message")).toContainText(failure.message);
+        await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
+        await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "true");
+        await page.keyboard.up("a");
+        await expect.poll(async () => (await (await page.request.get(`${url}/__test__/input`)).json()).pressed).toBe(false);
+        await page.evaluate(() => { window.connectionFault = null; });
+        await releaseControlAndWait(page);
+      }
+      await takeControl(page);
+      const session = await (await page.request.get(`${url}/api/v1/session`)).json();
+      await page.request.post(`${url}/api/v1/control/stop`, {
+        headers: { Origin: url, "X-CSRF-Token": session.csrf },
+      });
+      await expect(page.locator("#connection-status")).toHaveText("Connection lost");
+      await expect(page.locator("#ui-message")).toContainText("control connection was lost");
+      await releaseControlAndWait(page);
+      await takeControl(page);
+      await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+      await expect(page.locator("#connection-status")).toHaveText("Released");
+      await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "false");
+      await expect(page.locator("#ui-message")).toBeHidden();
+      assert.deepEqual(pageErrors, []);
+    });
+
+  test(`Obsolete control failures do not overwrite a newer request (${engine.name()})`,
+    { timeout: 15000 }, async context => {
+      const { page } = await failureStatusPage(context, engine);
+      const routes = [];
+      const handler = route => { routes.push(route); };
+      await page.route("**/api/v1/control/take", handler);
+      await page.locator("#take-control").click();
+      await expect.poll(() => routes.length).toBe(1);
+      await expect(page.locator("#connection-status")).toHaveText("Requesting control");
+      const session = page.waitForResponse(response =>
+        response.url().endsWith("/api/v1/session") && response.request().method() === "GET");
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+      await session;
+      await expect(page.locator("#connection-status")).toHaveText("Requesting control");
+      await releaseControlAndWait(page);
+      await page.locator("#take-control").click();
+      await expect.poll(() => routes.length).toBe(2);
+      await routes[0].fulfill({ status: 409, contentType: "application/json", body: '{"error":"busy"}' });
+      await expect(page.locator("#connection-status")).toHaveText("Requesting control");
+      await expect(page.locator("#take-control")).toBeDisabled();
+      await expect(page.locator("#ui-message")).toBeHidden();
+      await routes[1].fulfill({ status: 503, contentType: "application/json", body: '{"error":"usb_unavailable"}' });
+      await expect(page.locator("#connection-status")).toHaveText("USB unavailable");
+      await expect(page.locator("#ui-message")).toContainText("USB is not ready");
+      await page.unroute("**/api/v1/control/take", handler);
+      await releaseControlAndWait(page);
+    });
+}
+
+test("Full HTTP capacity rejects control without reserving it and still permits Stop", { timeout: 10000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_HTTP_CAPACITY_FULL: "1" });
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf };
+  const take = await fetch(`${url}/api/v1/control/take`, { method: "POST", headers });
+  assert.equal(take.status, 503);
+  assert.deepEqual(await take.json(), { error: "connection_capacity_exhausted" });
+  const status = await (await fetch(`${url}/api/v1/status`, { headers })).json();
+  assert.equal(status.network.can_control, true);
+  assert.equal((await fetch(`${url}/api/v1/control/stop`, { method: "POST", headers })).status, 200);
+});
 
 function previewUpdateImage(version = "0.1.1") {
   const image = Buffer.alloc(8192, 0xff);
