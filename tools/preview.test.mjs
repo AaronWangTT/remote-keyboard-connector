@@ -28,8 +28,17 @@ async function startPreview(context, environment = {}, beforeStop) {
 }
 
 async function closeBrowserAfterForwards(browser, forwards) {
+  let failed = false;
+  let firstFailure;
   try {
-    await Promise.all([...forwards]);
+    await Promise.allSettled([...forwards].map(forward => Promise.resolve(forward).catch(error => {
+      if (!failed) {
+        failed = true;
+        firstFailure = error;
+      }
+      throw error;
+    })));
+    if (failed) throw firstFailure;
   } finally {
     if (browser) await browser.close();
   }
@@ -58,6 +67,41 @@ test("AP route teardown drains successful forwarding before closing the browser"
   assert.equal(closes, 0);
   resolveForward();
   await closing;
+  assert.equal(closes, 1);
+});
+
+test("AP route teardown waits for a pending forward after another forward fails", async () => {
+  const failure = new Error("First forwarding failure");
+  let rejectFast;
+  let resolveSlow;
+  let closes = 0;
+  const slow = new Promise(resolve => { resolveSlow = resolve; });
+  const fast = new Promise((resolve, reject) => { rejectFast = reject; });
+  const closing = closeBrowserAfterForwards({ close: async () => { closes++; } }, new Set([slow, fast]));
+  const rejected = assert.rejects(closing, error => error === failure);
+  rejectFast(failure);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closes, 0);
+  resolveSlow();
+  await rejected;
+  assert.equal(closes, 1);
+});
+
+test("AP route teardown retains the earliest rejection rather than forwarding insertion order", async () => {
+  const first = new Error("First observed failure");
+  const later = new Error("Later failure");
+  let rejectSlow;
+  let rejectFast;
+  let closes = 0;
+  const slow = new Promise((resolve, reject) => { rejectSlow = reject; });
+  const fast = new Promise((resolve, reject) => { rejectFast = reject; });
+  const closing = closeBrowserAfterForwards({ close: async () => { closes++; } }, new Set([slow, fast]));
+  const rejected = assert.rejects(closing, error => error === first);
+  rejectFast(first);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closes, 0);
+  rejectSlow(later);
+  await rejected;
   assert.equal(closes, 1);
 });
 
