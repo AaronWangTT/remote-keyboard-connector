@@ -319,9 +319,50 @@ do not extend the active controller's 1-second lease/reply deadline or the
 250 ms input acknowledgement deadline, and do not automatically retry or replay
 keys. A cancelled attempt can retain its pending reservation until it expires
 or an explicit Release clears it.
+Failures show a specific connection status and an alert: control request
+rejection/unreachability, HTTP connection capacity exhaustion, WebSocket setup timeout/failure, connection loss,
+missing replies/input confirmations, invalid responses, input safety limits,
+or USB becoming unavailable. `USB unknown` means no current USB status is
+available, not a confirmed HID fault; a known USB-not-ready rejection shows
+`USB waiting`. Failure status survives focus changes and session refresh while
+signed in, until another Take Control, explicit Release or sign-out.
+Normal Release clears the failure; foreground/background transitions do not
+create new failure notifications.
+Each page keeps Take Control disabled while an earlier Take, explicit Release,
+or obsolete-success cleanup is still pending; **Finishing control request**
+indicates that barrier. A response from an old attempt/session cannot invalidate
+the current login. Obsolete-success cleanup is skipped after a session change.
+This serializes operations within the page without changing the existing
+explicit global priority-Stop behavior. Take replies include a positive
+`control_id`; automatic obsolete-success cleanup sends it in `X-Control-Id`.
+The server only stops matching pending/active control owned by that session;
+a replaced/released ID returns 409 `control_request_stale`, treated as an
+explicitly logged obsolete cleanup. A missing header retains manual global
+Stop behavior; malformed scoped IDs return 400 `invalid_control_request`.
+Refresh the page after updating firmware so the matching client code is loaded.
+These notifications do not retry or replay input. Scoped automatic cleanup
+cannot clear a newer acquisition; explicit Release retains priority Stop.
+Before creating a reservation, Take Control checks the HTTP server client count,
+including the current request. When all seven slots are occupied, it marks this
+Take Control response `Connection: close` and queues closure of only that
+request's HTTP connection after the synchronous response completes, allowing
+the subsequent WebSocket to use the released slot. The owner session/cookie
+and pending reservation survive this transport close. With spare capacity,
+normal HTTP keep-alive is unchanged. Other connections are never selected
+for closure, and Stop retains its existing behavior.
+Failure to inspect capacity or set the close header returns
+`connection_capacity_unavailable` and is logged. Failure to queue the close
+returns HTTP 503 `connection_capacity_exhausted` and **Connections full**, without
+creating a reservation. This is not an exclusive TCP-slot reservation: another
+connection can consume the released slot and setup can still time out.
+No general idle-connection reclamation, increased limits or automatic retry is
+introduced.
 The local preview can simulate a delayed Upgrade with
 `PREVIEW_WEBSOCKET_DELAY_MS=5500`; it accepts 0-15000 ms and defaults to no
 injected delay. This test setting is not part of the firmware.
+`PREVIEW_HTTP_CAPACITY_FULL=1` simulates pressure and closes successful Take
+Control responses; combine it with `PREVIEW_CONTROL_CLOSE_FAILED=1` to simulate
+failed closure preparation and exercise the explicit full-capacity error.
 
 The Network view offers Standalone AP or Join Wi-Fi, scan/manual SSID entry,
 credential testing, saved-network reuse, hostname changes, and confirmed Forget

@@ -100,6 +100,7 @@ typedef struct {
     int64_t last_seen;
     access_session_t *owner;
     uint32_t owner_generation;
+    uint32_t control_id;
     keyboard_report_t last_report;
 } input_client_t;
 
@@ -110,6 +111,8 @@ static access_session_t *pending_owner;
 static uint32_t pending_generation;
 static uint32_t pending_usb_generation;
 static int64_t pending_until;
+static uint32_t pending_control_id;
+static uint32_t next_control_id;
 static esp_timer_handle_t control_timer;
 static bool server_started;
 static TaskHandle_t status_task;
@@ -382,6 +385,7 @@ static esp_err_t input_handshake(httpd_req_t *request)
     client->last_seen = now;
     client->owner = session;
     client->owner_generation = session->generation;
+    client->control_id = pending_control_id;
     request->sess_ctx = client;
     request->free_ctx = free_input_client;
     active_client = client;
@@ -1052,23 +1056,65 @@ static esp_err_t control_handler(httpd_req_t *request)
     if (session == NULL) return ESP_OK;
     expire_control(NULL);
     if (strcmp(request->uri, "/api/v1/control/stop") == 0) {
+        char text[11] = {0};
+        esp_err_t scoped = httpd_req_get_hdr_value_str(request, "X-Control-Id", text, sizeof(text));
+        if (scoped != ESP_ERR_NOT_FOUND) {
+            uint32_t id = 0;
+            bool valid = scoped == ESP_OK && text[0] >= '1' && text[0] <= '9';
+            for (size_t index = 0; valid && text[index] != '\0'; index++) {
+                char digit = text[index];
+                if (digit < '0' || digit > '9' || id > (UINT32_MAX - (uint32_t)(digit - '0')) / 10) valid = false;
+                else id = id * 10 + (uint32_t)(digit - '0');
+            }
+            if (!valid) return problem(request, "400 Bad Request", "invalid_control_request");
+            bool pending = pending_owner == session && pending_generation == session->generation && pending_control_id == id;
+            bool active = active_client != NULL && active_client->owner == session &&
+                          active_client->owner_generation == session->generation && active_client->control_id == id;
+            if (!pending && !active) return problem(request, "409 Conflict", "control_request_stale");
+        }
         release_control();
     } else {
         if (firmware_update_status().busy) return problem(request, "409 Conflict", "update_busy");
         if (!firmware_update_status().available) return problem(request, "503 Service Unavailable", "device_starting");
         if (active_client != NULL || pending_owner != NULL) return problem(request, "409 Conflict", "busy");
         if (!usb_keyboard_status().ready) return problem(request, "503 Service Unavailable", "usb_unavailable");
+        int sockets[WEB_SERVER_MAX_OPEN_SOCKETS];
+        size_t socket_count = WEB_SERVER_MAX_OPEN_SOCKETS;
+        esp_err_t capacity = httpd_get_client_list(server, &socket_count, sockets);
+        if (capacity != ESP_OK) {
+            ESP_LOGW("web_control", "Connection capacity check failed (%s)", esp_err_to_name(capacity));
+            return problem(request, "503 Service Unavailable", "connection_capacity_unavailable");
+        }
+        if (socket_count >= WEB_SERVER_MAX_OPEN_SOCKETS) {
+            esp_err_t closing = httpd_resp_set_hdr(request, "Connection", "close");
+            if (closing != ESP_OK) {
+                ESP_LOGW("web_control", "Control response close header failed (%s)", esp_err_to_name(closing));
+                return problem(request, "503 Service Unavailable", "connection_capacity_unavailable");
+            }
+            /* Queued closure runs after this synchronous handler completes its response. */
+            closing = httpd_sess_trigger_close(server, httpd_req_to_sockfd(request));
+            if (closing != ESP_OK) {
+                ESP_LOGW("web_control", "Control HTTP connection close could not be queued (%s)", esp_err_to_name(closing));
+                return problem(request, "503 Service Unavailable", "connection_capacity_exhausted");
+            }
+        }
         uint32_t generation = usb_keyboard_status().generation;
         if (!network_control_begin(local_address(request), generation)) return problem(request, "409 Conflict", "network_busy");
         pending_owner = session;
         pending_generation = session->generation;
         pending_usb_generation = generation;
         pending_until = esp_timer_get_time() + ACCESS_CONTROL_PENDING_US;
+        if (++next_control_id == 0) ++next_control_id;
+        pending_control_id = next_control_id;
     }
     power_control_activity();
     response_headers(request);
     httpd_resp_set_type(request, "application/json");
-    return httpd_resp_sendstr(request, "{\"ok\":true}");
+    char response[64];
+    if (strcmp(request->uri, "/api/v1/control/take") == 0) {
+        snprintf(response, sizeof(response), "{\"ok\":true,\"control_id\":%" PRIu32 "}", pending_control_id);
+    } else snprintf(response, sizeof(response), "{\"ok\":true}");
+    return httpd_resp_sendstr(request, response);
 }
 
 esp_err_t web_server_start(void)
@@ -1080,7 +1126,7 @@ esp_err_t web_server_start(void)
     power_control_init();
     httpd_config_t configuration = HTTPD_DEFAULT_CONFIG();
     configuration.max_uri_handlers = sizeof(assets) / sizeof(assets[0]) + 19;
-    configuration.max_open_sockets = 7;
+    configuration.max_open_sockets = WEB_SERVER_MAX_OPEN_SOCKETS;
     configuration.stack_size = 8192;
     configuration.recv_wait_timeout = 2;
     configuration.send_wait_timeout = 2;

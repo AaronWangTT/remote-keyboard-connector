@@ -33,9 +33,11 @@ let sequence = 0;
 let lastReport = JSON.stringify(keyboard.report);
 let lastReply = 0;
 let connectedAt = 0;
+let connectionFailure = null;
 let account = { provisioned: false, claimed: true, authenticated: false, csrf: "" };
 let controlAttempt = 0;
 let takingControl = false;
+let controlRequests = 0;
 let accountLoaded = false;
 let currentView = "keyboard";
 let networkState = null;
@@ -84,6 +86,20 @@ function errorMessage(error) {
     usb_unavailable: "USB is not ready.", csrf_denied: "Session changed. Reload and sign in again.",
     provisioning_required: "This keyboard needs sender provisioning.", claim_failed: "Owner setup could not be saved. Reconnect before trying again.",
     network_busy: "Network operation in progress. Refresh its status before trying again.",
+    connection_capacity_exhausted: "All HTTP connection slots are in use. Close other keyboard pages or browsers and wait before retrying; refreshing may not free connections.",
+    connection_capacity_unavailable: "Connection capacity could not be checked. Release control and try again.",
+    control_request_failed: "Control could not be requested. Check the connection, then release and try again.",
+    control_request_timeout: "The control request timed out. Check the connection, then release and try again.",
+    connection_timeout: `The control connection did not open within ${websocketConnectTimeoutMs / 1000} seconds. Check the connection or try the device IP address. Release control before retrying.`,
+    connection_failed: "The control connection could not be established. Check the connection, then release and try again.",
+    connection_lost: "The control connection was lost. Local input was cleared; take control again.",
+    reply_timeout: "Keyboard replies stopped. Local input was cleared; take control again.",
+    input_ack_timeout: "Input confirmation timed out. Local input was cleared; take control again.",
+    send_failed: "Input could not be sent. Local input was cleared; take control again.",
+    invalid_response: "The keyboard sent an invalid response. Local input was cleared; take control again.",
+    input_limit: "The input safety limit was reached. Local input was cleared; take control again.",
+    input_rejected: "Input could not be prepared. Local input was cleared; take control again.",
+    invalid_control_request: "The control request identifier is invalid. Reload the keyboard page.",
     release_control_first: "Release keyboard control before continuing.",
     update_busy: "A firmware update is in progress.",
     device_starting: "The keyboard is checking startup. Try again shortly.",
@@ -96,19 +112,35 @@ function errorMessage(error) {
     login_required: "Sign in to continue." })[error.code] ?? "Cannot reach the keyboard. Check the connection and try again.";
 }
 
-async function api(path, method = "GET", body) {
+async function api(path, method = "GET", body, requestAttempt = null, controlId = null) {
+  const session = account.csrf;
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (method !== "GET" && account.csrf) headers["X-CSRF-Token"] = account.csrf;
-  const response = await fetch(path, { method, headers, credentials: "same-origin", cache: "no-store",
-    signal: AbortSignal.timeout(method === "POST" && ["/api/v1/session", "/api/v1/claim"].includes(path) ? 30000 : 5000),
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
-  const result = await response.json();
+  if (controlId !== null) headers["X-Control-Id"] = String(controlId);
+  const signal = AbortSignal.timeout(method === "POST" && ["/api/v1/session", "/api/v1/claim"].includes(path) ? 30000 : 5000);
+  let response;
+  let result;
+  try {
+    response = await fetch(path, { method, headers, credentials: "same-origin", cache: "no-store", signal,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+    result = await response.json();
+  } catch (error) {
+    if (path === "/api/v1/control/take" && signal.aborted) {
+      const timeout = new Error("control_request_timeout", { cause: error });
+      timeout.code = "control_request_timeout";
+      throw timeout;
+    }
+    throw error;
+  }
   if (!response.ok) {
     const error = new Error(result.error ?? "request_failed");
     error.code = result.error;
     error.status = response.status;
-    if (response.status === 401 && !(method === "POST" && ["/api/v1/session", "/api/v1/claim"].includes(path))) {
+    if (response.status === 401 && session === account.csrf &&
+        (requestAttempt === null || requestAttempt === controlAttempt) &&
+        !(method === "POST" && ["/api/v1/session", "/api/v1/claim"].includes(path))) {
+      error.sessionInvalidated = true;
       account.authenticated = false;
       account.csrf = "";
       disconnect();
@@ -145,7 +177,7 @@ function renderAccount() {
   document.querySelector("#network-view").hidden = !account.authenticated || currentView !== "network";
   for (const id of ["take-control", "release", "network-settings"]) document.getElementById(id).hidden = !account.authenticated || currentView !== "keyboard";
   document.querySelector("#logout").hidden = !account.authenticated;
-  document.querySelector("#take-control").disabled = !account.authenticated || socket !== null || takingControl;
+  document.querySelector("#take-control").disabled = !account.authenticated || socket !== null || takingControl || controlRequests > 0;
   const claiming = !account.claimed;
   document.querySelector("#account-title").textContent = claiming ? "Claim keyboard" : "Sign in";
   document.querySelector("#account-submit").textContent = claiming ? "Claim keyboard" : "Sign in";
@@ -164,7 +196,7 @@ async function loadSession() {
     accountLoaded = true;
     document.querySelector("#session-retry").hidden = true;
     if (previous && !account.authenticated) disconnect();
-    if (socket === null) connectionStatus.textContent = account.authenticated ? "Released" : "Signed out";
+    if (socket === null) renderDisconnectedStatus();
     renderAccount();
     if (account.authenticated) pollNetwork();
     if (!account.provisioned) notify("This keyboard needs sender provisioning.");
@@ -427,7 +459,29 @@ function render() {
   keyState.textContent = report.keys.length || report.modifiers ? "Pressed" : "Released";
 }
 
-function disconnect() {
+function renderDisconnectedStatus() {
+  connectionStatus.textContent = account.authenticated ?
+    takingControl ? "Requesting control" : connectionFailure?.status ??
+      (controlRequests > 0 ? "Finishing control request" : "Released") : "Signed out";
+  connectionStatus.dataset.error = String(account.authenticated && connectionFailure !== null);
+}
+
+async function controlRequest(operation) {
+  controlRequests++;
+  renderAccount();
+  try {
+    return await operation();
+  } finally {
+    controlRequests--;
+    if (socket === null && !takingControl) renderDisconnectedStatus();
+    renderAccount();
+  }
+}
+
+function disconnect(failure = null) {
+  const wasControlling = socket !== null || takingControl;
+  if (failure !== null) connectionFailure = failure;
+  else if (wasControlling || !account.authenticated) connectionFailure = null;
   controlAttempt++;
   takingControl = false;
   const previous = socket;
@@ -439,9 +493,9 @@ function disconnect() {
   clearLocalEcho();
   sequence = 0;
   lastReport = JSON.stringify(keyboard.report);
-  connectionStatus.textContent = account.authenticated ? "Released" : "Signed out";
+  renderDisconnectedStatus();
   connectionStatus.dataset.ready = "false";
-  usbStatus.textContent = "USB unknown";
+  usbStatus.textContent = connectionFailure?.code === "usb_unavailable" ? "USB waiting" : "USB unknown";
   usbStatus.dataset.ready = "false";
   if (previous !== null) {
     try {
@@ -451,18 +505,19 @@ function disconnect() {
   }
   render();
   renderAccount();
+  if (failure !== null) notify(errorMessage(failure));
 }
 
 function transmit(message) {
   if (!socket || socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > 1024) {
-    disconnect();
+    disconnect({ status: "Connection lost", code: "send_failed" });
     return false;
   }
   try {
     socket.send(JSON.stringify(message));
     return true;
   } catch {
-    disconnect();
+    disconnect({ status: "Connection lost", code: "send_failed" });
     return false;
   }
 }
@@ -478,7 +533,7 @@ function publish(reports, forceFirst = false) {
   });
   if (outgoing.length && (!ready || pending.size + outgoing.length > 16 ||
       sequence > 2147483647 - outgoing.length)) {
-    disconnect();
+    disconnect({ status: "Input stopped", code: "input_limit" });
     return;
   }
   for (const { report, serialized } of outgoing) {
@@ -495,7 +550,7 @@ function changeInput(operation) {
   try {
     publish(operation());
   } catch {
-    disconnect();
+    disconnect({ status: "Input stopped", code: "input_rejected" });
   }
 }
 
@@ -505,7 +560,7 @@ function activateCommand(action) {
     if (reports.length) publish(reports, true);
     else render();
   } catch {
-    disconnect();
+    disconnect({ status: "Input stopped", code: "input_rejected" });
   }
 }
 
@@ -522,13 +577,17 @@ function connect() {
   const endpoint = new URL("/api/v1/keyboard", location.href);
   endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
   const connection = new WebSocket(endpoint);
+  let opened = false;
+  connectionFailure = null;
   socket = connection;
   renderAccount();
   connectedAt = performance.now();
   connectionStatus.textContent = "Connecting";
+  connectionStatus.dataset.error = "false";
   connectionStatus.dataset.ready = "false";
   connection.addEventListener("open", () => {
     if (socket !== connection) return;
+    opened = true;
     lastReply = performance.now();
     connectionStatus.textContent = "Connected";
     connectionStatus.dataset.ready = "true";
@@ -538,8 +597,8 @@ function connect() {
     if (socket !== connection) return;
     if (document.hidden || !document.hasFocus()) { disconnect(); return; }
     let message;
-    try { message = JSON.parse(event.data); } catch { disconnect(); return; }
-    if (!message || message.v !== 1) { disconnect(); return; }
+    try { message = JSON.parse(event.data); } catch { disconnect({ status: "Invalid response", code: "invalid_response" }); return; }
+    if (!message || message.v !== 1) { disconnect({ status: "Invalid response", code: "invalid_response" }); return; }
     if (message.type === "queued" && pending.size && message.seq === pending.keys().next().value) {
       const echo = pending.get(message.seq).echo;
       pending.delete(message.seq);
@@ -549,18 +608,20 @@ function connect() {
       }
     } else if (message.type === "status" && typeof message.usb_ready === "boolean" &&
                (message.caps_lock === null || typeof message.caps_lock === "boolean")) {
-      if (!message.usb_ready && ready) { disconnect(); return; }
+      if (!message.usb_ready && ready) { disconnect({ status: "USB unavailable", code: "usb_unavailable" }); return; }
       ready = message.usb_ready;
       keyboard.setCapsLock(ready ? message.caps_lock : null);
       usbStatus.textContent = ready ? "USB ready" : "USB waiting";
       usbStatus.dataset.ready = String(ready);
       render();
       if (ready && !surface.contains(document.activeElement)) surface.focus({ preventScroll: true });
-    } else { disconnect(); return; }
+    } else { disconnect({ status: "Invalid response", code: "invalid_response" }); return; }
     lastReply = performance.now();
   });
   for (const event of ["close", "error"]) connection.addEventListener(event, () => {
-    if (socket === connection) disconnect();
+    if (socket === connection) disconnect(opened ?
+      { status: "Connection lost", code: "connection_lost" } :
+      { status: "Connection failed", code: "connection_failed" });
   });
 }
 
@@ -572,7 +633,7 @@ surface.addEventListener("pointerdown", event => {
   const key = definitions.get(button.dataset.key);
   if (key.action === "page") { switchPage(key.page); return; }
   if (key.action === "globe" || key.action === "cancel") { activateCommand(key.action); return; }
-  try { surface.setPointerCapture(event.pointerId); } catch { disconnect(); return; }
+  try { surface.setPointerCapture(event.pointerId); } catch { disconnect({ status: "Input stopped", code: "input_rejected" }); return; }
   changeInput(() => keyboard.press(`pointer:${event.pointerId}`, key, performance.now(), hostProfile));
 });
 
@@ -587,7 +648,7 @@ surface.addEventListener("pointerup", event => {
 surface.addEventListener("lostpointercapture", event => {
   if (keyboard.sources.has(`pointer:${event.pointerId}`)) disconnect();
 });
-surface.addEventListener("pointercancel", disconnect);
+surface.addEventListener("pointercancel", () => disconnect());
 surface.addEventListener("contextmenu", event => event.preventDefault());
 surface.addEventListener("click", event => {
   const button = event.target.closest("button[data-key]");
@@ -646,8 +707,12 @@ document.querySelector("#local-echo-clear").addEventListener("click", () => {
   surface.focus({ preventScroll: true });
 });
 document.querySelector("#release").addEventListener("click", () => {
-  disconnect();
-  api("/api/v1/control/stop", "POST").catch(error => notify(errorMessage(error)));
+  controlRequest(async () => {
+    connectionFailure = null;
+    notify();
+    disconnect();
+    await api("/api/v1/control/stop", "POST");
+  }).catch(error => notify(errorMessage(error)));
 });
 hostProfileToggle.addEventListener("change", event => {
   if (!event.target.matches('input[name="host-profile"]') || !event.target.checked ||
@@ -660,22 +725,54 @@ hostProfileToggle.addEventListener("change", event => {
   render();
 });
 document.querySelector("#take-control").addEventListener("click", async () => {
-  if (!account.authenticated || takingControl) return;
+  if (!account.authenticated || takingControl || controlRequests > 0) return;
   const attempt = ++controlAttempt;
+  const session = account.csrf;
+  connectionFailure = null;
   takingControl = true;
+  connectionStatus.textContent = "Requesting control";
+  connectionStatus.dataset.ready = "false";
+  connectionStatus.dataset.error = "false";
+  usbStatus.textContent = "USB unknown";
+  usbStatus.dataset.ready = "false";
   notify();
   renderAccount();
+  let acquired = false;
   try {
-    await api("/api/v1/control/take", "POST");
-    if (attempt !== controlAttempt || document.hidden || !document.hasFocus()) {
-      await api("/api/v1/control/stop", "POST");
-      return;
-    }
-    connect();
+    await controlRequest(async () => {
+      const granted = await api("/api/v1/control/take", "POST", undefined, attempt);
+      if (!Number.isInteger(granted.control_id) || granted.control_id < 1 || granted.control_id > 0xffffffff) {
+        const error = new Error("invalid_response");
+        error.code = "invalid_response";
+        throw error;
+      }
+      acquired = true;
+      if (attempt !== controlAttempt || document.hidden || !document.hasFocus()) {
+        if (session === account.csrf && account.authenticated) {
+          try {
+            await api("/api/v1/control/stop", "POST", undefined, attempt, granted.control_id);
+          } catch (error) {
+            if (error.code !== "control_request_stale") throw error;
+            console.info("Obsolete control acquisition was already replaced or released.");
+          }
+        } else console.info("Obsolete control acquisition belongs to a previous session; cleanup skipped.");
+        return;
+      }
+      connect();
+    });
   } catch (error) {
-    notify(errorMessage(error));
+    const code = typeof error.code === "string" ? error.code :
+      acquired ? "connection_failed" : error.name === "TimeoutError" ? "control_request_timeout" : "control_request_failed";
+    const status = code === "usb_unavailable" ? "USB unavailable" :
+      code === "connection_capacity_exhausted" ? "Connections full" : acquired ? "Connection failed" : "Control unavailable";
+    if (error.sessionInvalidated) notify(errorMessage(error));
+    else if (attempt === controlAttempt) disconnect({
+      status,
+      code,
+    });
+    else console.warn("An obsolete control request failed.", { code, status: error.status ?? 0 });
   } finally {
-    takingControl = false;
+    if (attempt === controlAttempt) takingControl = false;
     renderAccount();
   }
 });
@@ -849,7 +946,12 @@ setInterval(() => {
       (socket.readyState === WebSocket.CONNECTING && now - connectedAt >= websocketConnectTimeoutMs) ||
       (socket.readyState === WebSocket.OPEN && now - lastReply >= 1000) ||
       (pending.size && now - pending.values().next().value.sentAt >= 250)) {
-    disconnect();
+    const failure = document.hidden || !document.hasFocus() ? null :
+      socket.readyState === WebSocket.CONNECTING ? { status: "Connection timed out", code: "connection_timeout" } :
+      pending.size && now - pending.values().next().value.sentAt >= 250 ?
+        { status: "Input stopped", code: "input_ack_timeout" } :
+        { status: "Connection lost", code: "reply_timeout" };
+    disconnect(failure);
     return;
   }
   keyboard.expireCapsRequest(now);

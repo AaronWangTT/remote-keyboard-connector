@@ -8,20 +8,102 @@ import { fileURLToPath } from "node:url";
 import { chromium, webkit, expect } from "@playwright/test";
 import { WebSocket } from "ws";
 
-async function startPreview(context, environment = {}) {
+async function startPreview(context, environment = {}, beforeStop) {
   const processHandle = fork(new URL("./preview.mjs", import.meta.url), {
     env: { ...process.env, PORT: "0", PREVIEW_USB_READY: "1", PREVIEW_CAPS_LOCK: "0", PREVIEW_OWNER_PASSWORD: "preview-owner-password", ...environment },
     silent: true,
   });
   const exited = once(processHandle, "exit");
   context.after(async () => {
-    processHandle.kill("SIGTERM");
-    await exited;
+    try {
+      if (beforeStop) await beforeStop();
+    } finally {
+      processHandle.kill("SIGTERM");
+      await exited;
+    }
   });
   const [address] = await once(processHandle, "message", { signal: AbortSignal.timeout(5000) });
   assert.equal(address.type, "listening");
   return address.url;
 }
+
+async function closeBrowserAfterForwards(browser, forwards) {
+  let failed = false;
+  let firstFailure;
+  try {
+    await Promise.allSettled([...forwards].map(forward => Promise.resolve(forward).catch(error => {
+      if (!failed) {
+        failed = true;
+        firstFailure = error;
+      }
+      throw error;
+    })));
+    if (failed) throw firstFailure;
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+test("AP route teardown closes the browser and propagates a forwarding rejection", async () => {
+  const failure = new Error("Simulated route forwarding failure");
+  let rejectForward;
+  let closes = 0;
+  const forwarding = new Promise((resolve, reject) => { rejectForward = reject; });
+  const browser = { close: async () => { closes++; } };
+  const closing = closeBrowserAfterForwards(browser, new Set([forwarding]));
+  assert.equal(closes, 0);
+  rejectForward(failure);
+  await assert.rejects(closing, error => error === failure);
+  assert.equal(closes, 1);
+  await assert.rejects(closeBrowserAfterForwards(undefined, new Set([Promise.reject(failure)])),
+    error => error === failure);
+});
+
+test("AP route teardown drains successful forwarding before closing the browser", async () => {
+  let resolveForward;
+  let closes = 0;
+  const forwarding = new Promise(resolve => { resolveForward = resolve; });
+  const closing = closeBrowserAfterForwards({ close: async () => { closes++; } }, new Set([forwarding]));
+  assert.equal(closes, 0);
+  resolveForward();
+  await closing;
+  assert.equal(closes, 1);
+});
+
+test("AP route teardown waits for a pending forward after another forward fails", async () => {
+  const failure = new Error("First forwarding failure");
+  let rejectFast;
+  let resolveSlow;
+  let closes = 0;
+  const slow = new Promise(resolve => { resolveSlow = resolve; });
+  const fast = new Promise((resolve, reject) => { rejectFast = reject; });
+  const closing = closeBrowserAfterForwards({ close: async () => { closes++; } }, new Set([slow, fast]));
+  const rejected = assert.rejects(closing, error => error === failure);
+  rejectFast(failure);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closes, 0);
+  resolveSlow();
+  await rejected;
+  assert.equal(closes, 1);
+});
+
+test("AP route teardown retains the earliest rejection rather than forwarding insertion order", async () => {
+  const first = new Error("First observed failure");
+  const later = new Error("Later failure");
+  let rejectSlow;
+  let rejectFast;
+  let closes = 0;
+  const slow = new Promise((resolve, reject) => { rejectSlow = reject; });
+  const fast = new Promise((resolve, reject) => { rejectFast = reject; });
+  const closing = closeBrowserAfterForwards({ close: async () => { closes++; } }, new Set([slow, fast]));
+  const rejected = assert.rejects(closing, error => error === first);
+  rejectFast(first);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closes, 0);
+  rejectSlow(later);
+  await rejected;
+  assert.equal(closes, 1);
+});
 
 async function loginRequest(url, password = "preview-owner-password") {
   const response = await fetch(new URL("/api/v1/session", url), {
@@ -69,16 +151,20 @@ async function recordHandshakeTiming(page) {
 
 for (const engine of [chromium, webkit]) {
   test(`Slow WebSocket setup succeeds beyond the old 3s/5s limits (${engine.name()})`,
-    { timeout: 20000 }, async context => {
+    { timeout: 30000 }, async context => {
+      const started = performance.now();
+      const phase = name => context.diagnostic(`${name}: ${Math.round(performance.now() - started)} ms`);
       const url = await startPreview(context, { PREVIEW_WEBSOCKET_DELAY_MS: "5500" });
       const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ?
         { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
       context.after(() => browser.close());
+      phase("browser launched");
       const page = await browser.newPage();
       await page.goto(url);
       await page.locator("#owner-password").fill("preview-owner-password");
       await page.locator("#account-submit").click();
       await expect(page.locator("#take-control")).toBeVisible();
+      phase("signed in");
       await recordHandshakeTiming(page);
       await page.locator("#take-control").click();
       await expect(page.locator("#connection-status")).toHaveText("Connecting");
@@ -90,6 +176,7 @@ for (const engine of [chromium, webkit]) {
       assert.equal(before.down, 0);
       await expect(page.locator("#connection-status")).toHaveText("Connected", { timeout: 4000 });
       await expect(page.locator("#usb-status")).toHaveText("USB ready");
+      phase("slow connection ready");
       const events = await page.evaluate(() => window.handshakeEvents);
       const opened = events.find(event => event.event === "open");
       assert.ok(opened.elapsed >= 5000 && opened.elapsed < 8000);
@@ -98,8 +185,9 @@ for (const engine of [chromium, webkit]) {
       assert.equal(after.down, 0);
       await page.getByRole("button", { name: "A", exact: true }).click();
       await expect.poll(async () => (await (await page.request.get(`${url}/__test__/input`)).json()).down).toBe(1);
-      await page.locator("#release").click();
-      await expect(page.locator("#connection-status")).toHaveText("Released");
+      phase("input acknowledged");
+      await releaseControlAndWait(page);
+      phase("control released");
     });
 
   test(`WebSocket setup cancels at 8s and pending control expires at 10s (${engine.name()})`,
@@ -116,7 +204,8 @@ for (const engine of [chromium, webkit]) {
       await recordHandshakeTiming(page);
       await page.locator("#take-control").click();
       await expect(page.locator("#connection-status")).toHaveText("Connecting");
-      await expect(page.locator("#connection-status")).toHaveText("Released", { timeout: 9500 });
+      await expect(page.locator("#connection-status")).toHaveText("Connection timed out", { timeout: 9500 });
+      await expect(page.locator("#ui-message")).toContainText("did not open within 8 seconds");
       const events = await page.evaluate(() => window.handshakeEvents);
       const closed = events.find(event => event.event === "client_close");
       assert.ok(closed && closed.state === 0 && closed.elapsed >= 8000 && closed.elapsed < 8750);
@@ -125,8 +214,370 @@ for (const engine of [chromium, webkit]) {
       const status = async () => (await (await page.request.get(`${url}/api/v1/status`)).json()).network.can_control;
       assert.equal(await status(), false);
       await expect.poll(status, { timeout: 3000 }).toBe(true);
+      for (const viewport of [{ width: 320, height: 568 }, { width: 844, height: 390 }]) {
+        await page.setViewportSize(viewport);
+        const layout = await page.evaluate(() => {
+          const status = document.querySelector("#connection-status").getBoundingClientRect();
+          const message = document.querySelector("#ui-message");
+          return { width: document.documentElement.scrollWidth, viewport: innerWidth,
+            left: status.left, right: status.right, messageClipped: message.scrollHeight > message.clientHeight + 1 };
+        });
+        assert.ok(layout.width <= layout.viewport && layout.left >= 0 && layout.right <= layout.viewport);
+        assert.equal(layout.messageClipped, false);
+      }
     });
 }
+
+async function failureStatusPage(context, engine, environment = {}) {
+  const url = await startPreview(context, environment);
+  const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ?
+    { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+  context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.request.post(`${url}/api/v1/session`, {
+    headers: { Origin: url }, data: { password: "preview-owner-password" },
+  });
+  await page.goto(url);
+  await expect(page.locator("#take-control")).toBeVisible();
+  return { page, url };
+}
+
+async function releaseControlAndWait(page) {
+  const response = page.waitForResponse(response =>
+    response.url().endsWith("/api/v1/control/stop") && response.request().method() === "POST");
+  await page.locator("#release").click();
+  await response;
+  await expect(page.locator("#connection-status")).toHaveText("Released");
+  await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "false");
+  await expect(page.locator("#ui-message")).toBeHidden();
+}
+
+for (const engine of [chromium, webkit]) {
+  test(`Control failure statuses explain HTTP errors and survive focus/session refresh (${engine.name()})`,
+    { timeout: 20000 }, async context => {
+      const { page } = await failureStatusPage(context, engine);
+      const endpoint = "**/api/v1/control/take";
+      const cases = [
+        { http: 409, code: "busy", status: "Control unavailable", message: "Keyboard is in use" },
+        { http: 409, code: "network_busy", status: "Control unavailable", message: "Network operation in progress" },
+        { http: 503, code: "connection_capacity_exhausted", status: "Connections full", message: "All HTTP connection slots are in use" },
+        { http: 503, code: "connection_capacity_unavailable", status: "Control unavailable", message: "Connection capacity could not be checked" },
+        { http: 503, code: "usb_unavailable", status: "USB unavailable", message: "USB is not ready" },
+        { http: 503, code: "device_starting", status: "Control unavailable", message: "checking startup" },
+        { http: 0, status: "Control unavailable", message: "Control could not be requested" },
+      ];
+      for (const failure of cases) {
+        const handler = route => failure.http === 0 ? route.abort() : route.fulfill({
+          status: failure.http, contentType: "application/json", body: JSON.stringify({ error: failure.code }),
+        });
+        await page.route(endpoint, handler);
+        await page.locator("#take-control").click();
+        await expect(page.locator("#connection-status")).toHaveText(failure.status);
+        await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "true");
+        await expect(page.locator("#ui-message")).toContainText(failure.message);
+        await expect(page.locator("#usb-status")).toHaveText(failure.code === "usb_unavailable" ? "USB waiting" : "USB unknown");
+        await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
+        await page.locator("#keyboard").dispatchEvent("pointercancel", { pointerId: 99, pointerType: "touch" });
+        await expect(page.locator("#connection-status")).toHaveText(failure.status);
+        await expect(page.locator("#ui-message")).toContainText(failure.message);
+        await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+        const session = page.waitForResponse(response =>
+          response.url().endsWith("/api/v1/session") && response.request().method() === "GET");
+        await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+        await session;
+        await expect(page.locator("#connection-status")).toHaveText(failure.status);
+        await expect(page.locator("#ui-message")).toContainText(failure.message);
+        await page.unroute(endpoint, handler);
+        await releaseControlAndWait(page);
+      }
+      const stalled = () => {};
+      await page.route(endpoint, stalled);
+      await page.locator("#take-control").click();
+      await expect(page.locator("#connection-status")).toHaveText("Requesting control");
+      await expect(page.locator("#connection-status")).toHaveText("Control unavailable", { timeout: 6500 });
+      await expect(page.locator("#ui-message")).toContainText("control request timed out");
+      await page.unroute(endpoint, stalled);
+      await releaseControlAndWait(page);
+      await takeControl(page);
+      await expect(page.locator("#connection-status")).toHaveText("Connected");
+      await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "false");
+      await expect(page.locator("#ui-message")).toBeHidden();
+      await releaseControlAndWait(page);
+      await page.route(endpoint, route => route.fulfill({
+        status: 401, contentType: "application/json", body: '{"error":"login_required"}',
+      }));
+      await page.locator("#take-control").click();
+      await expect(page.locator("#connection-status")).toHaveText("Signed out");
+      await expect(page.locator("#ui-message")).toContainText("Sign in to continue");
+    });
+
+  test(`Control failure statuses distinguish transport/protocol/USB/input failures (${engine.name()})`,
+    { timeout: 30000 }, async context => {
+      const { page, url } = await failureStatusPage(context, engine);
+      const pageErrors = [];
+      page.on("pageerror", error => pageErrors.push(error.message));
+      await page.evaluate(() => {
+        window.connectionFault = null;
+        const Original = window.WebSocket;
+        const send = Original.prototype.send;
+        const listen = Original.prototype.addEventListener;
+        Original.prototype.send = function (data) {
+          if (window.connectionFault === "send") throw new Error("Simulated send failure");
+          return send.call(this, data);
+        };
+        Original.prototype.addEventListener = function (type, callback, options) {
+          if (type !== "message") return listen.call(this, type, callback, options);
+          return listen.call(this, type, event => {
+            const message = JSON.parse(event.data);
+            if (window.connectionFault === "reply" && message.type === "status") return;
+            if (window.connectionFault === "ack" && message.type === "queued") return;
+            const data = window.connectionFault === "invalid" ? "{" :
+              window.connectionFault === "usb" && message.type === "status" ?
+                JSON.stringify({ ...message, usb_ready: false }) : event.data;
+            callback.call(this, new MessageEvent("message", { data }));
+          }, options);
+        };
+        window.WebSocket = class extends Original {
+          constructor(...args) {
+            if (window.connectionFault === "constructor") throw new Error("Simulated constructor failure");
+            if (window.connectionFault === "handshake") args[0] = new URL("/invalid-keyboard", args[0]);
+            super(...args);
+          }
+        };
+      });
+      await page.evaluate(() => { window.connectionFault = "handshake"; });
+      await page.locator("#take-control").click();
+      await expect(page.locator("#connection-status")).toHaveText("Connection failed");
+      await expect(page.locator("#ui-message")).toContainText("could not be established");
+      await page.evaluate(() => { window.connectionFault = null; });
+      await releaseControlAndWait(page);
+      await page.evaluate(() => { window.connectionFault = "constructor"; });
+      await page.locator("#take-control").click();
+      await expect(page.locator("#connection-status")).toHaveText("Connection failed");
+      await expect(page.locator("#ui-message")).toContainText("could not be established");
+      await page.evaluate(() => { window.connectionFault = null; });
+      await releaseControlAndWait(page);
+
+      for (const failure of [
+        { fault: "reply", status: "Connection lost", message: "Keyboard replies stopped" },
+        { fault: "invalid", status: "Invalid response", message: "invalid response" },
+        { fault: "usb", status: "USB unavailable", message: "USB is not ready" },
+        { fault: "ack", status: "Input stopped", message: "Input confirmation timed out" },
+        { fault: "send", status: "Connection lost", message: "Input could not be sent" },
+      ]) {
+        await takeControl(page);
+        await page.locator("#keyboard").focus();
+        await page.evaluate(fault => { window.connectionFault = fault; }, failure.fault);
+        if (failure.fault === "ack" || failure.fault === "send") await page.keyboard.down("a");
+        await expect(page.locator("#connection-status")).toHaveText(failure.status);
+        await expect(page.locator("#ui-message")).toContainText(failure.message);
+        await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
+        await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "true");
+        await page.keyboard.up("a");
+        await expect.poll(async () => (await (await page.request.get(`${url}/__test__/input`)).json()).pressed).toBe(false);
+        await page.evaluate(() => { window.connectionFault = null; });
+        await releaseControlAndWait(page);
+      }
+      await takeControl(page);
+      const session = await (await page.request.get(`${url}/api/v1/session`)).json();
+      await page.request.post(`${url}/api/v1/control/stop`, {
+        headers: { Origin: url, "X-CSRF-Token": session.csrf },
+      });
+      await expect(page.locator("#connection-status")).toHaveText("Connection lost");
+      await expect(page.locator("#ui-message")).toContainText("control connection was lost");
+      await releaseControlAndWait(page);
+      await takeControl(page);
+      await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+      await expect(page.locator("#connection-status")).toHaveText("Released");
+      await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "false");
+      await expect(page.locator("#ui-message")).toBeHidden();
+      assert.deepEqual(pageErrors, []);
+    });
+
+  test(`Release gates new control until obsolete successful cleanup settles (${engine.name()})`,
+    { timeout: 15000 }, async context => {
+      const { page } = await failureStatusPage(context, engine);
+      const routes = [];
+      const handler = route => { routes.push(route); };
+      await page.route("**/api/v1/control/take", handler);
+      await page.locator("#take-control").click();
+      await expect.poll(() => routes.length).toBe(1);
+      await expect(page.locator("#connection-status")).toHaveText("Requesting control");
+      const session = page.waitForResponse(response =>
+        response.url().endsWith("/api/v1/session") && response.request().method() === "GET");
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+      await session;
+      await expect(page.locator("#connection-status")).toHaveText("Requesting control");
+      const stopped = page.waitForResponse(response =>
+        response.url().endsWith("/api/v1/control/stop") && response.request().method() === "POST");
+      await page.locator("#release").click();
+      await stopped;
+      await expect(page.locator("#take-control")).toBeDisabled();
+      await expect(page.locator("#connection-status")).toHaveText("Finishing control request");
+      const cleanups = [];
+      const cleanup = route => { cleanups.push(route); };
+      await page.route("**/api/v1/control/stop", cleanup);
+      await routes[0].fulfill({ status: 200, contentType: "application/json", body: '{"ok":true,"control_id":1}' });
+      await expect.poll(() => cleanups.length).toBe(1);
+      assert.equal(cleanups[0].request().headers()["x-control-id"], "1");
+      await expect(page.locator("#take-control")).toBeDisabled();
+      await page.evaluate(() => document.querySelector("#take-control").dispatchEvent(new Event("click")));
+      assert.equal(routes.length, 1);
+      await expect(page.locator("#ui-message")).toBeHidden();
+      await cleanups[0].fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+      await expect(page.locator("#take-control")).toBeEnabled();
+      await expect(page.locator("#connection-status")).toHaveText("Released");
+      await page.unroute("**/api/v1/control/take", handler);
+      await page.unroute("**/api/v1/control/stop", cleanup);
+      await takeControl(page);
+      await releaseControlAndWait(page);
+    });
+
+  test(`Obsolete 401 cannot invalidate a newly signed-in session (${engine.name()})`,
+    { timeout: 15000 }, async context => {
+      const { page, url } = await failureStatusPage(context, engine);
+      const oldSession = await (await page.request.get(`${url}/api/v1/session`)).json();
+      const routes = [];
+      const handler = route => { routes.push(route); };
+      await page.route("**/api/v1/control/take", handler);
+      await page.locator("#take-control").click();
+      await expect.poll(() => routes.length).toBe(1);
+      const stopped = page.waitForResponse(response =>
+        response.url().endsWith("/api/v1/control/stop") && response.request().method() === "POST");
+      await page.locator("#release").click();
+      await stopped;
+      await page.locator("#logout").click();
+      await expect(page.locator("#account-view")).toBeVisible();
+      await page.locator("#owner-password").fill("preview-owner-password");
+      await page.locator("#account-submit").click();
+      await expect(page.locator("#account-view")).toBeHidden();
+      const current = await (await page.request.get(`${url}/api/v1/session`)).json();
+      assert.notEqual(current.csrf, oldSession.csrf);
+      await routes[0].fulfill({ status: 401, contentType: "application/json", body: '{"error":"login_required"}' });
+      await expect(page.locator("#take-control")).toBeEnabled();
+      await expect(page.locator("#account-view")).toBeHidden();
+      await expect(page.locator("#ui-message")).toBeHidden();
+      await page.unroute("**/api/v1/control/take", handler);
+      await takeControl(page);
+      await releaseControlAndWait(page);
+    });
+
+  test(`Pointer cancellation silently releases control without replacing failures (${engine.name()})`,
+    { timeout: 15000 }, async context => {
+      const { page, url } = await failureStatusPage(context, engine);
+      const counters = async () => (await (await page.request.get(`${url}/__test__/input`)).json());
+      for (const held of [false, true]) {
+        await takeControl(page);
+        await page.locator("#keyboard").focus();
+        if (held) {
+          await page.keyboard.down("a");
+          await expect.poll(async () => (await counters()).pressed).toBe(true);
+        }
+        await page.locator("#keyboard").dispatchEvent("pointercancel", { pointerId: 42, pointerType: "touch" });
+        await expect(page.locator("#connection-status")).toHaveText("Released");
+        await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "false");
+        await expect(page.locator("#ui-message")).toBeHidden();
+        await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
+        await expect.poll(async () => (await counters()).pressed).toBe(false);
+        await page.keyboard.up("a");
+      }
+      const before = await counters();
+      await takeControl(page);
+      assert.equal((await counters()).down, before.down);
+      await releaseControlAndWait(page);
+    });
+
+  test(`Pressure closes only the Take HTTP exchange and preserves login (${engine.name()})`,
+    { timeout: 15000 }, async context => {
+      const { page, url } = await failureStatusPage(context, engine, { PREVIEW_HTTP_CAPACITY_FULL: "1" });
+      const before = await (await page.request.get(`${url}/api/v1/session`)).json();
+      const response = page.waitForResponse(response =>
+        response.url().endsWith("/api/v1/control/take") && response.request().method() === "POST");
+      await takeControl(page);
+      assert.equal((await response).headers().connection, "close");
+      const after = await (await page.request.get(`${url}/api/v1/session`)).json();
+      assert.equal(after.authenticated, true);
+      assert.equal(after.csrf, before.csrf);
+      await releaseControlAndWait(page);
+      await takeControl(page);
+      await releaseControlAndWait(page);
+    });
+}
+
+test("Full HTTP capacity rejects control without reserving it and still permits Stop", { timeout: 10000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_HTTP_CAPACITY_FULL: "1", PREVIEW_CONTROL_CLOSE_FAILED: "1" });
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf };
+  const take = await fetch(`${url}/api/v1/control/take`, { method: "POST", headers });
+  assert.equal(take.status, 503);
+  assert.deepEqual(await take.json(), { error: "connection_capacity_exhausted" });
+  const status = await (await fetch(`${url}/api/v1/status`, { headers })).json();
+  assert.equal(status.network.can_control, true);
+  assert.equal((await fetch(`${url}/api/v1/control/stop`, { method: "POST", headers })).status, 200);
+});
+
+test("A pressured Take closes its own reused socket and leaves other HTTP sockets intact", { timeout: 10000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_HTTP_CAPACITY_FULL: "1" });
+  const session = await loginRequest(url);
+  const agent = new Agent({ keepAlive: true, maxSockets: 6 });
+  context.after(() => agent.destroy());
+  const exchange = (path, method = "GET", headers = {}) => new Promise((resolve, reject) => {
+    const request = httpRequest(new URL(path, url), { method, headers, agent }, response => {
+      const socket = response.socket;
+      const closed = response.headers.connection === "close" ? once(socket, "close") : null;
+      const chunks = [];
+      response.on("data", chunk => chunks.push(chunk));
+      response.on("error", reject);
+      response.on("end", () => resolve({ status: response.statusCode, headers: response.headers,
+        body: Buffer.concat(chunks).toString(), socket, closed }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+  const held = await Promise.all(Array.from({ length: 6 }, () => exchange("/app.css")));
+  assert.equal(new Set(held.map(response => response.socket)).size, 6);
+  const taken = await exchange("/api/v1/control/take", "POST", {
+    Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf,
+  });
+  assert.equal(taken.status, 200);
+  const grant = JSON.parse(taken.body);
+  assert.equal(grant.ok, true);
+  assert.ok(Number.isInteger(grant.control_id) && grant.control_id > 0);
+  assert.equal(taken.headers.connection, "close");
+  await taken.closed;
+  assert.equal(held.filter(response => response.socket.destroyed).length, 1);
+  const endpoint = new URL("/api/v1/keyboard", url);
+  endpoint.protocol = "ws:";
+  const connection = new WebSocket(endpoint, { headers: { Origin: url, Cookie: session.cookie } });
+  context.after(() => connection.terminate());
+  await once(connection, "open");
+  assert.equal(held.filter(response => response.socket.destroyed).length, 1);
+});
+
+test("Scoped obsolete cleanup cannot revoke newer pending or active control", { timeout: 10000 }, async context => {
+  const url = await startPreview(context);
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf };
+  const take = async () => (await (await fetch(`${url}/api/v1/control/take`, { method: "POST", headers })).json()).control_id;
+  const stop = id => fetch(`${url}/api/v1/control/stop`, { method: "POST",
+    headers: { ...headers, ...(id === undefined ? {} : { "X-Control-Id": String(id) }) } });
+  const first = await take();
+  assert.equal((await stop(first)).status, 200);
+  const second = await take();
+  assert.notEqual(second, first);
+  assert.equal((await stop(first)).status, 409);
+  const other = await loginRequest(url);
+  assert.equal((await fetch(`${url}/api/v1/control/stop`, { method: "POST",
+    headers: { Origin: url, Cookie: other.cookie, "X-CSRF-Token": other.csrf, "X-Control-Id": String(second) } })).status, 409);
+  const endpoint = new URL("/api/v1/keyboard", url);
+  endpoint.protocol = "ws:";
+  const connection = new WebSocket(endpoint, { headers: { Origin: url, Cookie: session.cookie } });
+  context.after(() => connection.terminate());
+  await once(connection, "open");
+  assert.equal((await stop(first)).status, 409);
+  assert.equal(connection.readyState, WebSocket.OPEN);
+  assert.equal((await stop(second)).status, 200);
+});
 
 function previewUpdateImage(version = "0.1.1") {
   const image = Buffer.alloc(8192, 0xff);
@@ -613,17 +1064,30 @@ for (const engine of [chromium, webkit]) test(`Keyboard and OTA pages stay separ
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const requests = [];
   const errors = [];
-  page.on("request", request => requests.push(new URL(request.url()).pathname));
+  const pending = new Set();
+  page.on("request", request => {
+    const path = new URL(request.url()).pathname;
+    requests.push(path);
+    if (path.startsWith("/api/v1/")) pending.add(request);
+  });
+  page.on("requestfinished", request => pending.delete(request));
+  page.on("requestfailed", request => pending.delete(request));
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(url);
   await expect(page.locator("#account-submit")).toBeEnabled();
   await page.locator("#owner-password").fill("preview-owner-password");
   await page.locator("#account-submit").click();
   await expect(page.locator("#keyboard")).toBeVisible();
+  const power = page.waitForResponse(response =>
+    new URL(response.url()).pathname === "/api/v1/power" && response.request().method() === "GET");
   await page.locator("#network-settings").click();
   await expect(page.locator("#network-view")).toBeVisible();
+  await (await power).finished();
+  await expect(page.locator("#power-idle")).toBeEnabled();
   await expect(page.locator('#firmware-settings, #firmware-view, a[href="/ota"]')).toHaveCount(0);
   assert.equal(requests.some(path => path === "/ota.mjs" || /^\/api\/v1\/(firmware|update)/.test(path)), false);
+  await page.locator("#network-back").click();
+  await expect.poll(() => pending.size).toBe(0);
   requests.length = 0;
   await page.goto(new URL("/ota", url).href);
   await expect(page.locator("#firmware-version")).toHaveText("0.1.0");
@@ -1090,10 +1554,15 @@ test("browser Network view scans, tests, confirms handover and forgets without U
 });
 
 test("overlapping AP subnet is announced and confirmed before reconnecting at the new address", { timeout: 20000 }, async context => {
-  const url = await startPreview(context, { PREVIEW_NETWORK_DELAY_MS: "1500" });
+  let browser;
+  let shuttingDown = false;
+  const forwards = new Set();
+  const url = await startPreview(context, { PREVIEW_NETWORK_DELAY_MS: "1500" }, async () => {
+    shuttingDown = true;
+    await closeBrowserAfterForwards(browser, forwards);
+  });
   const session = await loginRequest(url);
-  const browser = await chromium.launch();
-  context.after(() => browser.close());
+  browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 320, height: 568 } });
   let confirmations = 0;
   let retired = false;
@@ -1101,20 +1570,29 @@ test("overlapping AP subnet is announced and confirmed before reconnecting at th
     if (request.method() === "POST" && request.postDataJSON()?.action === "confirm") confirmations++;
   });
   await page.context().route(/^http:\/\/(?:192\.168\.4\.1|172\.30\.4\.1)\//, async route => {
-    const request = route.request();
-    if (retired && new URL(request.url()).hostname === "192.168.4.1") { await route.abort("addressunreachable"); return; }
-    const destination = new URL(new URL(request.url()).pathname, url);
-    const headers = { ...request.headers(), host: destination.host };
-    if (headers.origin) headers.origin = destination.origin;
-    const response = await fetch(destination, { method: request.method(), headers, body: request.postDataBuffer() ?? undefined });
-    let body = Buffer.from(await response.arrayBuffer());
-    if (response.status === 202) {
-      const accepted = JSON.parse(body.toString());
-      accepted.management_url = new URL("/", request.url()).href;
-      body = Buffer.from(JSON.stringify(accepted));
-      if (request.postDataJSON()?.action === "confirm") retired = true;
+    if (shuttingDown) return;
+    const forwarding = (async () => {
+      const request = route.request();
+      if (retired && new URL(request.url()).hostname === "192.168.4.1") { await route.abort("addressunreachable"); return; }
+      const destination = new URL(new URL(request.url()).pathname, url);
+      const headers = { ...request.headers(), host: destination.host };
+      if (headers.origin) headers.origin = destination.origin;
+      const response = await fetch(destination, { method: request.method(), headers, body: request.postDataBuffer() ?? undefined });
+      let body = Buffer.from(await response.arrayBuffer());
+      if (response.status === 202) {
+        const accepted = JSON.parse(body.toString());
+        accepted.management_url = new URL("/", request.url()).href;
+        body = Buffer.from(JSON.stringify(accepted));
+        if (request.postDataJSON()?.action === "confirm") retired = true;
+      }
+      await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body });
+    })();
+    forwards.add(forwarding);
+    try {
+      await forwarding;
+    } finally {
+      forwards.delete(forwarding);
     }
-    await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body });
   });
   await page.goto("http://192.168.4.1/");
   await page.getByLabel("Owner password", { exact: true }).fill("preview-owner-password");

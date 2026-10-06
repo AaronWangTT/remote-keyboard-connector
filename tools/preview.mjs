@@ -12,6 +12,8 @@ const previewProfile = profiles[previewBoard];
 if (!previewProfile) throw new Error(`Unsupported preview board profile: ${previewBoard}`);
 const boardPower = process.env.PREVIEW_BOARD_POWER !== "0";
 const usbReady = process.env.PREVIEW_USB_READY !== "0";
+const httpCapacityFull = process.env.PREVIEW_HTTP_CAPACITY_FULL === "1";
+const controlCloseFailed = process.env.PREVIEW_CONTROL_CLOSE_FAILED === "1";
 const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 256 });
 let capsLock = process.env.PREVIEW_CAPS_LOCK === "unknown" ? null : process.env.PREVIEW_CAPS_LOCK === "1";
 let controller = null;
@@ -24,6 +26,7 @@ const setupCode = "0123456789abcdef01234567";
 const sessions = new Map();
 const drainingRequests = new WeakSet();
 let pendingControl = null;
+let nextControlId = 0;
 const controlReservationMs = 10000;
 const websocketDelayMs = Number(process.env.PREVIEW_WEBSOCKET_DELAY_MS ?? "0");
 if (!Number.isSafeInteger(websocketDelayMs) || websocketDelayMs < 0 || websocketDelayMs > 15000) {
@@ -582,16 +585,33 @@ const server = createServer(async (request, response) => {
   if (["/api/v1/control/take", "/api/v1/control/stop"].includes(request.url) && request.method === "POST") {
     const session = authorized(request, response, true);
     if (!session) return;
-    if (request.url.endsWith("/stop")) releaseController();
+    if (request.url.endsWith("/stop")) {
+      const text = request.headers["x-control-id"];
+      if (text !== undefined) {
+        if (typeof text !== "string" || !/^[1-9][0-9]{0,9}$/.test(text) || Number(text) > 0xffffffff) {
+          return sendJson(response, 400, { error: "invalid_control_request" });
+        }
+        const id = Number(text);
+        const pending = pendingControl?.session === session && pendingControl.controlId === id;
+        const active = controller?.session === session && controller.controlId === id;
+        if (!pending && !active) return sendJson(response, 409, { error: "control_request_stale" });
+      }
+      releaseController();
+    }
     else {
       if (updateBusy()) return sendJson(response, 409, { error: "update_busy" });
       if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "busy" });
       if (!usbReady) return sendJson(response, 503, { error: "usb_unavailable" });
+      if (httpCapacityFull) {
+        response.setHeader("Connection", "close");
+        if (controlCloseFailed) return sendJson(response, 503, { error: "connection_capacity_exhausted" });
+      }
       if (!network.can_control || network.busy) return sendJson(response, 409, { error: "network_busy" });
-      pendingControl = { session, until: performance.now() + controlReservationMs };
+      nextControlId = nextControlId % 0xffffffff + 1;
+      pendingControl = { session, until: performance.now() + controlReservationMs, controlId: nextControlId };
     }
     powerActivity();
-    sendJson(response, 200, { ok: true });
+    sendJson(response, 200, request.url.endsWith("/take") ? { ok: true, control_id: pendingControl.controlId } : { ok: true });
     return;
   }
   if (request.url === "/api/v1/power" && ["GET", "POST"].includes(request.method)) {
@@ -667,6 +687,7 @@ server.on("upgrade", async (request, socket, head) => {
     }
     controller.terminate();
   }
+  const controlId = pendingControl.controlId;
   pendingControl = null;
   websocketServer.handleUpgrade(request, socket, head, (connection) => {
     controller = connection;
@@ -675,6 +696,7 @@ server.on("upgrade", async (request, socket, head) => {
     connection.sequence = 0;
     connection.lastSeen = performance.now();
     connection.session = session;
+    connection.controlId = controlId;
     connection.on("error", () => connection.terminate());
     connection.on("close", () => {
       if (connection.pressed) receipts.forced_release++;

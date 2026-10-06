@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include "esp_err.h"
 
+#define WEB_SERVER_MAX_OPEN_SOCKETS 7
+
 typedef struct {
 	bool valid;
 	bool ready;

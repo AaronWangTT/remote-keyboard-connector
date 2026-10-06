@@ -25,7 +25,7 @@ const boardPower = {
 };
 const suites = {
   control_http: { includes: [".cache/tests/board-stubs", ".cache/tests", "components/board/test",
-      "components/web_server", "components/network/include", "components/firmware_update/include",
+      "components/web_server", "components/web_server/include", "components/network/include", "components/firmware_update/include",
       "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/web_server/access_control.c",
       "components/web_server/test/control_http_test.c"],
