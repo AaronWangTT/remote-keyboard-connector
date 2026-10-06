@@ -37,6 +37,7 @@ let connectionFailure = null;
 let account = { provisioned: false, claimed: true, authenticated: false, csrf: "" };
 let controlAttempt = 0;
 let takingControl = false;
+let controlRequests = 0;
 let accountLoaded = false;
 let currentView = "keyboard";
 let networkState = null;
@@ -98,6 +99,7 @@ function errorMessage(error) {
     invalid_response: "The keyboard sent an invalid response. Local input was cleared; take control again.",
     input_limit: "The input safety limit was reached. Local input was cleared; take control again.",
     input_rejected: "Input could not be prepared. Local input was cleared; take control again.",
+    invalid_control_request: "The control request identifier is invalid. Reload the keyboard page.",
     release_control_first: "Release keyboard control before continuing.",
     update_busy: "A firmware update is in progress.",
     device_starting: "The keyboard is checking startup. Try again shortly.",
@@ -110,10 +112,12 @@ function errorMessage(error) {
     login_required: "Sign in to continue." })[error.code] ?? "Cannot reach the keyboard. Check the connection and try again.";
 }
 
-async function api(path, method = "GET", body) {
+async function api(path, method = "GET", body, requestAttempt = null, controlId = null) {
+  const session = account.csrf;
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (method !== "GET" && account.csrf) headers["X-CSRF-Token"] = account.csrf;
+  if (controlId !== null) headers["X-Control-Id"] = String(controlId);
   const signal = AbortSignal.timeout(method === "POST" && ["/api/v1/session", "/api/v1/claim"].includes(path) ? 30000 : 5000);
   let response;
   let result;
@@ -133,7 +137,10 @@ async function api(path, method = "GET", body) {
     const error = new Error(result.error ?? "request_failed");
     error.code = result.error;
     error.status = response.status;
-    if (response.status === 401 && !(method === "POST" && ["/api/v1/session", "/api/v1/claim"].includes(path))) {
+    if (response.status === 401 && session === account.csrf &&
+        (requestAttempt === null || requestAttempt === controlAttempt) &&
+        !(method === "POST" && ["/api/v1/session", "/api/v1/claim"].includes(path))) {
+      error.sessionInvalidated = true;
       account.authenticated = false;
       account.csrf = "";
       disconnect();
@@ -170,7 +177,7 @@ function renderAccount() {
   document.querySelector("#network-view").hidden = !account.authenticated || currentView !== "network";
   for (const id of ["take-control", "release", "network-settings"]) document.getElementById(id).hidden = !account.authenticated || currentView !== "keyboard";
   document.querySelector("#logout").hidden = !account.authenticated;
-  document.querySelector("#take-control").disabled = !account.authenticated || socket !== null || takingControl;
+  document.querySelector("#take-control").disabled = !account.authenticated || socket !== null || takingControl || controlRequests > 0;
   const claiming = !account.claimed;
   document.querySelector("#account-title").textContent = claiming ? "Claim keyboard" : "Sign in";
   document.querySelector("#account-submit").textContent = claiming ? "Claim keyboard" : "Sign in";
@@ -454,8 +461,21 @@ function render() {
 
 function renderDisconnectedStatus() {
   connectionStatus.textContent = account.authenticated ?
-    takingControl ? "Requesting control" : connectionFailure?.status ?? "Released" : "Signed out";
+    takingControl ? "Requesting control" : connectionFailure?.status ??
+      (controlRequests > 0 ? "Finishing control request" : "Released") : "Signed out";
   connectionStatus.dataset.error = String(account.authenticated && connectionFailure !== null);
+}
+
+async function controlRequest(operation) {
+  controlRequests++;
+  renderAccount();
+  try {
+    return await operation();
+  } finally {
+    controlRequests--;
+    if (socket === null && !takingControl) renderDisconnectedStatus();
+    renderAccount();
+  }
 }
 
 function disconnect(failure = null) {
@@ -687,10 +707,12 @@ document.querySelector("#local-echo-clear").addEventListener("click", () => {
   surface.focus({ preventScroll: true });
 });
 document.querySelector("#release").addEventListener("click", () => {
-  connectionFailure = null;
-  notify();
-  disconnect();
-  api("/api/v1/control/stop", "POST").catch(error => notify(errorMessage(error)));
+  controlRequest(async () => {
+    connectionFailure = null;
+    notify();
+    disconnect();
+    await api("/api/v1/control/stop", "POST");
+  }).catch(error => notify(errorMessage(error)));
 });
 hostProfileToggle.addEventListener("change", event => {
   if (!event.target.matches('input[name="host-profile"]') || !event.target.checked ||
@@ -703,8 +725,9 @@ hostProfileToggle.addEventListener("change", event => {
   render();
 });
 document.querySelector("#take-control").addEventListener("click", async () => {
-  if (!account.authenticated || takingControl) return;
+  if (!account.authenticated || takingControl || controlRequests > 0) return;
   const attempt = ++controlAttempt;
+  const session = account.csrf;
   connectionFailure = null;
   takingControl = true;
   connectionStatus.textContent = "Requesting control";
@@ -716,19 +739,33 @@ document.querySelector("#take-control").addEventListener("click", async () => {
   renderAccount();
   let acquired = false;
   try {
-    await api("/api/v1/control/take", "POST");
-    acquired = true;
-    if (attempt !== controlAttempt || document.hidden || !document.hasFocus()) {
-      await api("/api/v1/control/stop", "POST");
-      return;
-    }
-    connect();
+    await controlRequest(async () => {
+      const granted = await api("/api/v1/control/take", "POST", undefined, attempt);
+      if (!Number.isInteger(granted.control_id) || granted.control_id < 1 || granted.control_id > 0xffffffff) {
+        const error = new Error("invalid_response");
+        error.code = "invalid_response";
+        throw error;
+      }
+      acquired = true;
+      if (attempt !== controlAttempt || document.hidden || !document.hasFocus()) {
+        if (session === account.csrf && account.authenticated) {
+          try {
+            await api("/api/v1/control/stop", "POST", undefined, attempt, granted.control_id);
+          } catch (error) {
+            if (error.code !== "control_request_stale") throw error;
+            console.info("Obsolete control acquisition was already replaced or released.");
+          }
+        } else console.info("Obsolete control acquisition belongs to a previous session; cleanup skipped.");
+        return;
+      }
+      connect();
+    });
   } catch (error) {
     const code = typeof error.code === "string" ? error.code :
       acquired ? "connection_failed" : error.name === "TimeoutError" ? "control_request_timeout" : "control_request_failed";
     const status = code === "usb_unavailable" ? "USB unavailable" :
       code === "connection_capacity_exhausted" ? "Connections full" : acquired ? "Connection failed" : "Control unavailable";
-    if (error.status === 401 && !account.authenticated) notify(errorMessage(error));
+    if (error.sessionInvalidated) notify(errorMessage(error));
     else if (attempt === controlAttempt) disconnect({
       status,
       code,

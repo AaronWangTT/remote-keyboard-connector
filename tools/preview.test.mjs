@@ -8,15 +8,19 @@ import { fileURLToPath } from "node:url";
 import { chromium, webkit, expect } from "@playwright/test";
 import { WebSocket } from "ws";
 
-async function startPreview(context, environment = {}) {
+async function startPreview(context, environment = {}, beforeStop) {
   const processHandle = fork(new URL("./preview.mjs", import.meta.url), {
     env: { ...process.env, PORT: "0", PREVIEW_USB_READY: "1", PREVIEW_CAPS_LOCK: "0", PREVIEW_OWNER_PASSWORD: "preview-owner-password", ...environment },
     silent: true,
   });
   const exited = once(processHandle, "exit");
   context.after(async () => {
-    processHandle.kill("SIGTERM");
-    await exited;
+    try {
+      if (beforeStop) await beforeStop();
+    } finally {
+      processHandle.kill("SIGTERM");
+      await exited;
+    }
   });
   const [address] = await once(processHandle, "message", { signal: AbortSignal.timeout(5000) });
   assert.equal(address.type, "listening");
@@ -140,8 +144,8 @@ for (const engine of [chromium, webkit]) {
     });
 }
 
-async function failureStatusPage(context, engine) {
-  const url = await startPreview(context);
+async function failureStatusPage(context, engine, environment = {}) {
+  const url = await startPreview(context, environment);
   const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ?
     { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
   context.after(() => browser.close());
@@ -303,7 +307,7 @@ for (const engine of [chromium, webkit]) {
       assert.deepEqual(pageErrors, []);
     });
 
-  test(`Obsolete control failures do not overwrite a newer request (${engine.name()})`,
+  test(`Release gates new control until obsolete successful cleanup settles (${engine.name()})`,
     { timeout: 15000 }, async context => {
       const { page } = await failureStatusPage(context, engine);
       const routes = [];
@@ -317,23 +321,79 @@ for (const engine of [chromium, webkit]) {
       await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
       await session;
       await expect(page.locator("#connection-status")).toHaveText("Requesting control");
-      await releaseControlAndWait(page);
-      await page.locator("#take-control").click();
-      await expect.poll(() => routes.length).toBe(2);
-      await routes[0].fulfill({ status: 409, contentType: "application/json", body: '{"error":"busy"}' });
-      await expect(page.locator("#connection-status")).toHaveText("Requesting control");
+      const stopped = page.waitForResponse(response =>
+        response.url().endsWith("/api/v1/control/stop") && response.request().method() === "POST");
+      await page.locator("#release").click();
+      await stopped;
       await expect(page.locator("#take-control")).toBeDisabled();
+      await expect(page.locator("#connection-status")).toHaveText("Finishing control request");
+      const cleanups = [];
+      const cleanup = route => { cleanups.push(route); };
+      await page.route("**/api/v1/control/stop", cleanup);
+      await routes[0].fulfill({ status: 200, contentType: "application/json", body: '{"ok":true,"control_id":1}' });
+      await expect.poll(() => cleanups.length).toBe(1);
+      assert.equal(cleanups[0].request().headers()["x-control-id"], "1");
+      await expect(page.locator("#take-control")).toBeDisabled();
+      await page.evaluate(() => document.querySelector("#take-control").dispatchEvent(new Event("click")));
+      assert.equal(routes.length, 1);
       await expect(page.locator("#ui-message")).toBeHidden();
-      await routes[1].fulfill({ status: 503, contentType: "application/json", body: '{"error":"usb_unavailable"}' });
-      await expect(page.locator("#connection-status")).toHaveText("USB unavailable");
-      await expect(page.locator("#ui-message")).toContainText("USB is not ready");
+      await cleanups[0].fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+      await expect(page.locator("#take-control")).toBeEnabled();
+      await expect(page.locator("#connection-status")).toHaveText("Released");
       await page.unroute("**/api/v1/control/take", handler);
+      await page.unroute("**/api/v1/control/stop", cleanup);
+      await takeControl(page);
+      await releaseControlAndWait(page);
+    });
+
+  test(`Obsolete 401 cannot invalidate a newly signed-in session (${engine.name()})`,
+    { timeout: 15000 }, async context => {
+      const { page, url } = await failureStatusPage(context, engine);
+      const oldSession = await (await page.request.get(`${url}/api/v1/session`)).json();
+      const routes = [];
+      const handler = route => { routes.push(route); };
+      await page.route("**/api/v1/control/take", handler);
+      await page.locator("#take-control").click();
+      await expect.poll(() => routes.length).toBe(1);
+      const stopped = page.waitForResponse(response =>
+        response.url().endsWith("/api/v1/control/stop") && response.request().method() === "POST");
+      await page.locator("#release").click();
+      await stopped;
+      await page.locator("#logout").click();
+      await expect(page.locator("#account-view")).toBeVisible();
+      await page.locator("#owner-password").fill("preview-owner-password");
+      await page.locator("#account-submit").click();
+      await expect(page.locator("#account-view")).toBeHidden();
+      const current = await (await page.request.get(`${url}/api/v1/session`)).json();
+      assert.notEqual(current.csrf, oldSession.csrf);
+      await routes[0].fulfill({ status: 401, contentType: "application/json", body: '{"error":"login_required"}' });
+      await expect(page.locator("#take-control")).toBeEnabled();
+      await expect(page.locator("#account-view")).toBeHidden();
+      await expect(page.locator("#ui-message")).toBeHidden();
+      await page.unroute("**/api/v1/control/take", handler);
+      await takeControl(page);
+      await releaseControlAndWait(page);
+    });
+
+  test(`Pressure closes only the Take HTTP exchange and preserves login (${engine.name()})`,
+    { timeout: 15000 }, async context => {
+      const { page, url } = await failureStatusPage(context, engine, { PREVIEW_HTTP_CAPACITY_FULL: "1" });
+      const before = await (await page.request.get(`${url}/api/v1/session`)).json();
+      const response = page.waitForResponse(response =>
+        response.url().endsWith("/api/v1/control/take") && response.request().method() === "POST");
+      await takeControl(page);
+      assert.equal((await response).headers().connection, "close");
+      const after = await (await page.request.get(`${url}/api/v1/session`)).json();
+      assert.equal(after.authenticated, true);
+      assert.equal(after.csrf, before.csrf);
+      await releaseControlAndWait(page);
+      await takeControl(page);
       await releaseControlAndWait(page);
     });
 }
 
 test("Full HTTP capacity rejects control without reserving it and still permits Stop", { timeout: 10000 }, async context => {
-  const url = await startPreview(context, { PREVIEW_HTTP_CAPACITY_FULL: "1" });
+  const url = await startPreview(context, { PREVIEW_HTTP_CAPACITY_FULL: "1", PREVIEW_CONTROL_CLOSE_FAILED: "1" });
   const session = await loginRequest(url);
   const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf };
   const take = await fetch(`${url}/api/v1/control/take`, { method: "POST", headers });
@@ -342,6 +402,69 @@ test("Full HTTP capacity rejects control without reserving it and still permits 
   const status = await (await fetch(`${url}/api/v1/status`, { headers })).json();
   assert.equal(status.network.can_control, true);
   assert.equal((await fetch(`${url}/api/v1/control/stop`, { method: "POST", headers })).status, 200);
+});
+
+test("A pressured Take closes its own reused socket and leaves other HTTP sockets intact", { timeout: 10000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_HTTP_CAPACITY_FULL: "1" });
+  const session = await loginRequest(url);
+  const agent = new Agent({ keepAlive: true, maxSockets: 6 });
+  context.after(() => agent.destroy());
+  const exchange = (path, method = "GET", headers = {}) => new Promise((resolve, reject) => {
+    const request = httpRequest(new URL(path, url), { method, headers, agent }, response => {
+      const socket = response.socket;
+      const closed = response.headers.connection === "close" ? once(socket, "close") : null;
+      const chunks = [];
+      response.on("data", chunk => chunks.push(chunk));
+      response.on("error", reject);
+      response.on("end", () => resolve({ status: response.statusCode, headers: response.headers,
+        body: Buffer.concat(chunks).toString(), socket, closed }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+  const held = await Promise.all(Array.from({ length: 6 }, () => exchange("/app.css")));
+  assert.equal(new Set(held.map(response => response.socket)).size, 6);
+  const taken = await exchange("/api/v1/control/take", "POST", {
+    Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf,
+  });
+  assert.equal(taken.status, 200);
+  const grant = JSON.parse(taken.body);
+  assert.equal(grant.ok, true);
+  assert.ok(Number.isInteger(grant.control_id) && grant.control_id > 0);
+  assert.equal(taken.headers.connection, "close");
+  await taken.closed;
+  assert.equal(held.filter(response => response.socket.destroyed).length, 1);
+  const endpoint = new URL("/api/v1/keyboard", url);
+  endpoint.protocol = "ws:";
+  const connection = new WebSocket(endpoint, { headers: { Origin: url, Cookie: session.cookie } });
+  context.after(() => connection.terminate());
+  await once(connection, "open");
+  assert.equal(held.filter(response => response.socket.destroyed).length, 1);
+});
+
+test("Scoped obsolete cleanup cannot revoke newer pending or active control", { timeout: 10000 }, async context => {
+  const url = await startPreview(context);
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf };
+  const take = async () => (await (await fetch(`${url}/api/v1/control/take`, { method: "POST", headers })).json()).control_id;
+  const stop = id => fetch(`${url}/api/v1/control/stop`, { method: "POST",
+    headers: { ...headers, ...(id === undefined ? {} : { "X-Control-Id": String(id) }) } });
+  const first = await take();
+  assert.equal((await stop(first)).status, 200);
+  const second = await take();
+  assert.notEqual(second, first);
+  assert.equal((await stop(first)).status, 409);
+  const other = await loginRequest(url);
+  assert.equal((await fetch(`${url}/api/v1/control/stop`, { method: "POST",
+    headers: { Origin: url, Cookie: other.cookie, "X-CSRF-Token": other.csrf, "X-Control-Id": String(second) } })).status, 409);
+  const endpoint = new URL("/api/v1/keyboard", url);
+  endpoint.protocol = "ws:";
+  const connection = new WebSocket(endpoint, { headers: { Origin: url, Cookie: session.cookie } });
+  context.after(() => connection.terminate());
+  await once(connection, "open");
+  assert.equal((await stop(first)).status, 409);
+  assert.equal(connection.readyState, WebSocket.OPEN);
+  assert.equal((await stop(second)).status, 200);
 });
 
 function previewUpdateImage(version = "0.1.1") {
@@ -1306,10 +1429,16 @@ test("browser Network view scans, tests, confirms handover and forgets without U
 });
 
 test("overlapping AP subnet is announced and confirmed before reconnecting at the new address", { timeout: 20000 }, async context => {
-  const url = await startPreview(context, { PREVIEW_NETWORK_DELAY_MS: "1500" });
+  let browser;
+  let shuttingDown = false;
+  const forwards = new Set();
+  const url = await startPreview(context, { PREVIEW_NETWORK_DELAY_MS: "1500" }, async () => {
+    shuttingDown = true;
+    await Promise.all([...forwards]);
+    if (browser) await browser.close();
+  });
   const session = await loginRequest(url);
-  const browser = await chromium.launch();
-  context.after(() => browser.close());
+  browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 320, height: 568 } });
   let confirmations = 0;
   let retired = false;
@@ -1317,20 +1446,29 @@ test("overlapping AP subnet is announced and confirmed before reconnecting at th
     if (request.method() === "POST" && request.postDataJSON()?.action === "confirm") confirmations++;
   });
   await page.context().route(/^http:\/\/(?:192\.168\.4\.1|172\.30\.4\.1)\//, async route => {
-    const request = route.request();
-    if (retired && new URL(request.url()).hostname === "192.168.4.1") { await route.abort("addressunreachable"); return; }
-    const destination = new URL(new URL(request.url()).pathname, url);
-    const headers = { ...request.headers(), host: destination.host };
-    if (headers.origin) headers.origin = destination.origin;
-    const response = await fetch(destination, { method: request.method(), headers, body: request.postDataBuffer() ?? undefined });
-    let body = Buffer.from(await response.arrayBuffer());
-    if (response.status === 202) {
-      const accepted = JSON.parse(body.toString());
-      accepted.management_url = new URL("/", request.url()).href;
-      body = Buffer.from(JSON.stringify(accepted));
-      if (request.postDataJSON()?.action === "confirm") retired = true;
+    if (shuttingDown) return;
+    const forwarding = (async () => {
+      const request = route.request();
+      if (retired && new URL(request.url()).hostname === "192.168.4.1") { await route.abort("addressunreachable"); return; }
+      const destination = new URL(new URL(request.url()).pathname, url);
+      const headers = { ...request.headers(), host: destination.host };
+      if (headers.origin) headers.origin = destination.origin;
+      const response = await fetch(destination, { method: request.method(), headers, body: request.postDataBuffer() ?? undefined });
+      let body = Buffer.from(await response.arrayBuffer());
+      if (response.status === 202) {
+        const accepted = JSON.parse(body.toString());
+        accepted.management_url = new URL("/", request.url()).href;
+        body = Buffer.from(JSON.stringify(accepted));
+        if (request.postDataJSON()?.action === "confirm") retired = true;
+      }
+      await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body });
+    })();
+    forwards.add(forwarding);
+    try {
+      await forwarding;
+    } finally {
+      forwards.delete(forwarding);
     }
-    await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body });
   });
   await page.goto("http://192.168.4.1/");
   await page.getByLabel("Owner password", { exact: true }).fill("preview-owner-password");
