@@ -27,6 +27,40 @@ async function startPreview(context, environment = {}, beforeStop) {
   return address.url;
 }
 
+async function closeBrowserAfterForwards(browser, forwards) {
+  try {
+    await Promise.all([...forwards]);
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+test("AP route teardown closes the browser and propagates a forwarding rejection", async () => {
+  const failure = new Error("Simulated route forwarding failure");
+  let rejectForward;
+  let closes = 0;
+  const forwarding = new Promise((resolve, reject) => { rejectForward = reject; });
+  const browser = { close: async () => { closes++; } };
+  const closing = closeBrowserAfterForwards(browser, new Set([forwarding]));
+  assert.equal(closes, 0);
+  rejectForward(failure);
+  await assert.rejects(closing, error => error === failure);
+  assert.equal(closes, 1);
+  await assert.rejects(closeBrowserAfterForwards(undefined, new Set([Promise.reject(failure)])),
+    error => error === failure);
+});
+
+test("AP route teardown drains successful forwarding before closing the browser", async () => {
+  let resolveForward;
+  let closes = 0;
+  const forwarding = new Promise(resolve => { resolveForward = resolve; });
+  const closing = closeBrowserAfterForwards({ close: async () => { closes++; } }, new Set([forwarding]));
+  assert.equal(closes, 0);
+  resolveForward();
+  await closing;
+  assert.equal(closes, 1);
+});
+
 async function loginRequest(url, password = "preview-owner-password") {
   const response = await fetch(new URL("/api/v1/session", url), {
     method: "POST", headers: { Origin: url, "Content-Type": "application/json" }, body: JSON.stringify({ password }),
@@ -1462,8 +1496,7 @@ test("overlapping AP subnet is announced and confirmed before reconnecting at th
   const forwards = new Set();
   const url = await startPreview(context, { PREVIEW_NETWORK_DELAY_MS: "1500" }, async () => {
     shuttingDown = true;
-    await Promise.all([...forwards]);
-    if (browser) await browser.close();
+    await closeBrowserAfterForwards(browser, forwards);
   });
   const session = await loginRequest(url);
   browser = await chromium.launch();
