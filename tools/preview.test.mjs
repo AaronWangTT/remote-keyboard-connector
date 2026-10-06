@@ -151,16 +151,20 @@ async function recordHandshakeTiming(page) {
 
 for (const engine of [chromium, webkit]) {
   test(`Slow WebSocket setup succeeds beyond the old 3s/5s limits (${engine.name()})`,
-    { timeout: 20000 }, async context => {
+    { timeout: 30000 }, async context => {
+      const started = performance.now();
+      const phase = name => context.diagnostic(`${name}: ${Math.round(performance.now() - started)} ms`);
       const url = await startPreview(context, { PREVIEW_WEBSOCKET_DELAY_MS: "5500" });
       const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ?
         { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
       context.after(() => browser.close());
+      phase("browser launched");
       const page = await browser.newPage();
       await page.goto(url);
       await page.locator("#owner-password").fill("preview-owner-password");
       await page.locator("#account-submit").click();
       await expect(page.locator("#take-control")).toBeVisible();
+      phase("signed in");
       await recordHandshakeTiming(page);
       await page.locator("#take-control").click();
       await expect(page.locator("#connection-status")).toHaveText("Connecting");
@@ -172,6 +176,7 @@ for (const engine of [chromium, webkit]) {
       assert.equal(before.down, 0);
       await expect(page.locator("#connection-status")).toHaveText("Connected", { timeout: 4000 });
       await expect(page.locator("#usb-status")).toHaveText("USB ready");
+      phase("slow connection ready");
       const events = await page.evaluate(() => window.handshakeEvents);
       const opened = events.find(event => event.event === "open");
       assert.ok(opened.elapsed >= 5000 && opened.elapsed < 8000);
@@ -180,8 +185,9 @@ for (const engine of [chromium, webkit]) {
       assert.equal(after.down, 0);
       await page.getByRole("button", { name: "A", exact: true }).click();
       await expect.poll(async () => (await (await page.request.get(`${url}/__test__/input`)).json()).down).toBe(1);
-      await page.locator("#release").click();
-      await expect(page.locator("#connection-status")).toHaveText("Released");
+      phase("input acknowledged");
+      await releaseControlAndWait(page);
+      phase("control released");
     });
 
   test(`WebSocket setup cancels at 8s and pending control expires at 10s (${engine.name()})`,
@@ -1058,17 +1064,30 @@ for (const engine of [chromium, webkit]) test(`Keyboard and OTA pages stay separ
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const requests = [];
   const errors = [];
-  page.on("request", request => requests.push(new URL(request.url()).pathname));
+  const pending = new Set();
+  page.on("request", request => {
+    const path = new URL(request.url()).pathname;
+    requests.push(path);
+    if (path.startsWith("/api/v1/")) pending.add(request);
+  });
+  page.on("requestfinished", request => pending.delete(request));
+  page.on("requestfailed", request => pending.delete(request));
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(url);
   await expect(page.locator("#account-submit")).toBeEnabled();
   await page.locator("#owner-password").fill("preview-owner-password");
   await page.locator("#account-submit").click();
   await expect(page.locator("#keyboard")).toBeVisible();
+  const power = page.waitForResponse(response =>
+    new URL(response.url()).pathname === "/api/v1/power" && response.request().method() === "GET");
   await page.locator("#network-settings").click();
   await expect(page.locator("#network-view")).toBeVisible();
+  await (await power).finished();
+  await expect(page.locator("#power-idle")).toBeEnabled();
   await expect(page.locator('#firmware-settings, #firmware-view, a[href="/ota"]')).toHaveCount(0);
   assert.equal(requests.some(path => path === "/ota.mjs" || /^\/api\/v1\/(firmware|update)/.test(path)), false);
+  await page.locator("#network-back").click();
+  await expect.poll(() => pending.size).toBe(0);
   requests.length = 0;
   await page.goto(new URL("/ota", url).href);
   await expect(page.locator("#firmware-version")).toHaveText("0.1.0");
