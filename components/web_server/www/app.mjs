@@ -14,6 +14,7 @@ const localEchoText = document.querySelector("#local-echo-text");
 const keyboard = new KeyboardInput();
 const definitions = new Map();
 const pending = new Map();
+const websocketConnectTimeoutMs = 8000;
 const hostProfileStorageKey = "keyboard.host-profile.v1";
 const localEchoStorageKey = "keyboard.local-echo.v1";
 let localEchoEnabled = false;
@@ -845,7 +846,7 @@ setInterval(() => {
   if (!socket) return;
   const now = performance.now();
   if (document.hidden || !document.hasFocus() ||
-      (socket.readyState === WebSocket.CONNECTING && now - connectedAt >= 3000) ||
+      (socket.readyState === WebSocket.CONNECTING && now - connectedAt >= websocketConnectTimeoutMs) ||
       (socket.readyState === WebSocket.OPEN && now - lastReply >= 1000) ||
       (pending.size && now - pending.values().next().value.sentAt >= 250)) {
     disconnect();

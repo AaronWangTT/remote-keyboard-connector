@@ -1063,7 +1063,7 @@ static esp_err_t control_handler(httpd_req_t *request)
         pending_owner = session;
         pending_generation = session->generation;
         pending_usb_generation = generation;
-        pending_until = esp_timer_get_time() + INT64_C(5000000);
+        pending_until = esp_timer_get_time() + ACCESS_CONTROL_PENDING_US;
     }
     power_control_activity();
     response_headers(request);

@@ -24,6 +24,11 @@ const setupCode = "0123456789abcdef01234567";
 const sessions = new Map();
 const drainingRequests = new WeakSet();
 let pendingControl = null;
+const controlReservationMs = 10000;
+const websocketDelayMs = Number(process.env.PREVIEW_WEBSOCKET_DELAY_MS ?? "0");
+if (!Number.isSafeInteger(websocketDelayMs) || websocketDelayMs < 0 || websocketDelayMs > 15000) {
+  throw new Error("PREVIEW_WEBSOCKET_DELAY_MS must be an integer from 0 to 15000.");
+}
 let loginWindow = 0;
 let loginAttempts = 0;
 const power = { supported: boardPower, available: boardPower,
@@ -583,7 +588,7 @@ const server = createServer(async (request, response) => {
       if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "busy" });
       if (!usbReady) return sendJson(response, 503, { error: "usb_unavailable" });
       if (!network.can_control || network.busy) return sendJson(response, 409, { error: "network_busy" });
-      pendingControl = { session, until: performance.now() + 5000 };
+      pendingControl = { session, until: performance.now() + controlReservationMs };
     }
     powerActivity();
     sendJson(response, 200, { ok: true });
@@ -631,7 +636,7 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.on("upgrade", (request, socket, head) => {
+server.on("upgrade", async (request, socket, head) => {
   if (request.url !== "/api/v1/keyboard" || powerSleeping) {
     socket.destroy();
     return;
@@ -640,6 +645,16 @@ server.on("upgrade", (request, socket, head) => {
   if (!session) {
     socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     return;
+  }
+  if (websocketDelayMs > 0) {
+    const onError = error => {
+      console.error("Delayed WebSocket connection failed:", error.code ?? error.name);
+      socket.destroy();
+    };
+    socket.on("error", onError);
+    await delay(websocketDelayMs);
+    socket.off("error", onError);
+    if (socket.destroyed) return;
   }
   if (pendingControl?.session !== session || performance.now() >= pendingControl.until || !usbReady || !network.available || network.busy) {
     socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");

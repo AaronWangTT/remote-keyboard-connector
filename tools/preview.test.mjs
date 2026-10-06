@@ -47,6 +47,87 @@ async function takeControl(page) {
   await expect(page.getByRole("button", { name: "A", exact: true })).toBeEnabled();
 }
 
+async function recordHandshakeTiming(page) {
+  await page.evaluate(() => {
+    window.handshakeEvents = [];
+    const Original = window.WebSocket;
+    window.WebSocket = class extends Original {
+      constructor(...args) {
+        super(...args);
+        this.startedAt = performance.now();
+        this.addEventListener("open", () => window.handshakeEvents.push({
+          event: "open", elapsed: performance.now() - this.startedAt }));
+      }
+      close(...args) {
+        window.handshakeEvents.push({ event: "client_close", state: this.readyState,
+          elapsed: performance.now() - this.startedAt });
+        return super.close(...args);
+      }
+    };
+  });
+}
+
+for (const engine of [chromium, webkit]) {
+  test(`Slow WebSocket setup succeeds beyond the old 3s/5s limits (${engine.name()})`,
+    { timeout: 20000 }, async context => {
+      const url = await startPreview(context, { PREVIEW_WEBSOCKET_DELAY_MS: "5500" });
+      const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ?
+        { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+      context.after(() => browser.close());
+      const page = await browser.newPage();
+      await page.goto(url);
+      await page.locator("#owner-password").fill("preview-owner-password");
+      await page.locator("#account-submit").click();
+      await expect(page.locator("#take-control")).toBeVisible();
+      await recordHandshakeTiming(page);
+      await page.locator("#take-control").click();
+      await expect(page.locator("#connection-status")).toHaveText("Connecting");
+      await page.waitForTimeout(3500);
+      await expect(page.locator("#connection-status")).toHaveText("Connecting");
+      await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
+      await page.keyboard.press("a");
+      const before = await (await page.request.get(`${url}/__test__/input`)).json();
+      assert.equal(before.down, 0);
+      await expect(page.locator("#connection-status")).toHaveText("Connected", { timeout: 4000 });
+      await expect(page.locator("#usb-status")).toHaveText("USB ready");
+      const events = await page.evaluate(() => window.handshakeEvents);
+      const opened = events.find(event => event.event === "open");
+      assert.ok(opened.elapsed >= 5000 && opened.elapsed < 8000);
+      assert.ok(!events.some(event => event.event === "client_close"));
+      const after = await (await page.request.get(`${url}/__test__/input`)).json();
+      assert.equal(after.down, 0);
+      await page.getByRole("button", { name: "A", exact: true }).click();
+      await expect.poll(async () => (await (await page.request.get(`${url}/__test__/input`)).json()).down).toBe(1);
+      await page.locator("#release").click();
+      await expect(page.locator("#connection-status")).toHaveText("Released");
+    });
+
+  test(`WebSocket setup cancels at 8s and pending control expires at 10s (${engine.name()})`,
+    { timeout: 20000 }, async context => {
+      const url = await startPreview(context, { PREVIEW_WEBSOCKET_DELAY_MS: "12000" });
+      const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ?
+        { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+      context.after(() => browser.close());
+      const page = await browser.newPage();
+      await page.goto(url);
+      await page.locator("#owner-password").fill("preview-owner-password");
+      await page.locator("#account-submit").click();
+      await expect(page.locator("#take-control")).toBeVisible();
+      await recordHandshakeTiming(page);
+      await page.locator("#take-control").click();
+      await expect(page.locator("#connection-status")).toHaveText("Connecting");
+      await expect(page.locator("#connection-status")).toHaveText("Released", { timeout: 9500 });
+      const events = await page.evaluate(() => window.handshakeEvents);
+      const closed = events.find(event => event.event === "client_close");
+      assert.ok(closed && closed.state === 0 && closed.elapsed >= 8000 && closed.elapsed < 8750);
+      assert.ok(!events.some(event => event.event === "open"));
+      await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
+      const status = async () => (await (await page.request.get(`${url}/api/v1/status`)).json()).network.can_control;
+      assert.equal(await status(), false);
+      await expect.poll(status, { timeout: 3000 }).toBe(true);
+    });
+}
+
 function previewUpdateImage(version = "0.1.1") {
   const image = Buffer.alloc(8192, 0xff);
   image[0] = 0xe9;

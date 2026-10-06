@@ -24,6 +24,12 @@ const boardPower = {
   sources: ["components/board/board_power_policy.c", "components/board/board_power.c", "components/board/test/board_power_test.c"],
 };
 const suites = {
+  control_http: { includes: [".cache/tests/board-stubs", ".cache/tests", "components/board/test",
+      "components/web_server", "components/network/include", "components/firmware_update/include",
+      "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON"],
+    sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/web_server/access_control.c",
+      "components/web_server/test/control_http_test.c"],
+    flags: ["-DCJSON_NESTING_LIMIT=4"], linkFlags: ["-lm"] },
   wakeup_policy: { includes: ["components/web_server"],
     sources: ["components/web_server/wakeup_policy.c", "components/web_server/test/wakeup_policy_test.c"] },
   wakeup_http: { includes: [".cache/tests/board-stubs", ".cache/tests", "components/board/test",
@@ -121,6 +127,10 @@ const network = await normalizedSource("components/network/network.c");
 await writeFile(".cache/tests/network_defaults.inc",
   section(network, "static esp_err_t load_configuration(void)", "\nstatic bool stage_configuration"));
 const web = await normalizedSource("components/web_server/web_server.c");
+await writeFile(".cache/tests/control_expiry.inc",
+  section(web, "static void release_control(void)\n{", "\nstatic void control_tick"));
+await writeFile(".cache/tests/control_http.inc",
+  section(web, "static esp_err_t control_handler(", "\nesp_err_t web_server_start"));
 await writeFile(".cache/tests/power_http.inc",
   section(web, "static cJSON *power_json(void)\n{", "\nstatic cJSON *network_json(void)\n{"));
 await writeFile(".cache/tests/wakeup_http.inc",
