@@ -193,6 +193,9 @@ for (const engine of [chromium, webkit]) {
         await expect(page.locator("#ui-message")).toContainText(failure.message);
         await expect(page.locator("#usb-status")).toHaveText(failure.code === "usb_unavailable" ? "USB waiting" : "USB unknown");
         await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
+        await page.locator("#keyboard").dispatchEvent("pointercancel", { pointerId: 99, pointerType: "touch" });
+        await expect(page.locator("#connection-status")).toHaveText(failure.status);
+        await expect(page.locator("#ui-message")).toContainText(failure.message);
         await page.evaluate(() => window.dispatchEvent(new Event("blur")));
         const session = page.waitForResponse(response =>
           response.url().endsWith("/api/v1/session") && response.request().method() === "GET");
@@ -372,6 +375,31 @@ for (const engine of [chromium, webkit]) {
       await expect(page.locator("#ui-message")).toBeHidden();
       await page.unroute("**/api/v1/control/take", handler);
       await takeControl(page);
+      await releaseControlAndWait(page);
+    });
+
+  test(`Pointer cancellation silently releases control without replacing failures (${engine.name()})`,
+    { timeout: 15000 }, async context => {
+      const { page, url } = await failureStatusPage(context, engine);
+      const counters = async () => (await (await page.request.get(`${url}/__test__/input`)).json());
+      for (const held of [false, true]) {
+        await takeControl(page);
+        await page.locator("#keyboard").focus();
+        if (held) {
+          await page.keyboard.down("a");
+          await expect.poll(async () => (await counters()).pressed).toBe(true);
+        }
+        await page.locator("#keyboard").dispatchEvent("pointercancel", { pointerId: 42, pointerType: "touch" });
+        await expect(page.locator("#connection-status")).toHaveText("Released");
+        await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "false");
+        await expect(page.locator("#ui-message")).toBeHidden();
+        await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
+        await expect.poll(async () => (await counters()).pressed).toBe(false);
+        await page.keyboard.up("a");
+      }
+      const before = await counters();
+      await takeControl(page);
+      assert.equal((await counters()).down, before.down);
       await releaseControlAndWait(page);
     });
 

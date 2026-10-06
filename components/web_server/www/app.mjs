@@ -648,7 +648,7 @@ surface.addEventListener("pointerup", event => {
 surface.addEventListener("lostpointercapture", event => {
   if (keyboard.sources.has(`pointer:${event.pointerId}`)) disconnect();
 });
-surface.addEventListener("pointercancel", disconnect);
+surface.addEventListener("pointercancel", () => disconnect());
 surface.addEventListener("contextmenu", event => event.preventDefault());
 surface.addEventListener("click", event => {
   const button = event.target.closest("button[data-key]");
