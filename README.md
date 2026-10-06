@@ -311,6 +311,18 @@ Select **Take Control** before typing. Only one controller is allowed across AP
 and STA together. Release, focus loss, disconnect, sign-out, and network changes
 require fresh explicit acquisition; reconnecting never resumes held input.
 
+Take Control reserves the controller for up to 10 seconds while the browser
+establishes its WebSocket. The browser allows 8 seconds for connection setup,
+including hostname resolution and TCP/HTTP Upgrade, before disconnecting.
+Input remains disabled until a USB-ready status arrives. These setup windows
+do not extend the active controller's 1-second lease/reply deadline or the
+250 ms input acknowledgement deadline, and do not automatically retry or replay
+keys. A cancelled attempt can retain its pending reservation until it expires
+or an explicit Release clears it.
+The local preview can simulate a delayed Upgrade with
+`PREVIEW_WEBSOCKET_DELAY_MS=5500`; it accepts 0-15000 ms and defaults to no
+injected delay. This test setting is not part of the firmware.
+
 The Network view offers Standalone AP or Join Wi-Fi, scan/manual SSID entry,
 credential testing, saved-network reuse, hostname changes, and confirmed Forget
 Network. This increment supports one 2.4 GHz WPA2-Personal profile and DHCP.
