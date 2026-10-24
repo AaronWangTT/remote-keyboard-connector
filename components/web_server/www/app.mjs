@@ -541,6 +541,7 @@ function recoverInput(requestReset = true) {
     connectionStatus.textContent = "Releasing input";
     connectionStatus.dataset.ready = "false";
     notify("Input was paused after a delay. Synchronizing key release; previous keys will not resume.");
+    if (rows.contains(document.activeElement)) surface.focus({ preventScroll: true });
     render();
   }
   if (requestReset) transmit({ v: 1, type: "reset" });

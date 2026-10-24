@@ -1970,10 +1970,9 @@ test("preview pauses held input without revoking control and discards states unt
     return JSON.parse(String((await reply)[0]));
   };
   assert.equal((await exchange({ v: 1, type: "state", seq: 1, modifiers: 0, keys: [4] })).type, "queued");
-  await new Promise(resolve => setTimeout(resolve, 1200));
   const receipts = async () => (await (await fetch(new URL("/__test__/input", url))).json());
+  await expect.poll(async () => (await receipts()).pressed, { timeout: 2500 }).toBe(false);
   assert.equal((await receipts()).connected, true);
-  assert.equal((await receipts()).pressed, false);
   const paused = await exchange({ v: 1, type: "state", seq: 2, modifiers: 0, keys: [5] });
   assert.equal(paused.input_paused, true);
   assert.equal((await receipts()).down, 1);
@@ -3097,7 +3096,7 @@ for (const browserType of [chromium, webkit]) for (const [group, viewports] of [
 
 for (const engine of [chromium, webkit]) {
   for (const scenario of ["heartbeat cadence", "delayed acknowledgements", "acknowledgement recovery",
-    "held reply recovery", "idle jitter", "idle timeout", "recovery timeout"]) {
+    "focused key recovery", "held reply recovery", "idle jitter", "idle timeout", "recovery timeout"]) {
     test(`Adaptive input connection: ${scenario} (${engine.name()})`, { timeout: 20000 }, async context => {
       const url = await startPreview(context);
       const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ?
@@ -3114,6 +3113,7 @@ for (const engine of [chromium, webkit]) {
       let deferAcks = false;
       let paused = false;
       let acknowledgeReset = true;
+      let neutralReady = true;
       let transport;
       let sentReplies = 0;
       const send = data => {
@@ -3130,7 +3130,7 @@ for (const engine of [chromium, webkit]) {
         }
       };
       const sendStatus = () => send(JSON.stringify({
-        v: 1, type: "status", usb_ready: true, input_paused: paused, caps_lock: false,
+        v: 1, type: "status", usb_ready: neutralReady, input_paused: paused, caps_lock: false,
       }));
       await page.routeWebSocket("**/api/v1/keyboard", socket => {
         transport = socket;
@@ -3145,6 +3145,7 @@ for (const engine of [chromium, webkit]) {
           }
           if (message.type === "reset") {
             paused = acknowledgeReset;
+            if (scenario === "focused key recovery") neutralReady = false;
             if (!dropReplies && acknowledgeReset) {
               for (const ack of delayed.splice(0)) send(ack);
               sendStatus();
@@ -3211,7 +3212,8 @@ for (const engine of [chromium, webkit]) {
         assert.equal(count("reset"), 0);
       } else {
         await page.getByRole("switch", { name: "Local echo", exact: true }).check();
-        await page.locator("#keyboard").focus();
+        if (scenario === "focused key recovery") await key.focus();
+        else await page.locator("#keyboard").focus();
         deferAcks = scenario !== "held reply recovery";
         acknowledgeReset = scenario !== "recovery timeout";
         await page.keyboard.down("a");
@@ -3229,8 +3231,17 @@ for (const engine of [chromium, webkit]) {
           }
           await advance(499);
           await expect(key).toBeEnabled();
+          if (scenario === "focused key recovery") await expect(key).toBeFocused();
           assert.equal(count("reset"), 0);
           await advance(1);
+          if (scenario === "focused key recovery") {
+            await expect(key).toBeDisabled();
+            await expect(page.locator("#keyboard")).toBeFocused();
+            assert.equal(count("stop"), 0);
+            assert.equal(count("resume"), 0);
+            neutralReady = true;
+            sendStatus();
+          }
           if (scenario === "recovery timeout") {
             await expect.poll(() => count("reset")).toBe(1);
             await advance(4999);
@@ -3258,6 +3269,7 @@ for (const engine of [chromium, webkit]) {
         await expect(page.locator("#connection-status")).toHaveText("Connected");
         await expect(page.locator("#ui-message")).toContainText("Continue with a new key press");
         await expect(page.locator("#local-echo-text")).toHaveText("");
+        if (scenario === "focused key recovery") await expect(page.locator("#keyboard")).toBeFocused();
         await page.keyboard.down("a");
         await page.keyboard.up("a");
         assert.equal(count("state"), 1, "the old held key and its repeat/up must not replay");
