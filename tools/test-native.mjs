@@ -75,6 +75,13 @@ const suites = {
   network_state: { includes: ["components/network", "components/network/include", "managed_components/espressif__cjson/cJSON"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/network/network_state.c", "components/network/test/network_state_test.c"],
     flags: ["-DCJSON_NESTING_LIMIT=4"], linkFlags: ["-lm"] },
+  network_runtime: { includes: [".cache/tests/board-stubs", ".cache/tests", "components/board/test",
+      "components/network", "components/network/include", "managed_components/espressif__cjson/cJSON"],
+    sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/network/network_state.c", "components/network/test/network_runtime_test.c"],
+    flags: ["-DCJSON_NESTING_LIMIT=4"], linkFlags: ["-lm"] },
+  network_profiles_fixture: { includes: ["components/network", "components/network/include", "managed_components/espressif__cjson/cJSON"],
+    sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/network/network_state.c", "components/network/test/network_profiles_fixture_test.c"],
+    flags: ["-DCJSON_NESTING_LIMIT=4"], linkFlags: ["-lm"] },
   access_control: { includes: ["components/web_server", "components/network/include", "managed_components/espressif__cjson/cJSON"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/web_server/access_control.c", "components/web_server/test/access_control_test.c"],
     flags: ["-DCJSON_NESTING_LIMIT=4"], linkFlags: ["-lm"] },
@@ -131,6 +138,14 @@ const normalizedSource = async path => (await readFile(path, "utf8")).replaceAll
 const network = await normalizedSource("components/network/network.c");
 await writeFile(".cache/tests/network_defaults.inc",
   section(network, "static esp_err_t load_configuration(void)", "\nstatic bool stage_configuration"));
+await writeFile(".cache/tests/network_persistence.inc",
+  section(network, "static bool stage_configuration(", "\nstatic void wifi_event"));
+await writeFile(".cache/tests/network_recovery.inc",
+  section(network, "static esp_err_t recovery(", "\nstatic bool retry_ap_restoration"));
+await writeFile(".cache/tests/network_commands.inc",
+  section(network, "static void run_command(", "\nstatic bool sleep_step"));
+await writeFile(".cache/tests/network_worker.inc",
+  section(network, "static void network_worker(", "\nbool network_service_healthy"));
 const web = await normalizedSource("components/web_server/web_server.c");
 await writeFile(".cache/tests/control_expiry.inc",
   section(web, "static void release_control(void)\n{", "\nstatic void control_tick"));

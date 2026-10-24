@@ -186,7 +186,7 @@ configuration rather than hard-coding unrestricted channels.
 | --- | --- |
 | Initial setup | Start a password-protected setup AP when no station credentials exist. If per-device setup secrets have not been provisioned, remain in local service mode rather than opening an unsecured AP. |
 | AP operation | User explicitly keeps standalone AP mode. Serve setup and keyboard pages at the AP address; no router or Internet needed. |
-| STA connecting | Try the saved network with bounded backoff for up to 30 seconds; input is disarmed until network and USB are ready. |
+| STA connecting | Try up to ten saved networks in most-recent-success order, with up to 30 seconds per profile. Offer the protected recovery AP after the first deadline and continue trying the other profiles while AP management/control is inactive. Input is disarmed until network and USB are ready. |
 | STA operation | Use DHCP, serve the keyboard on the LAN, and prefer `kb.local`; handle name conflicts and display the effective hostname. |
 | STA recovery | On sustained loss, revoke control and retry. After the connection deadline, offer the protected recovery AP without deleting known-good credentials. |
 | Credential change | Require owner authentication, disarm, and temporarily use AP+STA to test the candidate network. Commit only after association and a DHCP lease succeed. |
@@ -213,6 +213,25 @@ The device is not an Internet router and does not bridge/NAT the two networks.
 Use validated, versioned configuration records and an atomic active-record
 switch for credentials. Never repeatedly erase NVS to recover a transient error.
 Credential scanning and flash writes occur while input is disarmed.
+
+The saved-network list is shared by authenticated browser provisioning and the
+[offline USB CRUD tool](wifi-usb-tool.md). A successful browser connection
+inserts or updates its SSID and promotes it to the front of the list. USB import
+may append unverified profiles without requiring them to be nearby. The limit
+is ten distinct SSIDs, with no automatic eviction. A normal connection is never
+preempted for a different saved network; automatic selection runs only on
+startup, wake, or connection loss. Explicit standalone AP mode preserves the
+list and disables automatic station attempts. Individual deletion and
+password-free manual selection are supported in the management page.
+
+The version-2 NVS record has an explicitly byte-sized layout shared with the USB
+tool, zero-padded strings, unique SSIDs, and validated unused entries. New slots
+use `profiles0` / `profiles1` and `profiles_active` in `kb_network`, preserving
+the legacy keys for migration compatibility. Malformed active records fail
+closed to the recovery AP without erasing or silently replacing NVS. The USB
+tool backs up and verifies NVS, but its whole-partition rewrite cannot provide
+the running firmware's power-loss-safe active-slot switch; this risk requires
+explicit acknowledgment before writes.
 
 mDNS is a convenience, not the sole discovery mechanism. Show the assigned IP
 during provisioning and allow router DHCP lookup. Guest-network client isolation,

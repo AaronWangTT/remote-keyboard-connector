@@ -730,6 +730,16 @@ static cJSON *network_json(void)
         cJSON_AddStringToObject(result, "ap_ip", network.ap_ip) &&
         cJSON_AddStringToObject(result, "ap_reconnect_ip", network.ap_reconnect_ip) &&
         cJSON_AddStringToObject(result, "station_ip", network.station_ip);
+    cJSON *profiles_json = valid ? cJSON_AddArrayToObject(result, "profiles") : NULL;
+    valid = profiles_json != NULL && cJSON_AddNumberToObject(result, "profile_limit", NETWORK_SAVED_LIMIT);
+    for (size_t index = 0; valid && index < network.profile_count; index++) {
+        cJSON *item = cJSON_CreateObject();
+        if (item == NULL) { valid = false; break; }
+        valid = cJSON_AddStringToObject(item, "ssid", network.profiles[index].ssid) &&
+            cJSON_AddStringToObject(item, "ssid_hex", network.profiles[index].ssid_hex) &&
+            cJSON_AddBoolToObject(item, "verified", network.profiles[index].verified);
+        if (!valid || !cJSON_AddItemToArray(profiles_json, item)) { cJSON_Delete(item); valid = false; }
+    }
     cJSON *scan = valid ? cJSON_AddArrayToObject(result, "scan") : NULL;
     valid = scan != NULL;
     for (size_t index = 0; valid && index < network.scan_count; index++) {
@@ -1147,7 +1157,7 @@ esp_err_t web_server_start(void)
     httpd_config_t configuration = HTTPD_DEFAULT_CONFIG();
     configuration.max_uri_handlers = sizeof(assets) / sizeof(assets[0]) + 19;
     configuration.max_open_sockets = WEB_SERVER_MAX_OPEN_SOCKETS;
-    configuration.stack_size = 8192;
+    configuration.stack_size = 12288;
     configuration.recv_wait_timeout = 2;
     configuration.send_wait_timeout = 2;
     esp_err_t result = httpd_start(&server, &configuration);

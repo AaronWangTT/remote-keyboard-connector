@@ -97,7 +97,6 @@
                 <button class="tool-button neutral" type="button" data-password-toggle="wifi-password" aria-label="Show Wi-Fi password" title="Show Wi-Fi password"><span class="icon" data-icon="eye" aria-hidden="true"></span></button>
               </div>
             </div>
-            <button id="network-use-saved" class="command-button secondary" type="button" hidden>Connect saved network</button>
           </div>
           <button id="network-apply" class="command-button" type="submit">Use Standalone AP</button>
         </form>
@@ -121,8 +120,12 @@
             <button id="power-retry" class="command-button secondary" type="button" hidden>Refresh setting</button>
           </div>
         </form>
-        <div class="network-footer network-job-actions">
-          <button id="forget-network" class="command-button danger" type="button" hidden>Forget network</button>
+        <div class="network-footer">
+          <div class="field"><label for="wifi-saved-network" id="wifi-saved-label">Saved networks (0/10)</label><select id="wifi-saved-network" disabled><option value="">None</option></select></div>
+          <div class="network-job-actions">
+            <button id="network-use-saved" class="command-button secondary" type="button" hidden>Connect saved network</button>
+            <button id="forget-network" class="command-button danger" type="button" hidden>Forget network</button>
+          </div>
         </div>
       </section>
     <section id="keyboard" class="keyboard-surface" aria-label="Remote keyboard" tabindex="0" hidden>

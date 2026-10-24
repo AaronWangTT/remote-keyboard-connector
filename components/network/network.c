@@ -35,6 +35,10 @@ static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static network_status_t snapshot;
 static network_config_t saved;
 static network_config_t candidate;
+static network_profiles_t profiles;
+static network_config_t automatic_configuration;
+static size_t automatic_index;
+static int64_t automatic_deadline;
 static network_state_t state;
 static uint8_t active_slot;
 static bool driver_started;
@@ -44,6 +48,7 @@ static bool connecting;
 static bool command_pending;
 static bool storage_fault;
 static bool saved_configuration_valid;
+static bool profiles_persisted;
 static uint32_t lease_address;
 static bool scan_done;
 static bool scanning;
@@ -251,6 +256,8 @@ static void job_result(const char *job, const char *error, bool busy)
 static esp_err_t load_configuration(void)
 {
     saved = (network_config_t){.version = 1, .hostname = CONFIG_NETWORK_DEFAULT_HOSTNAME};
+    network_profiles_migrate(&saved, &profiles);
+    profiles_persisted = false;
     active_slot = 0;
     nvs_handle_t handle;
     esp_err_t result = nvs_open("kb_network", NVS_READONLY, &handle);
@@ -270,40 +277,83 @@ static esp_err_t load_configuration(void)
         if (result == ESP_OK) saved = record;
         mbedtls_platform_zeroize(&record, sizeof(record));
     }
+    if (result == ESP_OK && !network_profiles_migrate(&saved, &profiles)) result = ESP_ERR_INVALID_STATE;
+    uint8_t profiles_slot = 0;
+    esp_err_t profiles_result = nvs_get_u8(handle, "profiles_active", &profiles_slot);
+    if (profiles_result != ESP_ERR_NVS_NOT_FOUND) {
+        network_profiles_t record = {0};
+        size_t length = sizeof(record);
+        if (profiles_result == ESP_OK && profiles_slot > 1) profiles_result = ESP_ERR_INVALID_STATE;
+        if (profiles_result == ESP_OK) profiles_result = nvs_get_blob(handle,
+            profiles_slot ? "profiles1" : "profiles0", &record, &length);
+        if (profiles_result == ESP_OK && (length != sizeof(record) || !network_profiles_valid(&record))) profiles_result = ESP_ERR_INVALID_STATE;
+        result = profiles_result;
+        if (result == ESP_OK) {
+            profiles = record;
+            profiles_persisted = true;
+            active_slot = profiles_slot;
+            saved = (network_config_t){.version = 1};
+            memcpy(saved.hostname, profiles.hostname, sizeof(saved.hostname));
+            if (profiles.count) network_profiles_select(&profiles, 0, &saved);
+        }
+        mbedtls_platform_zeroize(&record, sizeof(record));
+    } else {
+        active_slot = 0;
+    }
     nvs_close(handle);
     return result;
 }
 
-static bool stage_configuration(void *context, uint8_t slot, const network_config_t *configuration)
+static bool stage_configuration(void *context, uint8_t slot, const network_profiles_t *configuration)
 {
     nvs_handle_t handle = *(nvs_handle_t *)context;
-    return nvs_set_blob(handle, slot ? "slot1" : "slot0", configuration, sizeof(*configuration)) == ESP_OK &&
+    return nvs_set_blob(handle, slot ? "profiles1" : "profiles0", configuration, sizeof(*configuration)) == ESP_OK &&
            nvs_commit(handle) == ESP_OK;
 }
 
 static bool activate_configuration(void *context, uint8_t slot)
 {
     nvs_handle_t handle = *(nvs_handle_t *)context;
-    return nvs_set_u8(handle, "active", slot) == ESP_OK && nvs_commit(handle) == ESP_OK;
+    return nvs_set_u8(handle, "profiles_active", slot) == ESP_OK && nvs_commit(handle) == ESP_OK;
 }
 
-static esp_err_t save_configuration(const network_config_t *configuration)
+static esp_err_t save_profiles(const network_profiles_t *updated)
 {
     if (storage_fault) return ESP_ERR_INVALID_STATE;
-    if (!network_config_valid(configuration)) return ESP_ERR_INVALID_ARG;
+    if (!network_profiles_valid(updated)) return ESP_ERR_INVALID_ARG;
     nvs_handle_t handle;
     esp_err_t result = nvs_open("kb_network", NVS_READWRITE, &handle);
     if (result == ESP_OK) {
-        result = network_config_store(configuration, &active_slot, stage_configuration, activate_configuration, &handle) ? ESP_OK : ESP_FAIL;
+        uint8_t next = active_slot ? 0 : 1;
+        result = stage_configuration(&handle, next, updated) && activate_configuration(&handle, next) ? ESP_OK : ESP_FAIL;
+        if (result == ESP_OK) active_slot = next;
         nvs_close(handle);
     }
     if (result == ESP_OK) {
-        saved = *configuration;
+        profiles = *updated;
+        profiles_persisted = true;
+        saved = (network_config_t){.version = 1};
+        memcpy(saved.hostname, profiles.hostname, sizeof(saved.hostname));
+        if (profiles.count) network_profiles_select(&profiles, 0, &saved);
+        portENTER_CRITICAL(&lock);
+        saved_configuration_valid = true;
+        portEXIT_CRITICAL(&lock);
     } else {
         portENTER_CRITICAL(&lock);
         storage_fault = true;
         portEXIT_CRITICAL(&lock);
     }
+    return result;
+}
+
+static esp_err_t save_configuration(const network_config_t *configuration)
+{
+    if (!network_config_valid(configuration)) return ESP_ERR_INVALID_ARG;
+    network_profiles_t updated = profiles;
+    updated.station = configuration->station;
+    memcpy(updated.hostname, configuration->hostname, sizeof(updated.hostname));
+    esp_err_t result = save_profiles(&updated);
+    mbedtls_platform_zeroize(&updated, sizeof(updated));
     return result;
 }
 
@@ -433,7 +483,7 @@ static void refresh_snapshot(void)
     snapshot.ap_active = driver_started && state.ap;
     snapshot.station_online = driver_started && state.online;
     snapshot.desired_station = saved.station != 0;
-    snapshot.has_profile = saved.ssid[0] != '\0';
+    snapshot.has_profile = profiles.count != 0;
     control_ready = snapshot.available && !snapshot.busy && !command_pending && !scanning && !testing &&
                     !(state.phase == NETWORK_RECOVERY && connecting) &&
                     (state.phase == NETWORK_AP || state.phase == NETWORK_RECOVERY || state.phase == NETWORK_STATION);
@@ -443,6 +493,13 @@ static void refresh_snapshot(void)
     network_ssid_display((const uint8_t *)saved.ssid, strnlen(saved.ssid, NETWORK_SSID_MAX), snapshot.saved_ssid);
     network_ssid_hex((const uint8_t *)saved.ssid, strnlen(saved.ssid, NETWORK_SSID_MAX), snapshot.saved_ssid_hex);
     network_ssid_display((const uint8_t *)saved.ssid, state.online ? strnlen(saved.ssid, NETWORK_SSID_MAX) : 0, snapshot.station_ssid);
+    snapshot.profile_count = profiles.count;
+    for (size_t index = 0; index < profiles.count; index++) {
+        const network_profile_t *profile = &profiles.profiles[index];
+        network_ssid_display((const uint8_t *)profile->ssid, strlen(profile->ssid), snapshot.profiles[index].ssid);
+        network_ssid_hex((const uint8_t *)profile->ssid, strlen(profile->ssid), snapshot.profiles[index].ssid_hex);
+        snapshot.profiles[index].verified = profile->verified != 0;
+    }
     ap_address = snapshot.ap_active ? ap_info.ip.addr : 0;
     station_address = snapshot.station_online ? station_info.ip.addr : 0;
     snapshot.ap_ip[0] = '\0';
@@ -546,10 +603,16 @@ static esp_err_t recovery(const char *error, bool retry_saved)
     clear_ap_reconnect();
     mbedtls_platform_zeroize(&candidate, sizeof(candidate));
     network_state_recover(&state, esp_timer_get_time());
-    bool station = retry_saved && saved.station && saved.ssid[0] != '\0';
+    bool station = retry_saved && profiles.station && profiles.count != 0;
+    if (station) {
+        if (automatic_index >= profiles.count) automatic_index = 0;
+        network_profiles_select(&profiles, automatic_index, &automatic_configuration);
+        automatic_deadline = esp_timer_get_time() + NETWORK_CONNECT_US;
+        state.retry_at = esp_timer_get_time();
+    } else automatic_deadline = 0;
     esp_err_t result = ap_restore_pending ? restore_ap_address() : ESP_OK;
     if (result == ESP_OK) {
-        result = configure_driver(true, station, &saved);
+        result = configure_driver(true, station, station ? &automatic_configuration : &saved);
         if (result != ESP_OK && station) {
             station = false;
             result = configure_driver(true, false, &saved);
@@ -675,8 +738,21 @@ static void run_command(const network_command_t *command)
     if (request->action == NETWORK_ACTION_CONNECT || request->action == NETWORK_ACTION_STATION) {
         candidate = saved;
         if (request->action == NETWORK_ACTION_CONNECT) {
+            if (profiles.count == NETWORK_PROFILE_LIMIT && network_profiles_find(&profiles, request->ssid) < 0) {
+                job_result("failed", "profile_limit_reached", false);
+                mbedtls_platform_zeroize(&candidate, sizeof(candidate));
+                return;
+            }
             memcpy(candidate.ssid, request->ssid, sizeof(candidate.ssid));
             memcpy(candidate.password, request->password, sizeof(candidate.password));
+        } else if (request->ssid[0]) {
+            int index = network_profiles_find(&profiles, request->ssid);
+            if (index < 0) {
+                job_result("failed", "no_saved_network", false);
+                mbedtls_platform_zeroize(&candidate, sizeof(candidate));
+                return;
+            }
+            network_profiles_select(&profiles, (size_t)index, &candidate);
         }
         candidate.station = 1;
         if (!network_config_valid(&candidate)) {
@@ -685,6 +761,7 @@ static void run_command(const network_command_t *command)
             return;
         }
         testing = true;
+        automatic_deadline = 0;
         network_state_test(&state, now);
         portENTER_CRITICAL(&lock);
         last_failure[0] = '\0';
@@ -694,11 +771,32 @@ static void run_command(const network_command_t *command)
         return;
     }
     network_config_t updated = saved;
-    if (request->action == NETWORK_ACTION_AP || request->action == NETWORK_ACTION_FORGET) updated.station = 0;
     if (request->action == NETWORK_ACTION_FORGET) {
-        mbedtls_platform_zeroize(updated.ssid, sizeof(updated.ssid));
-        mbedtls_platform_zeroize(updated.password, sizeof(updated.password));
+        network_profiles_t remaining = profiles;
+        const char *ssid = request->ssid[0] ? request->ssid : saved.ssid;
+        bool active = strcmp(ssid, saved.ssid) == 0;
+        if (!network_profiles_remove(&remaining, ssid)) {
+            job_result("failed", "no_saved_network", false);
+            return;
+        }
+        if (active) remaining.station = 0;
+        esp_err_t result = save_profiles(&remaining);
+        mbedtls_platform_zeroize(&remaining, sizeof(remaining));
+        if (result != ESP_OK) { job_result("failed", "storage_failed", false); return; }
+        if (!active) {
+            if (!state.online && profiles.station) {
+                automatic_index = 0;
+                recovery("", true);
+            } else job_result("succeeded", "", false);
+            return;
+        }
+        network_state_init(&state, false, now);
+        result = configure_driver(true, false, &saved);
+        if (result != ESP_OK) recovery("configuration_failed", false);
+        else job_result("succeeded", "", false);
+        return;
     }
+    if (request->action == NETWORK_ACTION_AP) updated.station = 0;
     if (request->action == NETWORK_ACTION_RENAME) memcpy(updated.hostname, request->hostname, sizeof(updated.hostname));
     esp_err_t result = request->action == NETWORK_ACTION_RENAME ? rename_configuration(&updated) : save_configuration(&updated);
     mbedtls_platform_zeroize(&updated, sizeof(updated));
@@ -732,6 +830,9 @@ static bool sleep_step(void)
         snapshot.can_control = false;
         portEXIT_CRITICAL(&lock);
     } else if (current == NETWORK_SLEEP_RESUMING) {
+        automatic_index = 0;
+        automatic_configuration = saved;
+        automatic_deadline = esp_timer_get_time() + NETWORK_CONNECT_US;
         network_state_init(&state, saved.station && device_identity_claimed(), esp_timer_get_time());
         esp_err_t result = configure_driver(state.ap, !state.ap, &saved);
         if (result != ESP_OK) recovery("sleep_restore_failed", true);
@@ -782,6 +883,7 @@ static void network_worker(void *argument)
             refresh_snapshot();
             continue;
         }
+        if (!testing && state.phase == NETWORK_RECOVERY && recovery_held()) automatic_deadline = now + NETWORK_CONNECT_US;
         wifi_ap_record_t association;
         esp_netif_ip_info_t information = {0};
         bool associated = state.phase != NETWORK_AP && esp_wifi_sta_get_ap_info(&association) == ESP_OK;
@@ -793,19 +895,34 @@ static void network_worker(void *argument)
                       information.ip.addr == acquired_address;
         if (online && state.online && state.ap && !non_overlapping_ap(&information)) {
             if (ap_reconnect_pending) { refresh_snapshot(); continue; }
-            recovery("subnet_overlap", false);
+            if (profiles.count) automatic_index = (automatic_index + 1) % profiles.count;
+            recovery("subnet_overlap", true);
             online = false;
         }
         if (online && !state.online) {
-            const network_config_t *expected = testing ? &candidate : &saved;
+            const network_config_t *expected = testing ? &candidate : &automatic_configuration;
             if (strncmp((const char *)association.ssid, expected->ssid, 32) != 0 || !supported_auth(association.authmode)) {
-                recovery("unsupported_network", false);
+                if (!testing && profiles.count) automatic_index = (automatic_index + 1) % profiles.count;
+                recovery("unsupported_network", !testing);
             } else if (state.ap && !non_overlapping_ap(&information)) {
                 if (ap_reconnect_pending) { refresh_snapshot(); continue; }
-                recovery("subnet_overlap", false);
-            } else if (testing && save_configuration(&candidate) != ESP_OK) {
-                recovery("storage_failed", false);
+                if (!testing && profiles.count) automatic_index = (automatic_index + 1) % profiles.count;
+                recovery("subnet_overlap", !testing);
             } else {
+                network_profiles_t updated = profiles;
+                bool remembered = network_profiles_remember(&updated, expected);
+                if (testing) updated.station = 1;
+                esp_err_t stored = !remembered ? ESP_ERR_INVALID_STATE :
+                    profiles_persisted && memcmp(&updated, &profiles, sizeof(updated)) == 0 ? ESP_OK : save_profiles(&updated);
+                mbedtls_platform_zeroize(&updated, sizeof(updated));
+                if (stored != ESP_OK) {
+                    recovery(remembered ? "storage_failed" : "profile_limit_reached", false);
+                    refresh_snapshot();
+                    continue;
+                }
+                automatic_index = 0;
+                automatic_configuration = saved;
+                automatic_deadline = 0;
                 network_state_online(&state, now);
                 testing = false;
                 mbedtls_platform_zeroize(&candidate, sizeof(candidate));
@@ -814,6 +931,9 @@ static void network_worker(void *argument)
         } else if (!online && state.online) {
             disarm(false, true);
             network_state_lost(&state, now);
+            automatic_index = 0;
+            automatic_configuration = saved;
+            automatic_deadline = now + NETWORK_CONNECT_US;
             job_result("failed", "connection_lost", false);
         }
         bool was_testing = testing;
@@ -830,14 +950,22 @@ static void network_worker(void *argument)
             portENTER_CRITICAL(&lock);
             snprintf(error, sizeof(error), "%s", last_failure[0] ? last_failure : associated ? "dhcp_timeout" : "connection_timeout");
             portEXIT_CRITICAL(&lock);
+            if (!was_testing && profiles.count) automatic_index = (automatic_index + 1) % profiles.count;
             recovery(error, !was_testing);
         } else if (effect == NETWORK_CLOSE_AP) {
             disarm(false, false);
             if (esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK) job_result("succeeded", "", false);
             else recovery("handover_failed", true);
         } else if (effect == NETWORK_TRY_CONNECT && associated && !online && state.phase == NETWORK_RECOVERY) {
+            if (profiles.count) automatic_index = (automatic_index + 1) % profiles.count;
             recovery("dhcp_timeout", true);
         } else if (effect == NETWORK_TRY_CONNECT && !associated) {
+            if (!testing && state.phase == NETWORK_RECOVERY && automatic_deadline != 0 && now >= automatic_deadline && profiles.count) {
+                automatic_index = (automatic_index + 1) % profiles.count;
+                recovery("connection_timeout", true);
+                refresh_snapshot();
+                continue;
+            }
             portENTER_CRITICAL(&lock);
             bool pending = connecting || (state.phase == NETWORK_RECOVERY &&
                 ((guarded && guard_ap) || now < management_until));
@@ -919,6 +1047,13 @@ esp_err_t network_start(void)
 {
     ESP_RETURN_ON_ERROR(device_identity_init(), TAG, "Device identity unavailable; no erase or open AP attempted");
     esp_err_t loaded = load_configuration();
+    if (loaded != ESP_OK) {
+        ESP_LOGE(TAG, "Saved network configuration invalid: %s", esp_err_to_name(loaded));
+        storage_fault = true;
+        saved = (network_config_t){.version = 1, .hostname = CONFIG_NETWORK_DEFAULT_HOSTNAME};
+        network_profiles_migrate(&saved, &profiles);
+    }
+    if (profiles.version != 2) network_profiles_migrate(&saved, &profiles);
     saved_configuration_valid = loaded == ESP_OK;
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "Network initialization failed");
     ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "Event loop initialization failed");
@@ -942,6 +1077,8 @@ esp_err_t network_start(void)
     ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL), TAG, "Wi-Fi event registration failed");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL), TAG, "IP event registration failed");
     snapshot = (network_status_t){0};
+    automatic_configuration = saved;
+    automatic_deadline = esp_timer_get_time() + NETWORK_CONNECT_US;
     network_state_init(&state, saved.station && device_identity_claimed(), esp_timer_get_time());
     esp_err_t started = configure_driver(state.ap, !state.ap, &saved);
     if (started != ESP_OK) recovery("connection_failed", false);
@@ -963,7 +1100,7 @@ esp_err_t network_start(void)
     refresh_snapshot();
     commands = xQueueCreate(1, sizeof(network_command_t));
     ESP_RETURN_ON_FALSE(commands != NULL, ESP_ERR_NO_MEM, TAG, "Network queue allocation failed");
-    ESP_RETURN_ON_FALSE(xTaskCreate(network_worker, "keyboard_network", 6144, NULL, 3, NULL) == pdPASS, ESP_ERR_NO_MEM, TAG, "Network worker allocation failed");
+    ESP_RETURN_ON_FALSE(xTaskCreate(network_worker, "keyboard_network", 8192, NULL, 3, NULL) == pdPASS, ESP_ERR_NO_MEM, TAG, "Network worker allocation failed");
     ESP_LOGW(TAG, "HTTP/WS development profile; use a protected, trusted test network only");
     ESP_LOGI(TAG, "Wi-Fi state: %s; preferred name: %s.local", network_phase_name(state.phase), saved.hostname);
     return ESP_OK;

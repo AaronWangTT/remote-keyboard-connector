@@ -113,6 +113,88 @@ bool network_config_valid(const network_config_t *configuration)
     return profile_valid(configuration->ssid, configuration->password);
 }
 
+int network_profiles_find(const network_profiles_t *profiles, const char *ssid)
+{
+    for (size_t index = 0; index < profiles->count; index++) {
+        if (strcmp(profiles->profiles[index].ssid, ssid) == 0) return (int)index;
+    }
+    return -1;
+}
+
+bool network_profiles_valid(const network_profiles_t *profiles)
+{
+    if (profiles == NULL || profiles->version != 2 || profiles->reserved != 0 ||
+        profiles->station > 1 || profiles->count > NETWORK_PROFILE_LIMIT ||
+        (profiles->station && profiles->count == 0) ||
+        !padded_string_valid(profiles->hostname, sizeof(profiles->hostname)) ||
+        !network_hostname_valid(profiles->hostname)) return false;
+    const network_profile_t empty = {0};
+    for (size_t index = 0; index < NETWORK_PROFILE_LIMIT; index++) {
+        const network_profile_t *profile = &profiles->profiles[index];
+        if (index >= profiles->count) {
+            if (memcmp(profile, &empty, sizeof(empty)) != 0) return false;
+        } else if (!padded_string_valid(profile->ssid, sizeof(profile->ssid)) ||
+                   !padded_string_valid(profile->password, sizeof(profile->password)) ||
+                   !profile_valid(profile->ssid, profile->password) || profile->verified > 1) return false;
+        else {
+            for (size_t previous = 0; previous < index; previous++) {
+                if (strcmp(profile->ssid, profiles->profiles[previous].ssid) == 0) return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool network_profiles_migrate(const network_config_t *legacy, network_profiles_t *profiles)
+{
+    if (!network_config_valid(legacy) || profiles == NULL) return false;
+    *profiles = (network_profiles_t){.version = 2, .station = legacy->station};
+    memcpy(profiles->hostname, legacy->hostname, sizeof(profiles->hostname));
+    if (legacy->ssid[0]) {
+        profiles->count = 1;
+        memcpy(profiles->profiles[0].ssid, legacy->ssid, sizeof(legacy->ssid));
+        memcpy(profiles->profiles[0].password, legacy->password, sizeof(legacy->password));
+        profiles->profiles[0].verified = 1;
+    }
+    return true;
+}
+
+bool network_profiles_select(const network_profiles_t *profiles, size_t index, network_config_t *configuration)
+{
+    if (!network_profiles_valid(profiles) || configuration == NULL || index >= profiles->count) return false;
+    *configuration = (network_config_t){.version = 1, .station = profiles->station};
+    memcpy(configuration->hostname, profiles->hostname, sizeof(configuration->hostname));
+    memcpy(configuration->ssid, profiles->profiles[index].ssid, sizeof(configuration->ssid));
+    memcpy(configuration->password, profiles->profiles[index].password, sizeof(configuration->password));
+    return true;
+}
+
+bool network_profiles_remember(network_profiles_t *profiles, const network_config_t *configuration)
+{
+    if (!network_profiles_valid(profiles) || !network_config_valid(configuration) || !configuration->ssid[0]) return false;
+    int found = network_profiles_find(profiles, configuration->ssid);
+    if (found < 0 && profiles->count == NETWORK_PROFILE_LIMIT) return false;
+    size_t index = found < 0 ? profiles->count++ : (size_t)found;
+    memmove(&profiles->profiles[1], &profiles->profiles[0], index * sizeof(network_profile_t));
+    profiles->profiles[0] = (network_profile_t){.verified = 1};
+    memcpy(profiles->profiles[0].ssid, configuration->ssid, sizeof(configuration->ssid));
+    memcpy(profiles->profiles[0].password, configuration->password, sizeof(configuration->password));
+    return true;
+}
+
+bool network_profiles_remove(network_profiles_t *profiles, const char *ssid)
+{
+    if (!network_profiles_valid(profiles)) return false;
+    int found = network_profiles_find(profiles, ssid);
+    if (found < 0) return false;
+    size_t index = (size_t)found;
+    memmove(&profiles->profiles[index], &profiles->profiles[index + 1],
+            (profiles->count - index - 1) * sizeof(network_profile_t));
+    profiles->profiles[--profiles->count] = (network_profile_t){0};
+    if (profiles->count == 0) profiles->station = 0;
+    return true;
+}
+
 bool network_request_parse(const uint8_t *payload, size_t length, network_request_t *request)
 {
     if (request == NULL) return false;
@@ -143,8 +225,10 @@ bool network_request_parse(const uint8_t *payload, size_t length, network_reques
         unsigned flag = 0;
         bool encoded_ssid = false;
         if (strcmp(field->string, "action") == 0) flag = 1;
-        else if (request->action == NETWORK_ACTION_CONNECT && strcmp(field->string, "ssid") == 0) flag = 2;
-        else if (request->action == NETWORK_ACTION_CONNECT && strcmp(field->string, "ssid_hex") == 0) {
+        else if ((request->action == NETWORK_ACTION_CONNECT || request->action == NETWORK_ACTION_STATION ||
+                  request->action == NETWORK_ACTION_FORGET) && strcmp(field->string, "ssid") == 0) flag = 2;
+        else if ((request->action == NETWORK_ACTION_CONNECT || request->action == NETWORK_ACTION_STATION ||
+                  request->action == NETWORK_ACTION_FORGET) && strcmp(field->string, "ssid_hex") == 0) {
             flag = 2;
             encoded_ssid = true;
         }
@@ -176,7 +260,9 @@ bool network_request_parse(const uint8_t *payload, size_t length, network_reques
         }
     }
     unsigned expected = request->action == NETWORK_ACTION_CONNECT ? 7 : request->action == NETWORK_ACTION_RENAME ? 9 : 1;
-    valid = seen == expected && (request->action != NETWORK_ACTION_CONNECT || profile_valid(request->ssid, request->password));
+    valid = (seen == expected || ((request->action == NETWORK_ACTION_STATION ||
+        request->action == NETWORK_ACTION_FORGET) && seen == 3)) &&
+        (request->action != NETWORK_ACTION_CONNECT || profile_valid(request->ssid, request->password));
 done:
     cJSON_Delete(root);
     if (!valid) *request = (network_request_t){0};

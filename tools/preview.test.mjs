@@ -1419,9 +1419,52 @@ test("network jobs are owner-only, bounded and preserve the last working profile
   assert.equal((await submit({ action: "ap" })).status, 202);
   await expect.poll(status).toMatchObject({ phase: "ap", desired_station: false, has_profile: true, busy: false });
   assert.equal((await submit({ action: "forget" })).status, 202);
+  await expect.poll(status).toMatchObject({ saved_ssid: "Cafe\\xFF", has_profile: true, ap_active: true, busy: false });
+  assert.equal((await submit({ action: "forget", ssid_hex: "43616665ff" })).status, 202);
   await expect.poll(status).toMatchObject({ saved_ssid: "", has_profile: false, ap_active: true, busy: false });
   assert.equal((await submit({ action: "connect", ssid: "literal\\u0000", password: "literal\\u0000" })).status, 202);
   await expect.poll(status).toMatchObject({ saved_ssid: "literal\\u0000", job: "awaiting_confirmation" });
+});
+
+test("ten saved networks retain MRU order, targeted switching and deletion without exposing passwords", { timeout: 20000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_NETWORK_DELAY_MS: "50" });
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
+  const status = async () => (await fetch(new URL("/api/v1/network/job", url), { headers })).json();
+  const submit = async value => {
+    assert.equal((await fetch(new URL("/api/v1/network", url), { method: "POST", headers, body: JSON.stringify(value) })).status, 202);
+  };
+  const connect = async value => {
+    await submit(value);
+    await expect.poll(status).toMatchObject({ job: "awaiting_confirmation" });
+    await submit({ action: "confirm" });
+    await expect.poll(status).toMatchObject({ job: "succeeded", station_online: true });
+  };
+  for (let index = 0; index < 10; index++) {
+    await connect({ action: "connect", ssid: `saved-${index}`, password: "private-wifi-password" });
+  }
+  const full = await status();
+  assert.equal(full.profiles.length, 10);
+  assert.equal(full.profile_limit, 10);
+  assert.deepEqual(full.profiles.map(profile => profile.ssid), Array.from({ length: 10 }, (_, index) => `saved-${9 - index}`));
+  assert.equal(JSON.stringify(full).includes("private-wifi-password"), false);
+  await submit({ action: "connect", ssid: "eleventh", password: "private-wifi-password" });
+  await expect.poll(status).toMatchObject({ error: "profile_limit_reached", station_online: true, phase: "station", busy: false });
+  assert.deepEqual((await status()).profiles, full.profiles);
+  await connect({ action: "station", ssid: "saved-3" });
+  assert.equal((await status()).profiles[0].ssid, "saved-3");
+  await submit({ action: "forget", ssid_hex: Buffer.from("saved-8").toString("hex") });
+  await expect.poll(status).toMatchObject({ job: "succeeded", station_online: true, station_ssid: "saved-3" });
+  assert.equal((await status()).profiles.length, 9);
+  await submit({ action: "station", ssid: "missing" });
+  await expect.poll(status).toMatchObject({ error: "no_saved_network", station_online: true, station_ssid: "saved-3" });
+  await connect({ action: "connect", ssid: "saved-3", password: "updated-wifi-password" });
+  assert.equal((await status()).profiles.length, 9);
+  await connect({ action: "connect", ssid: "new-slot", password: "private-wifi-password" });
+  assert.equal((await status()).profiles.length, 10);
+  await submit({ action: "forget", ssid: "new-slot" });
+  await expect.poll(status).toMatchObject({ job: "succeeded", phase: "ap", desired_station: false, has_profile: true });
+  assert.equal((await status()).profiles.length, 9);
 });
 
 test("storage faults reject writes immediately while status and scans remain usable", { timeout: 10000 }, async context => {
@@ -1550,6 +1593,43 @@ test("browser Network view scans, tests, confirms handover and forgets without U
   await page.getByRole("button", { name: "Back to keyboard" }).click();
   await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
   await takeControl(page);
+});
+
+test("browser saved-network selector switches and deletes individual profiles", { timeout: 20000 }, async context => {
+  const url = await startPreview(context, { PREVIEW_NETWORK_DELAY_MS: "50" });
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
+  const status = async () => (await fetch(new URL("/api/v1/network/job", url), { headers })).json();
+  for (const ssid of ["Home Wi-Fi", "<Office & Guests>"]) {
+    assert.equal((await fetch(new URL("/api/v1/network", url), { method: "POST", headers,
+      body: JSON.stringify({ action: "connect", ssid, password: "test-router-password" }) })).status, 202);
+    await expect.poll(status).toMatchObject({ job: "awaiting_confirmation" });
+    await fetch(new URL("/api/v1/network", url), { method: "POST", headers, body: JSON.stringify({ action: "confirm" }) });
+    await expect.poll(status).toMatchObject({ job: "succeeded" });
+  }
+  const browser = await chromium.launch();
+  context.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.goto(url);
+  await signIn(page);
+  await page.getByRole("button", { name: "Network settings", exact: true }).click();
+  await expect(page.locator("#wifi-saved-label")).toHaveText("Saved networks (2/10)");
+  const homeHex = Buffer.from("Home Wi-Fi").toString("hex");
+  await page.locator("#wifi-saved-network").selectOption(homeHex);
+  await page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/network/job");
+  await expect(page.locator("#wifi-saved-network")).toHaveValue(homeHex);
+  await page.getByRole("button", { name: "Connect saved network", exact: true }).click();
+  await expect(page.locator("#network-saved")).toHaveText("Home Wi-Fi");
+  await page.getByRole("button", { name: "Switch to Wi-Fi", exact: true }).click();
+  await expect(page.locator("#network-phase")).toHaveText("Connected to Wi-Fi");
+  await page.locator("#wifi-saved-network").selectOption(Buffer.from("<Office & Guests>").toString("hex"));
+  await page.locator("#forget-network").click();
+  await expect(page.locator("#forget-ssid")).toHaveText("<Office & Guests>");
+  await page.locator("#forget-confirm").click();
+  await expect(page.locator("#wifi-saved-label")).toHaveText("Saved networks (1/10)");
+  await expect(page.locator("#network-phase")).toHaveText("Connected to Wi-Fi");
+  await expect(page.locator("#network-saved")).toHaveText("Home Wi-Fi");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
 });
 
 test("overlapping AP subnet is announced and confirmed before reconnecting at the new address", { timeout: 20000 }, async context => {

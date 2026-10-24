@@ -264,6 +264,19 @@ function renderNetwork() {
   document.querySelector("#forget-network").hidden = !state?.has_profile;
   document.querySelector("#forget-network").disabled = busy;
   document.querySelector("#network-use-saved").hidden = !state?.has_profile;
+  document.querySelector("#network-use-saved").disabled = busy;
+  const savedSelect = document.querySelector("#wifi-saved-network");
+  savedSelect.disabled = busy || !state?.has_profile;
+  const savedProfiles = state?.profiles ?? (state?.has_profile ? [{ ssid: state.saved_ssid, ssid_hex: state.saved_ssid_hex, verified: true }] : []);
+  document.querySelector("#wifi-saved-label").textContent = `Saved networks (${savedProfiles.length}/${state?.profile_limit ?? 10})`;
+  const selectedSaved = savedSelect.value;
+  savedSelect.replaceChildren();
+  for (const profile of savedProfiles) {
+    savedSelect.add(new Option(`${profile.ssid}${profile.verified ? "" : " (not yet verified)"}`, profile.ssid_hex));
+  }
+  if (!savedProfiles.length) savedSelect.add(new Option("None", ""));
+  savedSelect.value = savedProfiles.some(profile => profile.ssid_hex === selectedSaved) ? selectedSaved :
+    state?.saved_ssid_hex || savedProfiles[0]?.ssid_hex || "";
   const reconnectingAp = state?.job === "awaiting_ap_reconnect";
   const confirming = state?.job === "awaiting_confirmation" || reconnectingAp;
   document.querySelector("#network-confirm").hidden = !confirming;
@@ -295,6 +308,7 @@ function renderNetwork() {
     connection_failed: "Wi-Fi connection failed.", connection_lost: "Wi-Fi connection lost.",
     scan_failed: "Network scan failed.", scan_timeout: "Network scan timed out.", scan_unavailable: "Network scan is unavailable.",
     no_saved_network: "No saved Wi-Fi network.", storage_failed: "Settings could not be saved. Restart the keyboard before retrying.",
+    profile_limit_reached: "All 10 saved-network slots are in use. Forget a network before adding another.",
     configuration_failed: "Network settings could not be applied. Check the current network status before retrying.",
     unsupported_network: "This network's security mode is not supported.", subnet_overlap: "The AP and router address ranges overlap.",
     saved_configuration_invalid: "Saved settings are invalid. Recovery AP is available.", wifi_unavailable: "Wi-Fi is unavailable.",
@@ -905,7 +919,10 @@ document.querySelector("#wifi-ssid").addEventListener("input", event => delete e
 document.querySelector("#network-scan").addEventListener("click", () => submitNetwork("scan"));
 document.querySelector("#network-cancel").addEventListener("click", () => submitNetwork("cancel"));
 document.querySelector("#network-confirm").addEventListener("click", () => submitNetwork("confirm"));
-document.querySelector("#network-use-saved").addEventListener("click", () => submitNetwork("station"));
+document.querySelector("#network-use-saved").addEventListener("click", () => {
+  const ssid_hex = document.querySelector("#wifi-saved-network").value;
+  submitNetwork("station", ssid_hex ? { ssid_hex } : {});
+});
 document.querySelector("#network-retry").addEventListener("click", pollNetwork);
 document.querySelector("#network-form").addEventListener("submit", event => {
   event.preventDefault();
@@ -960,13 +977,17 @@ document.querySelector("#power-form").addEventListener("submit", async event => 
   }
 });
 document.querySelector("#forget-network").addEventListener("click", () => {
-  document.querySelector("#forget-ssid").textContent = networkState?.saved_ssid || "";
-  document.querySelector("#forget-dialog").showModal();
+  const select = document.querySelector("#wifi-saved-network");
+  const dialog = document.querySelector("#forget-dialog");
+  dialog.dataset.ssidHex = select.value;
+  document.querySelector("#forget-ssid").textContent = select.selectedOptions[0]?.textContent || networkState?.saved_ssid || "";
+  dialog.showModal();
 });
 document.querySelector("#forget-dismiss").addEventListener("click", () => document.querySelector("#forget-dialog").close());
 document.querySelector("#forget-confirm").addEventListener("click", () => {
-  document.querySelector("#forget-dialog").close();
-  submitNetwork("forget");
+  const dialog = document.querySelector("#forget-dialog");
+  dialog.close();
+  submitNetwork("forget", dialog.dataset.ssidHex ? { ssid_hex: dialog.dataset.ssidHex } : {});
 });
 function suspendPage() {
   clearNetworkPassword();

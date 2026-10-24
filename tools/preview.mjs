@@ -50,7 +50,7 @@ const network = { available: true, ap_active: true, station_online: false, desir
   job_id: 0, phase: "ap", job: "idle", error: "",
   hostname: previewProfile.hostname, requested_hostname: previewProfile.hostname,
   ap_ssid: "WiFiKeyboard-123456", saved_ssid: "", saved_ssid_hex: "", station_ssid: "",
-  ap_ip: "192.168.4.1", ap_reconnect_ip: "", station_ip: "", scan: [] };
+  ap_ip: "192.168.4.1", ap_reconnect_ip: "", station_ip: "", scan: [], profiles: [], profile_limit: 10 };
 let pendingProfile = null;
 const networkDelay = Math.max(50, Number(process.env.PREVIEW_NETWORK_DELAY_MS) || 200);
 const scanTtl = Math.max(50, Number(process.env.PREVIEW_SCAN_TTL_MS) || 30000);
@@ -70,6 +70,15 @@ const updateIdleTtl = Math.max(100, Number(process.env.PREVIEW_UPDATE_IDLE_MS) |
 if (process.env.PREVIEW_NETWORK_MODE === "station") Object.assign(network, {
   ap_active: false, ap_ip: "", station_online: true, station_ip: "192.168.1.50", desired_station: true,
   has_profile: true, phase: "station", job: "succeeded", saved_ssid: "Home Wi-Fi", station_ssid: "Home Wi-Fi" });
+if (network.has_profile) {
+  network.saved_ssid_hex = Buffer.from(network.saved_ssid).toString("hex");
+  network.profiles.push({ ssid: network.saved_ssid, ssid_hex: network.saved_ssid_hex, verified: true });
+}
+
+function rememberNetwork(ssid, ssidHex) {
+  network.profiles = network.profiles.filter(profile => profile.ssid_hex !== ssidHex);
+  network.profiles.unshift({ ssid, ssid_hex: ssidHex, verified: true });
+}
 
 function powerActivity() {
   if (power.available && !powerSleeping) powerLastActivity = performance.now() + powerOffset;
@@ -255,15 +264,18 @@ async function networkRequest(request, response) {
   }
   const value = scan ? { action: "scan" } : await jsonBody(request);
   if (!value || typeof value !== "object" || Array.isArray(value)) return sendJson(response, 400, { error: "invalid_network_request" });
-  const fields = value.action === "connect" ? ["action", "ssid", "ssid_hex", "password"] : value.action === "rename" ? ["action", "hostname"] : ["action"];
+  const targeted = ["station", "forget"].includes(value.action);
+  const fields = value.action === "connect" ? ["action", "ssid", "ssid_hex", "password"] :
+    targeted ? ["action", "ssid", "ssid_hex"] : value.action === "rename" ? ["action", "hostname"] : ["action"];
   const hasTextSsid = Object.hasOwn(value, "ssid");
   const hasEncodedSsid = Object.hasOwn(value, "ssid_hex");
   const textSsid = typeof value.ssid === "string" && !value.ssid.includes("\0") && Buffer.byteLength(value.ssid) >= 1 && Buffer.byteLength(value.ssid) <= 32;
   const encodedSsid = typeof value.ssid_hex === "string" && /^(?:[0-9a-fA-F]{2}){1,32}$/.test(value.ssid_hex) && !Buffer.from(value.ssid_hex, "hex").includes(0);
-  const expectedFields = value.action === "connect" ? 3 : fields.length;
+  const expectedFields = value.action === "connect" ? 3 : targeted ? (hasTextSsid || hasEncodedSsid ? 2 : 1) : fields.length;
   if (!Object.keys(value).every(key => fields.includes(key)) || Object.keys(value).length !== expectedFields ||
       !["scan", "connect", "ap", "station", "forget", "rename", "cancel", "confirm"].includes(value.action) ||
       (!scan && value.action === "scan") ||
+      (targeted && ((hasTextSsid && hasEncodedSsid) || (hasTextSsid && !textSsid) || (hasEncodedSsid && !encodedSsid))) ||
       (value.action === "connect" && (hasTextSsid === hasEncodedSsid || !(hasTextSsid ? textSsid : encodedSsid) ||
         typeof value.password !== "string" || !/^[\x20-\x7e]{8,63}$/.test(value.password))) ||
       (value.action === "rename" && (typeof value.hostname !== "string" || value.hostname.length > 32 || value.hostname === "localhost" ||
@@ -281,6 +293,16 @@ async function networkRequest(request, response) {
   powerActivity();
   sendJson(response, 202, { job_id: id, management_url: `http://${request.headers.host}/` });
   const action = value.action;
+  const requestedHex = hasEncodedSsid ? value.ssid_hex.toLowerCase() : hasTextSsid ? Buffer.from(value.ssid).toString("hex") : network.saved_ssid_hex;
+  const savedRequestExists = network.profiles.some(profile => profile.ssid_hex === requestedHex);
+  if (action === "connect" && !savedRequestExists && network.profiles.length >= network.profile_limit) {
+    finishNetwork("failed", "profile_limit_reached");
+    return;
+  }
+  if (["station", "forget"].includes(action) && !savedRequestExists) {
+    finishNetwork("failed", "no_saved_network");
+    return;
+  }
   if (action === "cancel") {
     if (cancelScan) { finishNetwork("cancelled"); return; }
     if (network.station_online) network.desired_station = false;
@@ -310,9 +332,11 @@ async function networkRequest(request, response) {
       setTimeout(() => { if (network.scan === results) network.scan = []; }, scanTtl).unref();
       finishNetwork("succeeded");
     } else if (action === "connect" || action === "station") {
-      const ssidHex = action === "connect" ? value.ssid_hex ?? Buffer.from(value.ssid).toString("hex") : network.saved_ssid_hex;
+      const ssidHex = requestedHex;
       const ssid = ssidDisplay(ssidHex);
-      const failure = !ssid ? "no_saved_network" : value.password === "wrong-password" ? "authentication_failed" :
+      const exists = network.profiles.some(profile => profile.ssid_hex === ssidHex);
+      const failure = !ssid || (action === "station" && !exists) ? "no_saved_network" :
+        !exists && network.profiles.length >= network.profile_limit ? "profile_limit_reached" : value.password === "wrong-password" ? "authentication_failed" :
         ssid === "offline-network" ? "network_not_found" : ssid === "no-dhcp-network" ? "dhcp_timeout" : "";
       if (failure) {
         network.phase = "ap";
@@ -322,11 +346,13 @@ async function networkRequest(request, response) {
         network.ap_reconnect_ip = "172.30.4.1";
         finishNetwork("awaiting_ap_reconnect");
       } else {
+        rememberNetwork(ssid, ssidHex);
         Object.assign(network, { desired_station: true, has_profile: true, saved_ssid: ssid, saved_ssid_hex: ssidHex, station_ssid: ssid,
           station_online: true, station_ip: "192.168.1.88", phase: "awaiting_confirmation" });
         finishNetwork("awaiting_confirmation");
       }
     } else if (confirmReconnect) {
+      rememberNetwork(pendingProfile.ssid, pendingProfile.ssidHex);
       Object.assign(network, { ap_ip: network.ap_reconnect_ip, ap_reconnect_ip: "", desired_station: true, has_profile: true,
         saved_ssid: pendingProfile.ssid, saved_ssid_hex: pendingProfile.ssidHex, station_ssid: pendingProfile.ssid,
         station_online: true, station_ip: "192.168.4.88", phase: "awaiting_confirmation" });
@@ -340,9 +366,21 @@ async function networkRequest(request, response) {
       network.requested_hostname = value.hostname;
       finishNetwork("succeeded");
     } else {
+      if (action === "forget") {
+        if (!network.profiles.some(profile => profile.ssid_hex === requestedHex)) {
+          finishNetwork("failed", "no_saved_network");
+          return;
+        }
+        network.profiles = network.profiles.filter(profile => profile.ssid_hex !== requestedHex);
+        if (requestedHex !== network.saved_ssid_hex) {
+          finishNetwork("succeeded");
+          return;
+        }
+        const first = network.profiles[0];
+        Object.assign(network, { saved_ssid: first?.ssid ?? "", saved_ssid_hex: first?.ssid_hex ?? "", has_profile: Boolean(first) });
+      }
       Object.assign(network, { phase: "ap", desired_station: false, ap_active: true, ap_ip: "192.168.4.1",
         station_online: false, station_ip: "", station_ssid: "" });
-      if (action === "forget") Object.assign(network, { saved_ssid: "", saved_ssid_hex: "", has_profile: false });
       finishNetwork("succeeded");
     }
   }, networkDelay).unref();
