@@ -40,6 +40,7 @@ static unsigned connects, configurations, writes;
 static char attempted[128][33];
 static int64_t attempted_at[128];
 static const char *successful_ssid;
+static const char *overlapping_ssid;
 static jmp_buf worker_exit;
 static unsigned nvs_step, failure_step;
 static bool fail_after_write;
@@ -136,7 +137,16 @@ static bool sleep_step(void) { return false; }
 static bool retry_ap_restoration(int64_t now) { (void)now; return false; }
 static void finish_scan(void) { scanning = false; }
 static void refresh_snapshot(void) { snapshot.station_online = state.online; snapshot.ap_active = state.ap; }
-static bool non_overlapping_ap(const esp_netif_ip_info_t *information) { (void)information; return true; }
+static bool non_overlapping_ap(const esp_netif_ip_info_t *information)
+{
+    (void)information;
+    if (overlapping_ssid && strcmp(driver_configuration.ssid, overlapping_ssid) == 0) {
+        if (!ap_reconnect_pending) ap_reconnect_until = now_us + NETWORK_CONFIRM_US;
+        ap_reconnect_pending = true;
+        return false;
+    }
+    return true;
+}
 static bool supported_auth(int authmode) { return authmode == 2; }
 static bool esp_netif_is_netif_up(int interface) { (void)interface; return lease; }
 static esp_err_t esp_netif_get_ip_info(int interface, esp_netif_ip_info_t *information)
@@ -235,7 +245,7 @@ static void reset(void)
     storage_fault = testing = scanning = connecting = command_pending = false;
     associated = lease = held = update_reserved = guarded = guard_ap = false;
     ap_restore_pending = driver_retry_pending = ap_reconnect_pending = false;
-    successful_ssid = NULL;
+    successful_ssid = overlapping_ssid = NULL;
     sleep_state = NETWORK_SLEEP_AWAKE;
     snapshot = (network_status_t){0};
     active_slot = persisted_slot = 0;
@@ -319,10 +329,42 @@ static void test_management_polling(void)
     assert(strcmp(driver_configuration.ssid, "office") == 0);
 }
 
+static void test_overlap_confirmation_timeout(void)
+{
+    reset();
+    overlapping_ssid = successful_ssid = "office";
+    run_until(NETWORK_CONNECT_US + INT64_C(1000000));
+    assert(ap_reconnect_pending && !state.online && !testing);
+    assert(strcmp(driver_configuration.ssid, "office") == 0 && strcmp(saved.ssid, "recent") == 0);
+    int64_t confirmation_deadline = ap_reconnect_until;
+    successful_ssid = "travel";
+    held = true;
+    unsigned previous_configurations = configurations;
+    run_until(confirmation_deadline + INT64_C(1000000));
+    assert(ap_reconnect_pending && configurations == previous_configurations);
+    held = false;
+    run_until(now_us + INT64_C(2000000));
+    assert(!ap_reconnect_pending && state.online && profiles.count == 3);
+    assert(strcmp(driver_configuration.ssid, "travel") == 0 && strcmp(saved.ssid, "travel") == 0);
+
+    reset();
+    overlapping_ssid = successful_ssid = "travel";
+    command(NETWORK_ACTION_STATION, "travel");
+    run_until(INT64_C(1000000));
+    assert(ap_reconnect_pending && testing && !state.online);
+    run_until(ap_reconnect_until + INT64_C(1000000));
+    assert(!ap_reconnect_pending && !testing && state.phase == NETWORK_AP);
+    assert(strcmp(saved.ssid, "recent") == 0 && profiles.count == 3 && writes == 0);
+    unsigned after_timeout = connects;
+    run_until(now_us + NETWORK_CONNECT_US * 2);
+    assert(connects == after_timeout && !driver_station);
+}
+
 int main(void)
 {
     test_interrupted_persistence();
     test_management_polling();
+    test_overlap_confirmation_timeout();
     reset();
     run_until(NETWORK_CONNECT_US - NETWORK_CONNECT_STEP);
     for (unsigned index = 0; index < connects; index++) assert(strcmp(attempted[index], "recent") == 0);

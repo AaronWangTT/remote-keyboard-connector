@@ -864,7 +864,9 @@ static void network_worker(void *argument)
             continue;
         }
         if (ap_reconnect_pending && now >= ap_reconnect_until && !recovery_held()) {
-            recovery("confirmation_timeout", false);
+            bool retry_saved = !testing && profiles.station && profiles.count != 0;
+            if (retry_saved) automatic_index = (automatic_index + 1) % profiles.count;
+            recovery("confirmation_timeout", retry_saved);
             refresh_snapshot();
             continue;
         }
