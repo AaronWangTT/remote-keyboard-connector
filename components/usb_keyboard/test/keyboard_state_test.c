@@ -253,6 +253,39 @@ static void test_usb_recovery(void)
     assert(next_a(&state, 4, &pressed) && !pressed);
 }
 
+static void test_pause_and_resume(void)
+{
+    keyboard_state_t state = ready_keyboard();
+    uint32_t generation = state.generation;
+    bool pressed;
+    assert(input_a(&state, generation, true, 0));
+    assert(next_a(&state, 0, &pressed) && pressed);
+    keyboard_state_complete(&state);
+    keyboard_state_tick(&state, KEYBOARD_IDLE_TIMEOUT_US - 1);
+    assert(!state.input_paused);
+    keyboard_state_tick(&state, KEYBOARD_IDLE_TIMEOUT_US);
+    assert(state.input_paused && state.generation == generation);
+    assert(!keyboard_state_resume(&state, generation, KEYBOARD_IDLE_TIMEOUT_US));
+    assert(!input_a(&state, generation, true, KEYBOARD_IDLE_TIMEOUT_US));
+    assert(next_a(&state, KEYBOARD_IDLE_TIMEOUT_US, &pressed) && !pressed);
+    keyboard_state_pause(&state);
+    keyboard_state_complete(&state);
+    assert(!keyboard_state_heartbeat(&state, generation, KEYBOARD_IDLE_TIMEOUT_US + 1));
+    assert(!input_a(&state, generation, true, KEYBOARD_IDLE_TIMEOUT_US + 1));
+    assert(!keyboard_state_resume(&state, generation - 1, KEYBOARD_IDLE_TIMEOUT_US + 1));
+    assert(keyboard_state_resume(&state, generation, KEYBOARD_IDLE_TIMEOUT_US + 1));
+    assert(!next_a(&state, KEYBOARD_IDLE_TIMEOUT_US + 1, &pressed));
+    assert(input_a(&state, generation, true, KEYBOARD_IDLE_TIMEOUT_US + 2));
+    assert(next_a(&state, KEYBOARD_IDLE_TIMEOUT_US + 2, &pressed) && pressed);
+    keyboard_state_complete(&state);
+    keyboard_state_pause(&state);
+    assert(state.generation == generation && state.input_paused);
+    assert(next_a(&state, KEYBOARD_IDLE_TIMEOUT_US + 3, &pressed) && !pressed);
+    keyboard_state_tick(&state, KEYBOARD_IDLE_TIMEOUT_US + 3 + KEYBOARD_REPORT_TIMEOUT_US);
+    assert(state.generation != generation && !state.input_paused);
+    assert(!keyboard_state_resume(&state, generation, KEYBOARD_IDLE_TIMEOUT_US * 2));
+}
+
 static void test_invalid_state_release(void)
 {
     keyboard_state_t state = ready_keyboard();
@@ -277,7 +310,8 @@ int main(void)
     test_overflow();
     test_deadlines();
     test_usb_recovery();
+    test_pause_and_resume();
     test_invalid_state_release();
-    puts("keyboard_state: 9 tests passed (typing allowlist, F24 wake tap, six-key reports, 1000 ordered Shift chords)");
+    puts("keyboard_state: 10 tests passed (typing allowlist, F24 wake tap, safe pause/resume, six-key reports, 1000 ordered Shift chords)");
     return 0;
 }

@@ -12,6 +12,8 @@ typedef enum {
     INPUT_STATE,
     INPUT_HEARTBEAT,
     INPUT_STOP,
+    INPUT_RESET,
+    INPUT_RESUME,
 } input_message_type_t;
 
 typedef struct {

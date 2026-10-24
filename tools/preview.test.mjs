@@ -362,14 +362,13 @@ for (const engine of [chromium, webkit]) {
         { fault: "reply", status: "Connection lost", message: "Keyboard replies stopped" },
         { fault: "invalid", status: "Invalid response", message: "invalid response" },
         { fault: "usb", status: "USB unavailable", message: "USB is not ready" },
-        { fault: "ack", status: "Input stopped", message: "Input confirmation timed out" },
         { fault: "send", status: "Connection lost", message: "Input could not be sent" },
       ]) {
         await takeControl(page);
         await page.locator("#keyboard").focus();
         await page.evaluate(fault => { window.connectionFault = fault; }, failure.fault);
-        if (failure.fault === "ack" || failure.fault === "send") await page.keyboard.down("a");
-        await expect(page.locator("#connection-status")).toHaveText(failure.status);
+        if (failure.fault === "send") await page.keyboard.down("a");
+        await expect(page.locator("#connection-status")).toHaveText(failure.status, { timeout: 6500 });
         await expect(page.locator("#ui-message")).toContainText(failure.message);
         await expect(page.getByRole("button", { name: "A", exact: true })).toBeDisabled();
         await expect(page.locator("#connection-status")).toHaveAttribute("data-error", "true");
@@ -1956,6 +1955,35 @@ test("WebSocket authorization requires a session and explicit control reservatio
   await expect.poll(async () => (await (await fetch(new URL("/__test__/input", url))).json()).connected).toBe(false);
 });
 
+test("preview pauses held input without revoking control and discards states until resume", { timeout: 10000 }, async context => {
+  const url = await startPreview(context);
+  const session = await loginRequest(url);
+  await takeRequest(url, session);
+  const endpoint = new URL("/api/v1/keyboard", url);
+  endpoint.protocol = "ws:";
+  const connection = new WebSocket(endpoint, { headers: { Origin: url, Cookie: session.cookie } });
+  context.after(() => connection.terminate());
+  await once(connection, "open");
+  const exchange = async message => {
+    const reply = once(connection, "message");
+    connection.send(JSON.stringify(message));
+    return JSON.parse(String((await reply)[0]));
+  };
+  assert.equal((await exchange({ v: 1, type: "state", seq: 1, modifiers: 0, keys: [4] })).type, "queued");
+  const receipts = async () => (await (await fetch(new URL("/__test__/input", url))).json());
+  await expect.poll(async () => (await receipts()).pressed, { timeout: 2500 }).toBe(false);
+  assert.equal((await receipts()).connected, true);
+  const paused = await exchange({ v: 1, type: "state", seq: 2, modifiers: 0, keys: [5] });
+  assert.equal(paused.input_paused, true);
+  assert.equal((await receipts()).down, 1);
+  assert.equal((await exchange({ v: 1, type: "ping" })).input_paused, true);
+  assert.equal((await exchange({ v: 1, type: "reset" })).input_paused, true);
+  assert.equal((await exchange({ v: 1, type: "resume" })).type, "resumed");
+  assert.equal((await receipts()).pressed, false);
+  assert.equal((await exchange({ v: 1, type: "state", seq: 3, modifiers: 0, keys: [6] })).type, "queued");
+  assert.equal((await receipts()).down, 2);
+});
+
 test("mock backend records valid states and rejects unauthorized command reports", { timeout: 10000 }, async (context) => {
   const url = await startPreview(context);
   const session = await loginRequest(url);
@@ -3066,7 +3094,197 @@ for (const browserType of [chromium, webkit]) for (const [group, viewports] of [
   assert.deepEqual(external, []);
 });
 
-test("buffered sockets, dropped acknowledgements and send errors release and recover without replay", { timeout: 20000 }, async (context) => {
+for (const engine of [chromium, webkit]) {
+  for (const scenario of ["heartbeat cadence", "delayed acknowledgements", "acknowledgement recovery",
+    "focused key recovery", "held reply recovery", "idle jitter", "idle timeout", "recovery timeout"]) {
+    test(`Adaptive input connection: ${scenario} (${engine.name()})`, { timeout: 20000 }, async context => {
+      const url = await startPreview(context);
+      const browser = await engine.launch(engine === webkit && process.env.WEBKIT_EXECUTABLE_PATH ?
+        { executablePath: process.env.WEBKIT_EXECUTABLE_PATH } : {});
+      context.after(() => browser.close());
+      const page = await browser.newPage();
+      const errors = [];
+      page.on("pageerror", error => errors.push(error.message));
+      await page.clock.install();
+      await page.clock.pauseAt(new Date(Date.now() + 1000));
+      const messages = [];
+      const delayed = [];
+      let dropReplies = false;
+      let deferAcks = false;
+      let paused = false;
+      let acknowledgeReset = true;
+      let neutralReady = true;
+      let transport;
+      let sentReplies = 0;
+      const send = data => {
+        sentReplies++;
+        transport.send(data);
+      };
+      const advance = async milliseconds => {
+        while (milliseconds > 0) {
+          await expect.poll(async () => await page.evaluate(() => window.connectionReceipts) === sentReplies).toBe(true);
+          const step = Math.min(milliseconds, 250);
+          await page.clock.runFor(step);
+          milliseconds -= step;
+          await expect.poll(async () => await page.evaluate(() => window.connectionReceipts) === sentReplies).toBe(true);
+        }
+      };
+      const sendStatus = () => send(JSON.stringify({
+        v: 1, type: "status", usb_ready: neutralReady, input_paused: paused, caps_lock: false,
+      }));
+      await page.routeWebSocket("**/api/v1/keyboard", socket => {
+        transport = socket;
+        socket.onMessage(data => {
+          const message = JSON.parse(String(data));
+          messages.push(message);
+          if (message.type === "ping" && !dropReplies) sendStatus();
+          if (message.type === "state") {
+            const ack = JSON.stringify({ v: 1, type: "queued", seq: message.seq });
+            if (deferAcks) delayed.push(ack);
+            else send(ack);
+          }
+          if (message.type === "reset") {
+            paused = acknowledgeReset;
+            if (scenario === "focused key recovery") neutralReady = false;
+            if (!dropReplies && acknowledgeReset) {
+              for (const ack of delayed.splice(0)) send(ack);
+              sendStatus();
+            }
+          }
+          if (message.type === "resume") {
+            assert.ok(paused);
+            paused = false;
+            send(JSON.stringify({ v: 1, type: "resumed" }));
+          }
+          if (message.type === "stop") socket.close();
+        });
+      });
+      await page.goto(url);
+      await page.evaluate(() => {
+        window.connectionReceipts = 0;
+        const Original = window.WebSocket;
+        window.WebSocket = class extends Original {
+          constructor(...args) {
+            super(...args);
+            this.addEventListener("message", () => { window.connectionReceipts++; });
+          }
+        };
+      });
+      await signIn(page);
+      const key = page.getByRole("button", { name: "A", exact: true });
+      const count = type => messages.filter(message => message.type === type).length;
+      await expect.poll(() => count("ping")).toBe(1);
+      if (scenario === "heartbeat cadence") {
+        await advance(999);
+        assert.equal(count("ping"), 1);
+        await advance(1);
+        await expect.poll(() => count("ping")).toBe(2);
+        await page.locator("#keyboard").focus();
+        await page.keyboard.down("a");
+        await expect.poll(() => count("state")).toBe(1);
+        await advance(1000);
+        await expect.poll(() => count("ping")).toBe(6);
+        assert.equal(count("state"), 1);
+        await page.keyboard.up("a");
+        await expect.poll(() => count("state")).toBe(2);
+        await advance(1000);
+        await expect.poll(() => count("ping")).toBe(7);
+        await expect(key).toBeEnabled();
+        assert.equal(count("reset"), 0);
+      } else if (scenario === "idle timeout" || scenario === "idle jitter") {
+        dropReplies = true;
+        if (scenario === "idle jitter") {
+          await advance(2000);
+          await expect(key).toBeEnabled();
+          dropReplies = false;
+          sendStatus();
+          await advance(4000);
+          await expect(key).toBeEnabled();
+          await expect(page.locator("#ui-message")).toBeHidden();
+        } else {
+          await advance(4999);
+          await expect(key).toBeEnabled();
+          await advance(1);
+          await expect(key).toBeDisabled();
+          await expect(page.locator("#ui-message")).toContainText("Keyboard replies stopped");
+        }
+        assert.equal(count("state"), 0);
+        assert.equal(count("reset"), 0);
+      } else {
+        await page.getByRole("switch", { name: "Local echo", exact: true }).check();
+        if (scenario === "focused key recovery") await key.focus();
+        else await page.locator("#keyboard").focus();
+        deferAcks = scenario !== "held reply recovery";
+        acknowledgeReset = scenario !== "recovery timeout";
+        await page.keyboard.down("a");
+        await expect.poll(() => count("state")).toBe(1);
+        if (deferAcks) {
+          if (scenario === "delayed acknowledgements") {
+            await advance(350);
+            for (const ack of delayed.splice(0)) send(ack);
+            await expect(page.locator("#local-echo-text")).toHaveText("a");
+            await advance(650);
+            await expect(key).toBeEnabled();
+            assert.equal(count("reset"), 0);
+            assert.deepEqual(errors, []);
+            return;
+          }
+          await advance(499);
+          await expect(key).toBeEnabled();
+          if (scenario === "focused key recovery") await expect(key).toBeFocused();
+          assert.equal(count("reset"), 0);
+          await advance(1);
+          if (scenario === "focused key recovery") {
+            await expect(key).toBeDisabled();
+            await expect(page.locator("#keyboard")).toBeFocused();
+            assert.equal(count("stop"), 0);
+            assert.equal(count("resume"), 0);
+            neutralReady = true;
+            sendStatus();
+          }
+          if (scenario === "recovery timeout") {
+            await expect.poll(() => count("reset")).toBe(1);
+            await advance(4999);
+            assert.equal(count("stop"), 0);
+            await advance(1);
+            await expect(page.locator("#connection-status")).toHaveText("Connection lost");
+            await expect.poll(() => count("stop")).toBe(1);
+            assert.equal(count("resume"), 0);
+            assert.deepEqual(errors, []);
+            return;
+          }
+        } else {
+          await expect(page.locator("#local-echo-text")).toHaveText("a");
+          dropReplies = true;
+          await advance(999);
+          assert.equal(count("reset"), 0);
+          await advance(1);
+          await expect.poll(() => count("reset")).toBe(1);
+          await expect(key).toBeDisabled();
+          dropReplies = false;
+          sendStatus();
+        }
+        await expect.poll(() => count("resume")).toBe(1);
+        await expect(key).toBeEnabled();
+        await expect(page.locator("#connection-status")).toHaveText("Connected");
+        await expect(page.locator("#ui-message")).toContainText("Continue with a new key press");
+        await expect(page.locator("#local-echo-text")).toHaveText("");
+        if (scenario === "focused key recovery") await expect(page.locator("#keyboard")).toBeFocused();
+        await page.keyboard.down("a");
+        await page.keyboard.up("a");
+        assert.equal(count("state"), 1, "the old held key and its repeat/up must not replay");
+        deferAcks = false;
+        await page.keyboard.press("b");
+        await expect.poll(() => count("state")).toBe(3);
+        await expect(page.locator("#local-echo-text")).toHaveText("b");
+        assert.equal(count("stop"), 0);
+      }
+      assert.deepEqual(errors, []);
+    });
+  }
+}
+
+test("buffered sockets and send errors release and recover without replay", { timeout: 20000 }, async (context) => {
   const url = await startPreview(context);
   const browser = await chromium.launch();
   context.after(() => browser.close());
@@ -3076,7 +3294,6 @@ test("buffered sockets, dropped acknowledgements and send errors release and rec
   await page.addInitScript(() => {
     window.transportFault = null;
     const send = WebSocket.prototype.send;
-    const listen = WebSocket.prototype.addEventListener;
     const buffered = Object.getOwnPropertyDescriptor(WebSocket.prototype, "bufferedAmount");
     Object.defineProperty(WebSocket.prototype, "bufferedAmount", {
       get() { return window.transportFault === "buffered" ? 2048 : buffered.get.call(this); },
@@ -3085,13 +3302,6 @@ test("buffered sockets, dropped acknowledgements and send errors release and rec
       if (window.transportFault === "send") throw new Error("Simulated socket send failure");
       return send.call(this, data);
     };
-    WebSocket.prototype.addEventListener = function (type, callback, options) {
-      if (type !== "message") return listen.call(this, type, callback, options);
-      return listen.call(this, type, event => {
-        if (window.transportFault === "ack" && JSON.parse(event.data).type === "queued") return;
-        callback.call(this, event);
-      }, options);
-    };
   });
   const counters = async () => (await fetch(new URL("/__test__/input", url))).json();
   await page.goto(url);
@@ -3099,7 +3309,7 @@ test("buffered sockets, dropped acknowledgements and send errors release and rec
   const key = page.getByRole("button", { name: "A", exact: true });
   await expect(key).toBeEnabled();
   await page.getByRole("switch", { name: "Local echo", exact: true }).check();
-  for (const fault of ["buffered", "ack", "send"]) {
+  for (const fault of ["buffered", "send"]) {
     const baseline = await counters();
     await page.locator("#keyboard").focus();
     await page.evaluate(fault => { window.transportFault = fault; }, fault);
@@ -3112,7 +3322,7 @@ test("buffered sockets, dropped acknowledgements and send errors release and rec
     await page.keyboard.down("a");
     await page.keyboard.up("a");
     const received = await counters();
-    assert.equal(received.down - baseline.down, fault === "ack" ? 1 : 0, fault);
+    assert.equal(received.down - baseline.down, 0, fault);
     assert.equal(received.pressed, false);
   }
   assert.deepEqual(pageErrors, []);

@@ -21,6 +21,8 @@ int main(void)
     assert(!input_frame_valid(true, true, SIZE_MAX));
     assert(parse("{\"v\":1,\"type\":\"ping\"}", &message) && message.type == INPUT_HEARTBEAT);
     assert(parse("{\"v\":1,\"type\":\"stop\"}", &message) && message.type == INPUT_STOP);
+    assert(parse("{\"v\":1,\"type\":\"reset\"}", &message) && message.type == INPUT_RESET);
+    assert(parse("{\"v\":1,\"type\":\"resume\"}", &message) && message.type == INPUT_RESUME);
     assert(parse("{\"v\":1,\"type\":\"state\",\"seq\":1,\"modifiers\":2,\"keys\":[29,4,40,42,44,56]}", &message));
     assert(message.type == INPUT_STATE && message.sequence == 1 && message.report.modifiers == 2);
     assert(message.report.keys[0] == 4 && message.report.keys[5] == 56);
@@ -36,6 +38,7 @@ int main(void)
         "", "down", "null", "{}", "[]", "{\"v\":2,\"type\":\"ping\"}",
         "{\"v\":1,\"v\":1,\"type\":\"ping\"}", "{\"v\":1,\"type\":\"ping\",\"keys\":[]}",
         "{\"v\":true,\"type\":\"ping\"}", "{\"v\":1,\"type\":\"ping\"} {}",
+        "{\"v\":1,\"type\":\"reset\",\"seq\":1}", "{\"v\":1,\"type\":\"resume\",\"keys\":[]}",
         "{\"v\":1,\"type\":\"state\",\"seq\":0,\"modifiers\":0,\"keys\":[4]}",
         "{\"v\":1,\"type\":\"state\",\"seq\":1.5,\"modifiers\":0,\"keys\":[4]}",
         "{\"v\":1,\"type\":\"state\",\"seq\":2147483648,\"modifiers\":0,\"keys\":[4]}",

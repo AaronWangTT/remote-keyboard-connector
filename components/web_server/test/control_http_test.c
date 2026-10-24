@@ -229,11 +229,14 @@ int main(void)
     snprintf(text, sizeof(text), "%" PRIu32, old_id);
     stop.control_id = text;
     assert(control_handler(&stop) == ESP_OK && response_status == 409 && active_client == &client && usb_releases == 0);
-    now += INT64_C(999999);
+    now += INT64_C(1000000);
+    expire_control(NULL);
+    assert(active_client == &client && usb_releases == 0);
+    now += INT64_C(3999999);
     expire_control(NULL);
     assert(active_client == &client && usb_releases == 0);
     now++;
     expire_control(NULL);
     assert(active_client == NULL && usb_releases == 1 && closed_sockets == 1);
-    puts("PASS: real control handler reserves 10s, expires at boundary, stops explicitly and preserves 1s active lease");
+    puts("PASS: real control handler reserves 10s, expires at boundary, stops explicitly and preserves 5s active lease");
 }

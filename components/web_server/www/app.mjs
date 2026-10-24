@@ -15,6 +15,9 @@ const keyboard = new KeyboardInput();
 const definitions = new Map();
 const pending = new Map();
 const websocketConnectTimeoutMs = 8000;
+const inputAcknowledgementTimeoutMs = 500;
+const heldReplyTimeoutMs = 1000;
+const idleReplyTimeoutMs = 5000;
 const hostProfileStorageKey = "keyboard.host-profile.v1";
 const localEchoStorageKey = "keyboard.local-echo.v1";
 let localEchoEnabled = false;
@@ -33,6 +36,9 @@ let sequence = 0;
 let lastReport = JSON.stringify(keyboard.report);
 let lastReply = 0;
 let connectedAt = 0;
+let lastHeartbeat = 0;
+let recoveringAt = null;
+let resuming = false;
 let connectionFailure = null;
 let account = { provisioned: false, claimed: true, authenticated: false, csrf: "" };
 let controlAttempt = 0;
@@ -94,7 +100,6 @@ function errorMessage(error) {
     connection_failed: "The control connection could not be established. Check the connection, then release and try again.",
     connection_lost: "The control connection was lost. Local input was cleared; take control again.",
     reply_timeout: "Keyboard replies stopped. Local input was cleared; take control again.",
-    input_ack_timeout: "Input confirmation timed out. Local input was cleared; take control again.",
     send_failed: "Input could not be sent. Local input was cleared; take control again.",
     invalid_response: "The keyboard sent an invalid response. Local input was cleared; take control again.",
     input_limit: "The input safety limit was reached. Local input was cleared; take control again.",
@@ -487,6 +492,8 @@ function disconnect(failure = null) {
   const previous = socket;
   socket = null;
   ready = false;
+  recoveringAt = null;
+  resuming = false;
   keyboard.clear();
   keyboard.setCapsLock(null);
   pending.clear();
@@ -515,11 +522,29 @@ function transmit(message) {
   }
   try {
     socket.send(JSON.stringify(message));
+    if (message.type === "ping") lastHeartbeat = performance.now();
     return true;
   } catch {
     disconnect({ status: "Connection lost", code: "send_failed" });
     return false;
   }
+}
+
+function recoverInput(requestReset = true) {
+  if (recoveringAt === null) {
+    recoveringAt = performance.now();
+    ready = false;
+    keyboard.clear();
+    pending.clear();
+    clearLocalEcho();
+    lastReport = JSON.stringify(keyboard.report);
+    connectionStatus.textContent = "Releasing input";
+    connectionStatus.dataset.ready = "false";
+    notify("Input was paused after a delay. Synchronizing key release; previous keys will not resume.");
+    if (rows.contains(document.activeElement)) surface.focus({ preventScroll: true });
+    render();
+  }
+  if (requestReset) transmit({ v: 1, type: "reset" });
 }
 
 function publish(reports, forceFirst = false) {
@@ -599,20 +624,39 @@ function connect() {
     let message;
     try { message = JSON.parse(event.data); } catch { disconnect({ status: "Invalid response", code: "invalid_response" }); return; }
     if (!message || message.v !== 1) { disconnect({ status: "Invalid response", code: "invalid_response" }); return; }
-    if (message.type === "queued" && pending.size && message.seq === pending.keys().next().value) {
+    if (message.type === "queued" && recoveringAt !== null &&
+        Number.isInteger(message.seq) && message.seq > 0 && message.seq <= sequence) {
+      // Replies already in transit precede the reset/resume barrier.
+    } else if (message.type === "queued" && pending.size && message.seq === pending.keys().next().value) {
       const echo = pending.get(message.seq).echo;
       pending.delete(message.seq);
       if (localEchoEnabled && echo) {
         localEcho = updateLocalEcho(localEcho, echo.previous, echo.report, echo.capsLock);
         renderLocalEcho();
       }
+    } else if (message.type === "resumed" && recoveringAt !== null && resuming) {
+      recoveringAt = null;
+      resuming = false;
+      ready = true;
+      connectionStatus.textContent = "Connected";
+      connectionStatus.dataset.ready = "true";
+      notify("Input was safely released. Continue with a new key press.");
+      render();
     } else if (message.type === "status" && typeof message.usb_ready === "boolean" &&
+               (message.input_paused === undefined || typeof message.input_paused === "boolean") &&
                (message.caps_lock === null || typeof message.caps_lock === "boolean")) {
+      if (message.input_paused) recoverInput(false);
       if (!message.usb_ready && ready) { disconnect({ status: "USB unavailable", code: "usb_unavailable" }); return; }
-      ready = message.usb_ready;
-      keyboard.setCapsLock(ready ? message.caps_lock : null);
-      usbStatus.textContent = ready ? "USB ready" : "USB waiting";
-      usbStatus.dataset.ready = String(ready);
+      if (recoveringAt === null) ready = message.usb_ready;
+      keyboard.setCapsLock(message.usb_ready ? message.caps_lock : null);
+      usbStatus.textContent = message.usb_ready ? "USB ready" : "USB waiting";
+      usbStatus.dataset.ready = String(message.usb_ready);
+      if (recoveringAt !== null && message.input_paused && message.usb_ready && !resuming) {
+        resuming = true;
+        if (!transmit({ v: 1, type: "resume" })) return;
+      } else if (recoveringAt !== null && message.input_paused && !message.usb_ready) {
+        resuming = false;
+      }
       render();
       if (ready && !surface.contains(document.activeElement)) surface.focus({ preventScroll: true });
     } else { disconnect({ status: "Invalid response", code: "invalid_response" }); return; }
@@ -944,19 +988,26 @@ setInterval(() => {
   const now = performance.now();
   if (document.hidden || !document.hasFocus() ||
       (socket.readyState === WebSocket.CONNECTING && now - connectedAt >= websocketConnectTimeoutMs) ||
-      (socket.readyState === WebSocket.OPEN && now - lastReply >= 1000) ||
-      (pending.size && now - pending.values().next().value.sentAt >= 250)) {
+      (socket.readyState === WebSocket.OPEN && now - lastReply >= idleReplyTimeoutMs) ||
+      (recoveringAt !== null && now - recoveringAt >= idleReplyTimeoutMs)) {
     const failure = document.hidden || !document.hasFocus() ? null :
       socket.readyState === WebSocket.CONNECTING ? { status: "Connection timed out", code: "connection_timeout" } :
-      pending.size && now - pending.values().next().value.sentAt >= 250 ?
-        { status: "Input stopped", code: "input_ack_timeout" } :
-        { status: "Connection lost", code: "reply_timeout" };
+      { status: "Connection lost", code: "reply_timeout" };
     disconnect(failure);
     return;
   }
+  const report = keyboard.report;
+  const held = report.modifiers !== 0 || report.keys.length > 0;
+  if (recoveringAt === null && ((pending.size &&
+      now - pending.values().next().value.sentAt >= inputAcknowledgementTimeoutMs) ||
+      (held && now - lastReply >= heldReplyTimeoutMs))) {
+    recoverInput();
+    if (!socket) return;
+  }
   keyboard.expireCapsRequest(now);
   render();
-  if (socket.readyState === WebSocket.OPEN) transmit({ v: 1, type: "ping" });
+  const heartbeatInterval = held || pending.size || recoveringAt !== null ? 250 : 1000;
+  if (socket.readyState === WebSocket.OPEN && now - lastHeartbeat >= heartbeatInterval) transmit({ v: 1, type: "ping" });
 }, 250);
 
 renderLocalEcho();

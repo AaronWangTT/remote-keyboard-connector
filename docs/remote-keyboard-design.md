@@ -394,10 +394,29 @@ The input router owns the lease and desired report state. One serialized USB
 keyboard worker submits reports. TinyUSB's servicing task remains independent
 of HTTP requests; HTTP handlers validate and enqueue without waiting for USB.
 
-Send browser heartbeats every 250 ms while the keyboard is visible and armed.
-Only fresh valid messages from the owner renew the lease. If none arrives for
-1,000 ms, revoke control, invalidate queued reports, and request an all-zero
-report. TCP keepalive alone is too slow for this purpose.
+Send browser heartbeats every 1,000 ms while idle and every 250 ms while keys or
+modifiers are held, state acknowledgements are pending, or input is recovering.
+Only fresh valid messages from the owner renew the 5,000 ms controller lease.
+The browser also ends control after 5,000 ms without valid replies.
+
+Separate safe input release from controller revocation. After 500 ms without a
+state acknowledgement, or 1,000 ms without replies while holding input, the
+browser clears its local input/echo and requests a safe reset. Independently,
+the USB worker releases held input after 1,000 ms without activity. This pauses
+input without changing the controller generation. USB faults, invalid input,
+queue overflow and the 250 ms queued/in-flight report limits still revoke the
+generation.
+
+The implemented queue-ack protocol uses `reset` and `resume` browser messages
+with only `v: 1` and `type`, plus `input_paused` in device status. During a pause,
+valid ordered `state` messages advance the sequence but are discarded, never
+queued to USB. The browser clears pending acknowledgements and old key sources.
+Only after a paused status confirms USB-ready does it send `resume`; this TCP
+ordering barrier follows every state sent before the reset. The device accepts
+resume only after the neutral USB transfer completes and replies `resumed`.
+Only then are new key presses enabled. No old state is resent or restored.
+Recovery must finish within 5,000 ms or control is revoked. TCP keepalive alone
+is too slow for these safety deadlines.
 
 Use a monotonic, independently serviced safety deadline. A generation counter
 invalidates queued reports on revocation, so a late callback or reused socket

@@ -8,6 +8,7 @@
 
 typedef struct {
     bool ready;
+    bool input_paused;
     uint32_t generation;
     bool leds_known;
     bool caps_lock;
@@ -31,6 +32,8 @@ esp_err_t usb_keyboard_start(void);
 usb_keyboard_status_t usb_keyboard_status(void);
 bool usb_keyboard_submit(uint32_t generation, const keyboard_report_t *report);
 bool usb_keyboard_heartbeat(uint32_t generation);
+bool usb_keyboard_pause(uint32_t generation);
+bool usb_keyboard_resume(uint32_t generation);
 void usb_keyboard_release(uint32_t generation);
 esp_err_t usb_keyboard_wakeup_begin(uint32_t *request_id);
 usb_keyboard_wake_status_t usb_keyboard_wakeup_status(uint32_t request_id);
