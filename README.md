@@ -315,10 +315,22 @@ Take Control reserves the controller for up to 10 seconds while the browser
 establishes its WebSocket. The browser allows 8 seconds for connection setup,
 including hostname resolution and TCP/HTTP Upgrade, before disconnecting.
 Input remains disabled until a USB-ready status arrives. These setup windows
-do not extend the active controller's 1-second lease/reply deadline or the
-250 ms input acknowledgement deadline, and do not automatically retry or replay
+do not extend the active controller's 5-second lease/reply deadline or the
+500 ms input acknowledgement deadline, and do not automatically retry or replay
 keys. A cancelled attempt can retain its pending reservation until it expires
 or an explicit Release clears it.
+While idle with no outstanding input, the page sends a heartbeat every second.
+While keys/modifiers are held, input is awaiting acknowledgement, or safe recovery
+is in progress, heartbeats run every 250 ms. A missing input acknowledgement for
+500 ms, or missing replies for 1 second while holding a key, clears local input
+and requests an all-keys-up synchronization without giving up control.
+The device independently releases held input after 1 second without activity.
+Input stays disabled until the device has completed its neutral USB report and
+acknowledged recovery; old input is discarded and never replayed. Continue with a
+new key press after recovery. Five seconds without replies or without completing
+recovery ends control and requires Take Control again. USB resets, invalid
+messages, queue overflow and the independent 250 ms USB report deadline still
+fail closed.
 Failures show a specific connection status and an alert: control request
 rejection/unreachability, HTTP connection capacity exhaustion, WebSocket setup timeout/failure, connection loss,
 missing replies/input confirmations, invalid responses, input safety limits,

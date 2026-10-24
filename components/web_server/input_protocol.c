@@ -43,6 +43,8 @@ bool input_message_parse(const uint8_t *payload, size_t length, input_message_t 
     if (strcmp(type->valuestring, "state") == 0) candidate.type = INPUT_STATE;
     else if (strcmp(type->valuestring, "ping") == 0) candidate.type = INPUT_HEARTBEAT;
     else if (strcmp(type->valuestring, "stop") == 0) candidate.type = INPUT_STOP;
+    else if (strcmp(type->valuestring, "reset") == 0) candidate.type = INPUT_RESET;
+    else if (strcmp(type->valuestring, "resume") == 0) candidate.type = INPUT_RESUME;
     else goto done;
 
     const char *fields[] = {"v", "type", "seq", "modifiers", "keys"};

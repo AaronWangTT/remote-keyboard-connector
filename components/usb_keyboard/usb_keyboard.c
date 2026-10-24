@@ -215,6 +215,7 @@ usb_keyboard_status_t usb_keyboard_status(void)
     keyboard_state_tick(&keyboard, esp_timer_get_time());
     usb_keyboard_status_t status = {
         .ready = keyboard_state_ready(&keyboard) && wakeup.state != USB_KEYBOARD_WAKE_PENDING,
+        .input_paused = keyboard.input_paused,
         .generation = keyboard.generation,
         .leds_known = leds_known,
         .caps_lock = caps_lock,
@@ -248,6 +249,24 @@ void usb_keyboard_release(uint32_t generation)
         keyboard_state_release(&keyboard);
     }
     xSemaphoreGive(state_mutex);
+}
+
+bool usb_keyboard_pause(uint32_t generation)
+{
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    bool accepted = generation == keyboard.generation && wakeup.state != USB_KEYBOARD_WAKE_PENDING;
+    if (accepted) keyboard_state_pause(&keyboard);
+    xSemaphoreGive(state_mutex);
+    return accepted;
+}
+
+bool usb_keyboard_resume(uint32_t generation)
+{
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    bool accepted = wakeup.state != USB_KEYBOARD_WAKE_PENDING &&
+                    keyboard_state_resume(&keyboard, generation, esp_timer_get_time());
+    xSemaphoreGive(state_mutex);
+    return accepted;
 }
 
 esp_err_t usb_keyboard_wakeup_begin(uint32_t *request_id)

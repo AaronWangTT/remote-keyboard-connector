@@ -24,6 +24,11 @@ const boardPower = {
   sources: ["components/board/board_power_policy.c", "components/board/board_power.c", "components/board/test/board_power_test.c"],
 };
 const suites = {
+  input_http: { includes: [".cache/tests/board-stubs", ".cache/tests", "components/board/test",
+      ...usbIncludes, "components/web_server", "components/network/include", "managed_components/espressif__cjson/cJSON"],
+    sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/usb_keyboard/keyboard_state.c",
+      "components/web_server/access_control.c", "components/web_server/input_protocol.c", "components/web_server/test/input_http_test.c"],
+    flags: ["-DCJSON_NESTING_LIMIT=4"], linkFlags: ["-lm"] },
   control_http: { includes: [".cache/tests/board-stubs", ".cache/tests", "components/board/test",
       "components/web_server", "components/web_server/include", "components/network/include", "components/firmware_update/include",
       "components/usb_keyboard/include", "managed_components/espressif__cjson/cJSON"],
@@ -177,6 +182,8 @@ await writeFile(".cache/tests/network_effect_decision.inc",
 await writeFile(".cache/tests/network_sleep_worker.inc", section(network, "static bool sleep_step(void)", "\nstatic void network_worker"));
 await writeFile(".cache/tests/input_client.inc",
   section(web, "typedef struct {\n    int socket;", "\nstatic input_client_t *active_client;"));
+await writeFile(".cache/tests/input_http.inc",
+  section(web, "static esp_err_t input_fault(input_client_t *client)", "\nstatic void response_headers"));
 await writeFile(".cache/tests/web_observer.inc",
   section(web, "web_server_status_t web_server_status(void)", "\nstatic esp_err_t problem"));
 await writeFile(".cache/tests/update_owner_expiry.inc",

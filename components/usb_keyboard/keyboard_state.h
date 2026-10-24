@@ -23,6 +23,7 @@ typedef struct {
     bool online;
     bool neutral_pending;
     bool in_flight;
+    bool input_paused;
     keyboard_report_t flight_report;
     bool flight_neutral;
     keyboard_report_t desired_report;
@@ -33,6 +34,8 @@ typedef struct {
 void keyboard_state_init(keyboard_state_t *state);
 void keyboard_state_usb(keyboard_state_t *state, bool online);
 void keyboard_state_release(keyboard_state_t *state);
+void keyboard_state_pause(keyboard_state_t *state);
+bool keyboard_state_resume(keyboard_state_t *state, uint32_t generation, int64_t now);
 bool keyboard_state_ready(const keyboard_state_t *state);
 bool keyboard_state_input(keyboard_state_t *state, uint32_t generation,
                           const keyboard_report_t *report, int64_t now);

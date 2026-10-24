@@ -412,8 +412,9 @@ static esp_err_t input_reply(httpd_req_t *request, const char *message)
 
 static void status_json(char *buffer, size_t capacity, usb_keyboard_status_t status)
 {
-    snprintf(buffer, capacity, "{\"v\":1,\"type\":\"status\",\"usb_ready\":%s,\"caps_lock\":%s}",
+    snprintf(buffer, capacity, "{\"v\":1,\"type\":\"status\",\"usb_ready\":%s,\"input_paused\":%s,\"caps_lock\":%s}",
              status.ready ? "true" : "false",
+             status.input_paused ? "true" : "false",
              !status.leds_known ? "null" : status.caps_lock ? "true" : "false");
 }
 
@@ -453,18 +454,37 @@ static esp_err_t input_handler(httpd_req_t *request)
     client->last_seen = now;
     if (!access_session_valid(client->owner, client->owner_generation, now, true)) return input_fault(client);
     char reply[128];
+    if (message.type == INPUT_RESET) {
+        if (!usb_keyboard_pause(client->generation)) return input_fault(client);
+        status_json(reply, sizeof(reply), usb_keyboard_status());
+        return input_reply(request, reply);
+    }
+    if (message.type == INPUT_RESUME) {
+        if (usb_keyboard_resume(client->generation)) {
+            client->last_report = (keyboard_report_t){0};
+            return input_reply(request, "{\"v\":1,\"type\":\"resumed\"}");
+        }
+        status = usb_keyboard_status();
+        if (!status.input_paused || status.generation != client->generation) return input_fault(client);
+        status_json(reply, sizeof(reply), status);
+        return input_reply(request, reply);
+    }
     if (message.type == INPUT_HEARTBEAT) {
-        if (status.ready && !usb_keyboard_heartbeat(client->generation)) {
-            return input_fault(client);
+        if (!status.input_paused && status.ready && !usb_keyboard_heartbeat(client->generation)) {
+            status = usb_keyboard_status();
+            if (!status.input_paused || status.generation != client->generation) return input_fault(client);
         }
         status_json(reply, sizeof(reply), status);
         return input_reply(request, reply);
     }
-    if (message.sequence != client->last_sequence + 1 ||
-        !usb_keyboard_submit(client->generation, &message.report)) {
-        return input_fault(client);
-    }
+    if (message.sequence != client->last_sequence + 1) return input_fault(client);
     client->last_sequence = message.sequence;
+    if (status.input_paused || !usb_keyboard_submit(client->generation, &message.report)) {
+        status = usb_keyboard_status();
+        if (!status.input_paused || status.generation != client->generation) return input_fault(client);
+        status_json(reply, sizeof(reply), status);
+        return input_reply(request, reply);
+    }
     if (memcmp(&message.report, &client->last_report, sizeof(message.report)) != 0) {
         client->last_report = message.report;
         power_control_activity();

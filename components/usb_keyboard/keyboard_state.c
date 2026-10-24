@@ -87,14 +87,27 @@ void keyboard_state_init(keyboard_state_t *state)
     state->neutral_pending = true;
 }
 
-void keyboard_state_release(keyboard_state_t *state)
+static void clear_input(keyboard_state_t *state)
 {
     state->head = 0;
     state->count = 0;
     state->desired_report = (keyboard_report_t){0};
     state->neutral_pending = true;
     state->flight_neutral = false;
+}
+
+void keyboard_state_release(keyboard_state_t *state)
+{
+    clear_input(state);
+    state->input_paused = false;
     state->generation++;
+}
+
+void keyboard_state_pause(keyboard_state_t *state)
+{
+    if (state->input_paused) return;
+    clear_input(state);
+    state->input_paused = true;
 }
 
 void keyboard_state_usb(keyboard_state_t *state, bool online)
@@ -109,11 +122,23 @@ bool keyboard_state_ready(const keyboard_state_t *state)
     return state->online && !state->neutral_pending;
 }
 
+bool keyboard_state_resume(keyboard_state_t *state, uint32_t generation, int64_t now)
+{
+    keyboard_state_tick(state, now);
+    if (generation != state->generation || !state->input_paused ||
+        !keyboard_state_ready(state) || state->in_flight || state->count != 0) {
+        return false;
+    }
+    state->input_paused = false;
+    state->last_activity = now;
+    return true;
+}
+
 bool keyboard_state_heartbeat(keyboard_state_t *state, uint32_t generation,
                               int64_t now)
 {
     keyboard_state_tick(state, now);
-    if (!keyboard_state_ready(state) || generation != state->generation) {
+    if (!keyboard_state_ready(state) || state->input_paused || generation != state->generation) {
         return false;
     }
     state->last_activity = now;
@@ -153,7 +178,7 @@ bool keyboard_state_input(keyboard_state_t *state, uint32_t generation,
 bool keyboard_state_wakeup(keyboard_state_t *state, uint32_t generation, int64_t now)
 {
     keyboard_state_tick(state, now);
-    if (!keyboard_state_ready(state) || generation != state->generation ||
+    if (!keyboard_state_ready(state) || state->input_paused || generation != state->generation ||
         state->in_flight || state->count != 0 ||
         !keyboard_report_empty(&state->desired_report)) {
         return false;
@@ -176,7 +201,7 @@ bool keyboard_state_wakeup(keyboard_state_t *state, uint32_t generation, int64_t
 
 void keyboard_state_tick(keyboard_state_t *state, int64_t now)
 {
-    if (!keyboard_state_ready(state)) {
+    if (!keyboard_state_ready(state) && !state->input_paused) {
         return;
     }
     bool idle = (!keyboard_report_empty(&state->desired_report) || state->count || state->in_flight) &&
@@ -185,8 +210,10 @@ void keyboard_state_tick(keyboard_state_t *state, int64_t now)
                    now - state->queue[state->head].queued_at >= KEYBOARD_REPORT_TIMEOUT_US;
     bool stalled = state->in_flight &&
                    now - state->submitted_at >= KEYBOARD_REPORT_TIMEOUT_US;
-    if (idle || overdue || stalled) {
+    if (overdue || stalled) {
         keyboard_state_release(state);
+    } else if (idle) {
+        keyboard_state_pause(state);
     }
 }
 

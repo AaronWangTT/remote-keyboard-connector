@@ -28,6 +28,8 @@ const drainingRequests = new WeakSet();
 let pendingControl = null;
 let nextControlId = 0;
 const controlReservationMs = 10000;
+const controlLeaseMs = 5000;
+const heldInputTimeoutMs = 1000;
 const websocketDelayMs = Number(process.env.PREVIEW_WEBSOCKET_DELAY_MS ?? "0");
 if (!Number.isSafeInteger(websocketDelayMs) || websocketDelayMs < 0 || websocketDelayMs > 15000) {
   throw new Error("PREVIEW_WEBSOCKET_DELAY_MS must be an integer from 0 to 15000.");
@@ -494,7 +496,16 @@ function inputSnapshot() {
 }
 
 function usbStatus() {
-  return { v: 1, type: "status", usb_ready: usbReady && !powerSleeping, caps_lock: capsLock };
+  return { v: 1, type: "status", usb_ready: usbReady && !powerSleeping,
+    input_paused: controller?.inputPaused ?? false, caps_lock: capsLock };
+}
+
+function pauseInput(connection) {
+  if (connection.inputPaused) return;
+  if (connection.pressed) receipts.forced_release++;
+  connection.pressed = false;
+  connection.report = { modifiers: 0, keys: [] };
+  connection.inputPaused = true;
 }
 
 function validReport(message) {
@@ -681,7 +692,7 @@ server.on("upgrade", async (request, socket, head) => {
     return;
   }
   if (controller !== null && controller.readyState === WebSocket.OPEN) {
-    if (performance.now() - controller.lastSeen < 1000) {
+    if (performance.now() - controller.lastSeen < controlLeaseMs) {
       socket.end("HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n");
       return;
     }
@@ -692,6 +703,7 @@ server.on("upgrade", async (request, socket, head) => {
   websocketServer.handleUpgrade(request, socket, head, (connection) => {
     controller = connection;
     connection.pressed = false;
+    connection.inputPaused = false;
     connection.report = { modifiers: 0, keys: [] };
     connection.sequence = 0;
     connection.lastSeen = performance.now();
@@ -705,7 +717,7 @@ server.on("upgrade", async (request, socket, head) => {
       if (controller === connection) controller = null;
     });
     connection.on("message", (data, binary) => {
-        if (connection !== controller || binary || performance.now() - connection.lastSeen >= 1000 ||
+        if (connection !== controller || binary || performance.now() - connection.lastSeen >= controlLeaseMs ||
           !sessions.has(session.token) || performance.now() - session.createdAt >= 28800000) {
         connection.close(1008);
         return;
@@ -717,6 +729,7 @@ server.on("upgrade", async (request, socket, head) => {
         connection.close(1008);
         return;
       }
+      if (connection.pressed && performance.now() - connection.lastSeen >= heldInputTimeoutMs) pauseInput(connection);
       const fields = message?.type === "state" ? ["v", "type", "seq", "modifiers", "keys"] : ["v", "type"];
       if (message?.v !== 1 || Object.keys(message).length !== fields.length ||
           !Object.keys(message).every(field => fields.includes(field))) {
@@ -726,14 +739,25 @@ server.on("upgrade", async (request, socket, head) => {
       connection.lastSeen = performance.now();
       session.lastSeen = connection.lastSeen;
       if (message.type === "ping") connection.send(JSON.stringify(usbStatus()));
+      else if (message.type === "reset") {
+        pauseInput(connection);
+        connection.send(JSON.stringify(usbStatus()));
+      } else if (message.type === "resume" && connection.inputPaused && usbReady) {
+        connection.inputPaused = false;
+        connection.send(JSON.stringify({ v: 1, type: "resumed" }));
+      }
       else if (message.type === "state" && usbReady && validReport(message) && message.seq === connection.sequence + 1) {
+        connection.sequence = message.seq;
+        if (connection.inputPaused) {
+          connection.send(JSON.stringify(usbStatus()));
+          return;
+        }
         const nextReport = { modifiers: message.modifiers, keys: [...message.keys].sort((left, right) => left - right) };
         if (JSON.stringify(nextReport) !== JSON.stringify(connection.report)) powerActivity();
         receipts.down += message.keys.filter(usage => !connection.report.keys.includes(usage)).length;
         receipts.up += connection.report.keys.filter(usage => !message.keys.includes(usage)).length;
         if (message.keys.includes(57) && !connection.report.keys.includes(57) && capsLock !== null) capsLock = !capsLock;
         connection.report = nextReport;
-        connection.sequence = message.seq;
         connection.pressed = message.keys.length > 0 || message.modifiers !== 0;
         connection.send(JSON.stringify({ v: 1, type: "queued", seq: message.seq }), (error) => {
           if (!error) receipts.queued++;
@@ -760,7 +784,11 @@ setInterval(() => {
     }
   }
   if (pendingControl && (performance.now() >= pendingControl.until || !sessions.has(pendingControl.session.token))) pendingControl = null;
-  if (controller !== null && performance.now() - controller.lastSeen >= 1000) controller.terminate();
+  if (controller !== null) {
+    const idle = performance.now() - controller.lastSeen;
+    if (idle >= controlLeaseMs) controller.terminate();
+    else if (controller.pressed && idle >= heldInputTimeoutMs) pauseInput(controller);
+  }
   if (!updateBusy() && performance.now() >= confirmationUntil && performance.now() >= managementUntil) {
     if (network.job === "awaiting_confirmation") {
       Object.assign(network, { ap_active: false, ap_ip: "", phase: "station" });

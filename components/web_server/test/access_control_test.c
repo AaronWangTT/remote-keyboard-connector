@@ -40,6 +40,9 @@ static void test_status_observation(void)
         *requirements[index] = true;
     }
     expect_status(&facts, 999, true, false);
+    expect_status(&facts, 1000 + INT64_C(1000000), true, true);
+    expect_status(&facts, 1000 + INT64_C(4999999), true, true);
+    expect_status(&facts, 1000 + INT64_C(5000000), true, false);
     expect_status(&facts, 1000 + ACCESS_CONTROL_LEASE_US - 1, true, true);
     expect_status(&facts, 1000 + ACCESS_CONTROL_LEASE_US, true, false);
     facts.controller_network_ready = false;
