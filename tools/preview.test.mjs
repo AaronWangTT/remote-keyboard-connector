@@ -644,7 +644,7 @@ for (const board of ["xinlucity-s3-nano-16m", "seeed-xiao-esp32s3-8m"]) {
   });
 }
 
-test("Power model ignores heartbeats and polls, then wakes disarmed with fresh authentication", { timeout: 15000 }, async context => {
+test("Power model ignores heartbeats and ordinary status polls, then wakes disarmed with fresh authentication", { timeout: 15000 }, async context => {
   const url = await startPreview(context);
   const session = await loginRequest(url);
   const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
@@ -663,7 +663,7 @@ test("Power model ignores heartbeats and polls, then wakes disarmed with fresh a
   connection.send(JSON.stringify({ v: 1, type: "ping" }));
   await heartbeat;
   assert.equal((await fetch(new URL("/api/v1/power", url), { headers })).status, 200);
-  assert.equal((await fetch(new URL("/api/v1/network/job", url), { headers })).status, 200);
+  assert.equal((await fetch(new URL("/api/v1/session", url), { headers })).status, 200);
   const closed = once(connection, "close");
   assert.equal((await advance(60001)).asleep, true);
   await closed;
@@ -678,6 +678,23 @@ test("Power model ignores heartbeats and polls, then wakes disarmed with fresh a
   assert.equal(input.connected, false);
   assert.deepEqual(input.report, { modifiers: 0, keys: [] });
   assert.equal(input.down, 0);
+});
+
+test("Power model defers sleep for network management polling and restarts the quiet interval", { timeout: 10000 }, async context => {
+  const url = await startPreview(context);
+  const session = await loginRequest(url);
+  const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
+  assert.equal((await fetch(new URL("/api/v1/power", url), {
+    method: "POST", headers, body: '{"idle_minutes":30}',
+  })).status, 200);
+  const advance = async advance_ms => (await fetch(new URL("/__test__/power", url), {
+    method: "POST", headers, body: JSON.stringify({ advance_ms }) })).json();
+  assert.equal((await advance(60001)).asleep, false);
+  assert.equal((await advance(29 * 60000)).asleep, false);
+  assert.equal((await fetch(new URL("/api/v1/network/job", url), { headers })).status, 200);
+  assert.equal((await advance(60001)).asleep, false);
+  assert.equal((await advance(30 * 60000 - 1000)).asleep, false);
+  assert.equal((await advance(1001)).asleep, true);
 });
 
 test("Power model preserves 60-minute settings across wake and disables idle sleep with Never", { timeout: 10000 }, async context => {
