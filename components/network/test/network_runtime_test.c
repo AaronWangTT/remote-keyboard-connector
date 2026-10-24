@@ -365,6 +365,24 @@ int main(void)
     assert(strcmp(attempted[connects - 1], "office") == 0 && state.online);
 
     reset();
+    command(NETWORK_ACTION_STATION, "travel");
+    successful_ssid = "travel";
+    run_until(INT64_C(2000000));
+    assert(state.online && state.ap && associated);
+    unsigned before_dhcp_loss = configurations;
+    lease = false;
+    lease_address = 0;
+    successful_ssid = NULL;
+    run_until(now_us + INT64_C(2000000));
+    assert(!state.online && associated && configurations == before_dhcp_loss);
+    int64_t dhcp_deadline = automatic_deadline;
+    assert(state.retry_at == dhcp_deadline);
+    run_until(dhcp_deadline - NETWORK_CONNECT_STEP);
+    assert(configurations == before_dhcp_loss && strcmp(driver_configuration.ssid, "travel") == 0);
+    run_until(dhcp_deadline + INT64_C(1000000));
+    assert(configurations == before_dhcp_loss + 1 && strcmp(driver_configuration.ssid, "recent") == 0);
+
+    reset();
     management_until = NETWORK_CONNECT_US * 4;
     recovery("network_not_found", true);
     run_until(NETWORK_CONNECT_US * 4 - NETWORK_CONNECT_STEP);

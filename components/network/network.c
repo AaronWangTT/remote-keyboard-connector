@@ -957,8 +957,12 @@ static void network_worker(void *argument)
             if (esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK) job_result("succeeded", "", false);
             else recovery("handover_failed", true);
         } else if (effect == NETWORK_TRY_CONNECT && associated && !online && state.phase == NETWORK_RECOVERY) {
-            if (profiles.count) automatic_index = (automatic_index + 1) % profiles.count;
-            recovery("dhcp_timeout", true);
+            if (automatic_deadline != 0 && now < automatic_deadline) {
+                state.retry_at = automatic_deadline;
+            } else {
+                if (profiles.count) automatic_index = (automatic_index + 1) % profiles.count;
+                recovery("dhcp_timeout", true);
+            }
         } else if (effect == NETWORK_TRY_CONNECT && !associated) {
             if (!testing && state.phase == NETWORK_RECOVERY && automatic_deadline != 0 && now >= automatic_deadline && profiles.count) {
                 automatic_index = (automatic_index + 1) % profiles.count;
