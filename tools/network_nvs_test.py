@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import struct
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -71,7 +72,7 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(tool.decode_settings(tool.encode_settings(settings)), settings)
 
     def test_reject_invalid_contract(self):
-        valid = tool.encode_settings(tool.Settings(True, b"", (profile(),)))
+        valid = tool.encode_settings(tool.Settings(True, b"kb", (profile(),)))
         for offset, value in [(0, 1), (1, 2), (2, 11), (3, 1), (134, 2), (140, 1), (36, 1)]:
             corrupt = bytearray(valid)
             corrupt[offset] = value
@@ -81,9 +82,20 @@ class FormatTests(unittest.TestCase):
                     profile(password=b"short"), profile(password=b"p" * 64),
                     profile(password=b"\x7f" * 8), profile(password=b"\xff" * 8)):
             with self.subTest(profile=bad.ssid), self.assertRaises(ValueError):
-                tool.encode_settings(tool.Settings(profiles=(bad,)))
+                tool.encode_settings(tool.Settings(hostname=b"kb", profiles=(bad,)))
         with self.assertRaises(ValueError):
-            tool.encode_settings(tool.Settings(profiles=(profile(), profile())))
+            tool.encode_settings(tool.Settings(hostname=b"kb", profiles=(profile(), profile())))
+
+    def test_hostname_and_station_match_firmware_rules(self):
+        for hostname in (b"", b"KB", b"-kb", b"kb-", b"kb.local", b"localhost",
+                         b"a" * 33, b"kb\0ignored", b"\xff"):
+            with self.subTest(hostname=hostname), self.assertRaisesRegex(tool.ToolError, "hostname"):
+                tool.encode_settings(tool.Settings(True, hostname, (profile(),)))
+        for hostname in (b"k", b"0", b"kb-2", b"a" * 32):
+            settings = tool.Settings(True, hostname, (profile(),))
+            self.assertEqual(tool.decode_settings(tool.encode_settings(settings)), settings)
+        with self.assertRaisesRegex(tool.ToolError, "Station mode"):
+            tool.encode_settings(tool.Settings(True, b"kb"))
 
     def test_legacy(self):
         legacy = (struct.pack("<I", 1) + b"\1" + b"keyboard".ljust(33, b"\0") +
@@ -113,6 +125,31 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(tool.decode_settings(data), expected)
         self.assertEqual(tool.encode_settings(expected), data)
 
+    def test_first_use_and_hostname_records_validate_in_firmware(self):
+        binary = ROOT / ".cache/tests/network_profiles_fixture_test"
+        if not binary.is_file():
+            self.skipTest("Build the native network_profiles_fixture suite first")
+        with tempfile.TemporaryDirectory(prefix="keyboard-abi-") as directory:
+            destination = Path(directory) / "record.bin"
+            def native_valid(data):
+                destination.write_bytes(data)
+                result = subprocess.run([str(binary), "--validate-fixture", str(destination)],
+                                        capture_output=True, check=False, timeout=10)
+                self.assertIn(result.returncode, (0, 1))
+                return result.returncode == 0
+            for hostname in ("k", "0", "kb-2", "a" * 32):
+                added = tool.modify(tool.Settings(), "import",
+                                    payload=[{"ssid": "home", "password": "password"}], hostname=hostname)
+                data = tool.encode_settings(added)
+                self.assertTrue(native_valid(data))
+            for hostname in (b"", b"KB", b"-kb", b"kb-", b"kb.local", b"localhost", b"\xff"):
+                data = bytearray(tool.encode_settings(added))
+                data[4:37] = hostname.ljust(33, b"\0")
+                with self.subTest(hostname=hostname):
+                    self.assertFalse(native_valid(bytes(data)))
+                    with self.assertRaises(tool.ToolError):
+                        tool.decode_settings(bytes(data))
+
 
 class CrudTests(unittest.TestCase):
     def test_first_add_last_delete_and_preserve_hostname(self):
@@ -135,7 +172,7 @@ class CrudTests(unittest.TestCase):
             tool.modify(settings, "update", b"a", {"ssid": "b"})
 
     def test_update_password_only_and_settings_only(self):
-        settings = tool.Settings(True, b"", (profile(verified=True),))
+        settings = tool.Settings(True, b"kb", (profile(verified=True),))
         updated = tool.modify(settings, "update", b"home", {"password": "changed!"})
         self.assertFalse(updated.profiles[0].verified)
         self.assertEqual(updated.profiles[0].ssid, b"home")
@@ -143,9 +180,31 @@ class CrudTests(unittest.TestCase):
         self.assertTrue(same.profiles[0].verified)
         self.assertFalse(same.station)
 
+    def test_unchanged_unverified_profile_preserves_order(self):
+        a, b, c = profile(b"a"), profile(b"b", verified=True), profile(b"c")
+        settings = tool.Settings(True, b"kb", (a, b, c))
+        for payload in ({"ssid": "a"}, {"password": "password"}):
+            updated = tool.modify(settings, "update", b"a", payload, hostname="new", station=0)
+            self.assertEqual(updated.profiles, settings.profiles)
+            self.assertEqual(updated.hostname, b"new")
+            self.assertFalse(updated.station)
+        changed = tool.modify(settings, "update", b"a", {"password": "changed!"})
+        self.assertEqual(changed.profiles, (b, c, profile(b"a", b"changed!")))
+
+    def test_first_add_and_import_require_explicit_hostname(self):
+        for operation, payload in (("add", {"ssid": "home", "password": "password"}),
+                                   ("import", [{"ssid": "home", "password": "password"}])):
+            with self.subTest(operation=operation):
+                with self.assertRaisesRegex(tool.ToolError, "--hostname"):
+                    tool.modify(tool.Settings(), operation, payload=payload)
+                added = tool.modify(tool.Settings(), operation, payload=payload, hostname="first-use")
+                self.assertTrue(added.station)
+                self.assertEqual(added.hostname, b"first-use")
+                self.assertEqual(tool.decode_settings(tool.encode_settings(added)), added)
+
     def test_merge_atomic_no_eviction(self):
         profiles = tuple(profile(str(i).encode(), verified=True) for i in range(10))
-        settings = tool.Settings(True, b"", profiles)
+        settings = tool.Settings(True, b"kb", profiles)
         with self.assertRaises(ValueError):
             tool.modify(settings, "import", payload=[{"ssid": "new", "password": "password"}])
         self.assertEqual(settings.profiles, profiles)
@@ -159,7 +218,7 @@ class CrudTests(unittest.TestCase):
                 {"ssid": "x", "password": "password"}, {"ssid_hex": "78", "password": "password"}])
 
     def test_redacted_and_exact_selectors(self):
-        settings = tool.Settings(True, b"", (profile(b"\xffssid", b"secret!!"),))
+        settings = tool.Settings(True, b"kb", (profile(b"\xffssid", b"secret!!"),))
         output = json.dumps(tool.redacted(settings))
         self.assertNotIn("secret!!", output)
         self.assertIn("[redacted]", output)
@@ -218,7 +277,7 @@ class RawTests(unittest.TestCase):
     def test_multiple_updates_slots_and_no_compaction(self):
         image = saved_image()
         for number in range(3):
-            settings = tool.Settings(True, b"", (profile(str(number).encode()),))
+            settings = tool.Settings(True, b"kb", (profile(str(number).encode()),))
             image = tool.plan_update(image, settings)[1]
             self.assertEqual(tool.RawNVS(image).settings(), settings)
         with self.assertRaisesRegex(ValueError, "two erased"):
@@ -323,6 +382,17 @@ class DeviceTests(unittest.TestCase):
         self.sdk.esptool.reset_chip.assert_called_once_with(self.connection, "hard-reset")
         self.sdk.esptool.detect_chip.assert_called_once_with(port="/dev/never-opened")
 
+    def test_missing_first_use_hostname_refuses_before_write(self):
+        self.image = fixture_image()
+        with self.assertRaisesRegex(tool.ToolError, "--hostname"):
+            self.execute()
+        self.sdk.esptool.write_flash.assert_not_called()
+        self.assertEqual(self.events, [])
+        self.args.hostname = "first-use"
+        result = self.execute()
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["hostname"], "first-use")
+
     def test_no_execute_or_ack_never_connects(self):
         for flag in ("execute", "allow_nvs_rewrite"):
             with self.subTest(flag=flag):
@@ -389,7 +459,7 @@ class DeviceTests(unittest.TestCase):
             self.execute()
         self.sdk.esptool.write_flash.assert_not_called()
         self.sdk.esptool.read_flash.side_effect = original_read
-        self.image = saved_image(tool.Settings(True, b"", tuple(
+        self.image = saved_image(tool.Settings(True, b"kb", tuple(
             profile(str(i).encode()) for i in range(10))))
         with self.assertRaises(ValueError):
             self.execute()

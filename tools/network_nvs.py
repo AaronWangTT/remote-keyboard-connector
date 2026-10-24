@@ -73,8 +73,17 @@ def validate_profile(profile):
     require(type(profile.verified) is bool, "Invalid verified field")
 
 
+def validate_hostname(hostname):
+    require(isinstance(hostname, bytes) and 1 <= len(hostname) <= 32 and
+            re.fullmatch(rb"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", hostname) is not None and
+            hostname != b"localhost",
+            "Invalid hostname; use --hostname with 1-32 lowercase letters, digits or interior hyphens")
+
+
 def encode_settings(settings):
     require(type(settings.station) is bool and len(settings.profiles) <= 10, "Invalid settings")
+    require(not settings.station or bool(settings.profiles), "Station mode requires a saved network")
+    validate_hostname(settings.hostname)
     require(len({p.ssid for p in settings.profiles}) == len(settings.profiles), "Duplicate SSID")
     result = bytes((2, int(settings.station), len(settings.profiles), 0))
     result += cfield(settings.hostname, 33, "hostname")
@@ -370,10 +379,10 @@ def modify(settings, operation, selector=None, payload=None, hostname=None, stat
         profile = profile_input({"ssid_hex": ssid.hex(), "password": password})
         if profile.ssid == previous.ssid and profile.password == previous.password:
             profile = previous
-        del profiles[matching[0]]
-        if profile.verified:
-            profiles.insert(matching[0], profile)
+        if profile == previous:
+            profiles[matching[0]] = previous
         else:
+            del profiles[matching[0]]
             profiles.append(profile)
     elif operation == "delete":
         require(len(matching) == 1, "SSID not found")

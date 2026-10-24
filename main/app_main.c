@@ -21,10 +21,7 @@ static board_status_snapshot_t board_status_source(void)
 
 static bool services_healthy(void)
 {
-    network_status_t network;
-    network_status(&network);
-    return network_service_healthy() && network.available && (network.ap_active || network.station_online) &&
-        web_server_service_healthy() && usb_keyboard_service_healthy();
+    return network_service_healthy() && web_server_service_healthy() && usb_keyboard_service_healthy();
 }
 
 void app_main(void)

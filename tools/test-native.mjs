@@ -24,6 +24,8 @@ const boardPower = {
   sources: ["components/board/board_power_policy.c", "components/board/board_power.c", "components/board/test/board_power_test.c"],
 };
 const suites = {
+  services_health: { includes: [".cache/tests"],
+    sources: ["main/test/services_health_test.c"] },
   input_http: { includes: [".cache/tests/board-stubs", ".cache/tests", "components/board/test",
       ...usbIncludes, "components/web_server", "components/network/include", "managed_components/espressif__cjson/cJSON"],
     sources: ["managed_components/espressif__cjson/cJSON/cJSON.c", "components/usb_keyboard/keyboard_state.c",
@@ -135,6 +137,9 @@ const section = (source, start, end) => {
   return source.slice(first, last);
 };
 const normalizedSource = async path => (await readFile(path, "utf8")).replaceAll("\r\n", "\n");
+const main = await normalizedSource("main/app_main.c");
+await writeFile(".cache/tests/services_health.inc",
+  section(main, "static bool services_healthy(void)", "\nvoid app_main(void)"));
 const network = await normalizedSource("components/network/network.c");
 await writeFile(".cache/tests/network_defaults.inc",
   section(network, "static esp_err_t load_configuration(void)", "\nstatic bool stage_configuration"));

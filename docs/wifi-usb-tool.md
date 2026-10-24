@@ -134,6 +134,13 @@ AP. New or changed credentials are always unverified until firmware connects
 successfully. No command prints passwords; `list` and mutation summaries use
 `"[redacted]"`.
 
+If no network settings have been stored yet, the first add/import must include
+`--hostname`, for example `--hostname kb` (or `x` for XIAO). The tool cannot infer
+the compiled board default. Names must contain 1-32 lowercase ASCII letters,
+digits or interior hyphens; `localhost`, dots, and leading/trailing hyphens are
+rejected before any write. Later operations retain the stored name unless
+`--hostname` is supplied.
+
 ### Add
 
 ```sh

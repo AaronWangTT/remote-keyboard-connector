@@ -15,7 +15,15 @@ int main(int argc, char **argv)
     };
     assert(network_profiles_valid(&fixture));
     assert(sizeof(fixture) == 1017);
-    if (argc == 3 && strcmp(argv[1], "--emit-fixture") == 0) {
+    if (argc == 3 && strcmp(argv[1], "--validate-fixture") == 0) {
+        FILE *input = fopen(argv[2], "rb");
+        assert(input != NULL);
+        network_profiles_t imported;
+        size_t length = fread(&imported, 1, sizeof(imported), input);
+        int trailing = fgetc(input);
+        assert(fclose(input) == 0);
+        return length == sizeof(imported) && trailing == EOF && network_profiles_valid(&imported) ? 0 : 1;
+    } else if (argc == 3 && strcmp(argv[1], "--emit-fixture") == 0) {
         FILE *output = fopen(argv[2], "wb");
         assert(output != NULL);
         assert(fwrite(&fixture, 1, sizeof(fixture), output) == sizeof(fixture));
