@@ -8,6 +8,13 @@
 #define NETWORK_SCAN_LIMIT 12
 #define NETWORK_SCAN_SSID_DISPLAY_MAX 128
 #define NETWORK_SCAN_SSID_HEX_MAX 64
+#define NETWORK_SAVED_LIMIT 10
+
+typedef struct {
+    char ssid[NETWORK_SCAN_SSID_DISPLAY_MAX + 1];
+    char ssid_hex[NETWORK_SCAN_SSID_HEX_MAX + 1];
+    bool verified;
+} network_saved_item_t;
 
 typedef struct {
 	char ssid[NETWORK_SCAN_SSID_DISPLAY_MAX + 1];
@@ -39,6 +46,8 @@ typedef struct {
 	char ap_ip[16];
 	char ap_reconnect_ip[16];
 	char station_ip[16];
+	size_t profile_count;
+	network_saved_item_t profiles[NETWORK_SAVED_LIMIT];
 	size_t scan_count;
 	network_scan_item_t scan[NETWORK_SCAN_LIMIT];
 } network_status_t;

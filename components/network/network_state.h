@@ -11,6 +11,24 @@
 #define NETWORK_CONNECT_US INT64_C(30000000)
 #define NETWORK_HANDOVER_US INT64_C(15000000)
 #define NETWORK_CONFIRM_US INT64_C(60000000)
+#define NETWORK_PROFILE_LIMIT 10
+
+typedef struct {
+    char ssid[NETWORK_SSID_MAX + 1];
+    char password[64];
+    uint8_t verified;
+} network_profile_t;
+
+typedef struct {
+    uint8_t version;
+    uint8_t station;
+    uint8_t count;
+    uint8_t reserved;
+    char hostname[NETWORK_HOSTNAME_MAX + 1];
+    network_profile_t profiles[NETWORK_PROFILE_LIMIT];
+} network_profiles_t;
+
+_Static_assert(sizeof(network_profiles_t) == 1017, "Network profiles must have a stable NVS wire format");
 
 typedef struct {
     uint32_t version;
@@ -54,6 +72,12 @@ bool network_hostname_valid(const char *hostname);
 void network_ssid_display(const uint8_t *ssid, size_t length, char output[NETWORK_SSID_DISPLAY_MAX + 1]);
 void network_ssid_hex(const uint8_t *ssid, size_t length, char output[NETWORK_SSID_MAX * 2 + 1]);
 bool network_config_valid(const network_config_t *configuration);
+bool network_profiles_valid(const network_profiles_t *profiles);
+bool network_profiles_migrate(const network_config_t *legacy, network_profiles_t *profiles);
+int network_profiles_find(const network_profiles_t *profiles, const char *ssid);
+bool network_profiles_remember(network_profiles_t *profiles, const network_config_t *configuration);
+bool network_profiles_remove(network_profiles_t *profiles, const char *ssid);
+bool network_profiles_select(const network_profiles_t *profiles, size_t index, network_config_t *configuration);
 bool network_config_store(const network_config_t *configuration, uint8_t *active_slot,
                           bool (*stage)(void *, uint8_t, const network_config_t *),
                           bool (*activate)(void *, uint8_t), void *context);

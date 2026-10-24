@@ -66,6 +66,12 @@ jobs:
           source "$IDF_PATH/export.sh"
           bash tools/test-host.sh 2>&1 | tee .cache/ci/host-tests.log
 
+      - name: Validate USB Wi-Fi NVS maintenance without hardware
+        run: |
+          source "$IDF_PATH/export.sh"
+          PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tools \
+            -p network_nvs_test.py -v 2>&1 | tee .cache/ci/network-nvs-tests.log
+
       - name: Build standard Seeed XIAO ESP32S3 profile
         run: |
           source "$IDF_PATH/export.sh"

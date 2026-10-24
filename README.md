@@ -378,11 +378,37 @@ failed closure preparation and exercise the explicit full-capacity error.
 
 The Network view offers Standalone AP or Join Wi-Fi, scan/manual SSID entry,
 credential testing, saved-network reuse, hostname changes, and confirmed Forget
-Network. This increment supports one 2.4 GHz WPA2-Personal profile and DHCP.
-Successful association and DHCP save the profile; **Switch to Wi-Fi** confirms
+Network. Up to **10** 2.4 GHz WPA2-Personal profiles can be saved, using DHCP.
+The saved-network selector supports password-free manual switching and deletion
+of individual profiles. Successful association and DHCP save or update a
+profile and move it to the front of the connection order; a full list rejects
+new SSIDs without evicting existing ones. Startup, wake, and connection loss
+try the most recently successful network first, then the other saved networks
+with a 30-second connection budget per profile. Normal connections are not
+switched merely because another network becomes available. Standalone AP mode
+keeps the list but disables automatic station connections.
+
+The [USB Wi-Fi CRUD tool](docs/wifi-usb-tool.md) can list, add, update, delete,
+or merge-import profiles directly into NVS through the ESP32-S3 ROM download
+port. Networks need not be nearby when entered. This does not reflash the
+application, but does stop and restart the device; use a data-capable USB cable
+and enter download mode if the runtime HID device has no serial port. Private
+backups, explicit MAC matching, and readback verification protect against
+accidental changes; whole-NVS USB rewrites are not power-loss atomic and require
+explicit acknowledgment. Keep both device and computer powered during writes.
+Existing single-network settings migrate automatically when loaded; new
+multi-network records use a versioned, dual-slot NVS format.
+
+**Switch to Wi-Fi** confirms
 handover before the temporary AP closes after a 15-second grace period. No
 Internet connection is required. Failed tests preserve the last committed
-profile and AP access. Router loss starts bounded retries and protected recovery.
+profiles and AP access. Router loss starts bounded retries and protected recovery;
+after the first connection deadline the recovery AP remains available while
+other saved networks are tried. AP management and active control defer recovery
+reconfiguration. USB-preloaded networks are shown as not yet verified until their
+first successful connection. Deleting the preferred/current profile returns to
+standalone AP without deleting the others; deleting an unrelated profile does
+not interrupt a working station connection.
 Physical-button recovery is not implemented until board wiring is verified.
 
 Typing keys are enabled only while USB is ready. Keep the page visible and the

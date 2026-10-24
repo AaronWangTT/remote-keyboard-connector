@@ -29,8 +29,75 @@ static bool activate(void *context, uint8_t slot)
     return store->failure != 4;
 }
 
+static void test_profiles(void)
+{
+    network_config_t legacy = {.version = 1, .station = 1, .hostname = "owner", .ssid = "legacy", .password = "test-password"};
+    network_profiles_t profiles;
+    assert(network_profiles_migrate(&legacy, &profiles));
+    assert(network_profiles_valid(&profiles) && profiles.count == 1 && profiles.profiles[0].verified);
+    network_config_t selected;
+    assert(network_profiles_select(&profiles, 0, &selected) && memcmp(&selected, &legacy, sizeof(legacy)) == 0);
+    assert(!network_profiles_select(&profiles, 1, &selected));
+    for (size_t index = 1; index < NETWORK_PROFILE_LIMIT; index++) {
+        snprintf(selected.ssid, sizeof(selected.ssid), "network-%zu", index);
+        assert(network_profiles_remember(&profiles, &selected));
+        assert(network_profiles_valid(&profiles));
+    }
+    assert(profiles.count == 10);
+    network_profiles_t original = profiles;
+    strcpy(selected.ssid, "eleventh");
+    assert(!network_profiles_remember(&profiles, &selected));
+    assert(memcmp(&original, &profiles, sizeof(profiles)) == 0);
+    memset(selected.ssid, 0, sizeof(selected.ssid));
+    strcpy(selected.ssid, "legacy");
+    strcpy(selected.password, "updated-password");
+    assert(network_profiles_remember(&profiles, &selected));
+    assert(profiles.count == 10 && strcmp(profiles.profiles[0].ssid, "legacy") == 0);
+    assert(strcmp(profiles.profiles[0].password, "updated-password") == 0);
+    assert(strcmp(profiles.profiles[1].ssid, "network-9") == 0);
+    assert(network_profiles_remove(&profiles, "network-5") && profiles.count == 9);
+    assert(!network_profiles_remove(&profiles, "missing"));
+    assert(network_profiles_valid(&profiles));
+    original = profiles;
+    profiles.profiles[9] = profiles.profiles[0];
+    assert(!network_profiles_valid(&profiles));
+    profiles = original;
+    profiles.profiles[1] = profiles.profiles[0];
+    assert(!network_profiles_valid(&profiles));
+    profiles = original;
+    profiles.profiles[0].verified = 2;
+    assert(!network_profiles_valid(&profiles));
+    profiles = original;
+    profiles.reserved = 1;
+    assert(!network_profiles_valid(&profiles));
+    profiles = original;
+    profiles.count = 11;
+    assert(!network_profiles_valid(&profiles));
+    profiles = original;
+    profiles.profiles[0].password[63] = 'x';
+    assert(!network_profiles_valid(&profiles));
+    profiles = original;
+    profiles.profiles[0].verified = 0;
+    assert(network_profiles_valid(&profiles));
+    while (profiles.count) {
+        char ssid[33];
+        strcpy(ssid, profiles.profiles[0].ssid);
+        assert(network_profiles_remove(&profiles, ssid));
+        assert(network_profiles_valid(&profiles));
+    }
+    assert(!profiles.station);
+    legacy = (network_config_t){.version = 1, .hostname = "kb"};
+    assert(network_profiles_migrate(&legacy, &profiles) && profiles.count == 0);
+    assert(network_profiles_valid(&profiles));
+    const uint8_t *wire = (const uint8_t *)&profiles;
+    assert(sizeof(profiles) == 1017 && wire[0] == 2 && wire[1] == 0 && wire[2] == 0 && wire[3] == 0);
+    assert(memcmp(wire + 4, "kb\0", 3) == 0);
+    for (size_t index = 7; index < sizeof(profiles); index++) assert(wire[index] == 0);
+}
+
 int main(void)
 {
+    test_profiles();
     network_config_t old_profile = {.version = 1, .station = 1, .hostname = "kb", .ssid = "old-network", .password = "old-password"};
     network_config_t new_profile = {.version = 1, .station = 1, .hostname = "kb", .ssid = "new-network", .password = "new-password"};
     for (unsigned failure = 0; failure <= 4; failure++) {
@@ -77,7 +144,8 @@ int main(void)
         "{\"action\":\"connect\",\"ssid\":\"My network\",\"password\":\"test-password\"}",
         "{\"action\":\"connect\",\"ssid_hex\":\"43616665ff\",\"password\":\"test-password\"}",
         "{\"action\":\"rename\",\"hostname\":\"kb-2\"}", "{\"action\":\"ap\"}",
-        "{\"action\":\"station\"}", "{\"action\":\"cancel\"}", "{\"action\":\"confirm\"}", "{\"action\":\"forget\"}"
+        "{\"action\":\"station\"}", "{\"action\":\"cancel\"}", "{\"action\":\"confirm\"}", "{\"action\":\"forget\"}",
+        "{\"action\":\"station\",\"ssid_hex\":\"43616665ff\"}", "{\"action\":\"forget\",\"ssid\":\"network\"}"
     };
     for (size_t index = 0; index < sizeof(valid) / sizeof(valid[0]); index++) assert(network_request_parse((const uint8_t *)valid[index], strlen(valid[index]), &request));
     assert(network_request_parse((const uint8_t *)valid[1], strlen(valid[1]), &request));
@@ -100,7 +168,10 @@ int main(void)
         "{\"action\":\"connect\",\"ssid\":\"network\xff\",\"password\":\"test-password\"}",
         "{\"action\":\"connect\",\"ssid\":\"\\ud800\",\"password\":\"test-password\"}",
         "{\"action\":\"connect\",\"ssid\":\"\\udc00\",\"password\":\"test-password\"}",
-        "{\"action\":\"ap\"} {}"
+        "{\"action\":\"ap\"} {}",
+        "{\"action\":\"station\",\"ssid\":\"a\",\"ssid_hex\":\"61\"}",
+        "{\"action\":\"forget\",\"ssid_hex\":\"00\"}",
+        "{\"action\":\"station\",\"password\":\"test-password\"}"
     };
     for (size_t index = 0; index < sizeof(invalid) / sizeof(invalid[0]); index++) {
         assert(!network_request_parse((const uint8_t *)invalid[index], strlen(invalid[index]), &request));
