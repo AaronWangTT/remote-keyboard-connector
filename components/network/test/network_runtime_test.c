@@ -1,6 +1,7 @@
 #include "idf_stubs.h"
 #include "network.h"
 #include "network_state.h"
+#include "cJSON.h"
 
 #include <assert.h>
 #include <setjmp.h>
@@ -10,6 +11,7 @@
 #define pdTRUE 1
 #define WIFI_MODE_APSTA 1
 #define WIFI_MODE_STA 2
+#define CONFIG_NETWORK_DEFAULT_HOSTNAME "kb"
 typedef struct { bool show_hidden; } wifi_scan_config_t;
 typedef struct { char ssid[33]; int authmode; } wifi_ap_record_t;
 typedef struct { struct { uint32_t addr; } ip; } esp_netif_ip_info_t;
@@ -32,13 +34,17 @@ static int64_t automatic_deadline, driver_retry_at, ap_reconnect_until, manageme
 static int64_t scan_deadline, scan_expires, now_us, stop_at;
 static const int64_t NETWORK_CONNECT_STEP = INT64_C(250000);
 static char last_failure[40];
-static uint32_t lease_address;
+static uint32_t lease_address, ap_address, station_address;
 static int station_interface, commands;
 static unsigned connects, configurations, writes;
 static char attempted[128][33];
 static int64_t attempted_at[128];
 static const char *successful_ssid;
 static jmp_buf worker_exit;
+static unsigned nvs_step, failure_step;
+static bool fail_after_write;
+static bool polling, poll_authorized, poll_allowed;
+static int64_t next_poll;
 
 void test_enter_critical(portMUX_TYPE *mutex) { (void)mutex; }
 void test_exit_critical(portMUX_TYPE *mutex) { (void)mutex; }
@@ -48,7 +54,7 @@ static void mbedtls_platform_zeroize(void *value, size_t size) { memset(value, 0
 
 esp_err_t nvs_open(const char *name, nvs_open_mode_t mode, nvs_handle_t *handle)
 {
-    assert(strcmp(name, "kb_network") == 0 && mode == NVS_READWRITE);
+    assert(strcmp(name, "kb_network") == 0 && (mode == NVS_READWRITE || mode == NVS_READONLY));
     *handle = 1;
     return ESP_OK;
 }
@@ -57,20 +63,44 @@ static esp_err_t nvs_set_blob(nvs_handle_t handle, const char *key, const void *
     assert(handle == 1 && size == sizeof(profiles));
     assert(strcmp(key, "profiles0") == 0 || strcmp(key, "profiles1") == 0);
     writes++;
-    if (fail_storage) return ESP_FAIL;
+    bool fail = ++nvs_step == failure_step;
+    if (fail_storage || (fail && !fail_after_write)) return ESP_FAIL;
     slots[strcmp(key, "profiles1") == 0] = *(const network_profiles_t *)value;
-    return ESP_OK;
+    return fail ? ESP_FAIL : ESP_OK;
 }
 static esp_err_t nvs_set_u8(nvs_handle_t handle, const char *key, uint8_t value)
 {
     assert(handle == 1 && strcmp(key, "profiles_active") == 0 && value < 2);
     assert(network_profiles_valid(&slots[value]));
+    bool fail = ++nvs_step == failure_step;
+    if (fail && !fail_after_write) return ESP_FAIL;
     persisted_slot = value;
+    return fail ? ESP_FAIL : ESP_OK;
+}
+static esp_err_t nvs_get_u8(nvs_handle_t handle, const char *key, uint8_t *value)
+{
+    assert(handle == 1);
+    if (strcmp(key, "active") == 0) return ESP_ERR_NVS_NOT_FOUND;
+    assert(strcmp(key, "profiles_active") == 0);
+    *value = persisted_slot;
     return ESP_OK;
 }
-esp_err_t nvs_commit(nvs_handle_t handle) { assert(handle == 1); return ESP_OK; }
+static esp_err_t nvs_get_blob(nvs_handle_t handle, const char *key, void *value, size_t *size)
+{
+    assert(handle == 1 && *size == sizeof(profiles));
+    assert(strcmp(key, "profiles0") == 0 || strcmp(key, "profiles1") == 0);
+    memcpy(value, &slots[strcmp(key, "profiles1") == 0], *size);
+    return ESP_OK;
+}
+esp_err_t nvs_commit(nvs_handle_t handle)
+{
+    assert(handle == 1);
+    return ++nvs_step == failure_step ? ESP_FAIL : ESP_OK;
+}
 void nvs_close(nvs_handle_t handle) { assert(handle == 1); }
+#include "network_defaults.inc"
 #include "network_persistence.inc"
+#include "network_management.inc"
 
 static void disarm(bool ap, bool station) { (void)ap; (void)station; }
 static void job_result(const char *job, const char *error, bool busy)
@@ -134,11 +164,54 @@ static esp_err_t esp_wifi_connect(void)
     }
     return ESP_OK;
 }
+
+#define HTTP_GET 0
+typedef struct { int method; uint32_t address; } httpd_req_t;
+static bool request_allowed(httpd_req_t *request, bool mutation)
+{
+    (void)request;
+    assert(!mutation);
+    return poll_allowed;
+}
+static int *request_session(httpd_req_t *request, bool mutation)
+{
+    (void)request;
+    assert(!mutation);
+    static int owner;
+    return poll_authorized ? &owner : NULL;
+}
+static uint32_t local_address(httpd_req_t *request) { return request->address; }
+static cJSON *network_json(void) { return cJSON_CreateObject(); }
+static void response_headers(httpd_req_t *request) { (void)request; }
+static void httpd_resp_set_type(httpd_req_t *request, const char *type)
+{
+    (void)request;
+    assert(strcmp(type, "application/json") == 0);
+}
+static esp_err_t httpd_resp_sendstr(httpd_req_t *request, const char *json)
+{
+    (void)request;
+    assert(strcmp(json, "{}") == 0);
+    return ESP_OK;
+}
+static esp_err_t problem(httpd_req_t *request, const char *status, const char *error)
+{
+    (void)request; (void)status; (void)error;
+    assert(false);
+    return ESP_FAIL;
+}
+#include "network_poll_http.inc"
+
 static int xQueueReceive(int queue, network_command_t *command, unsigned wait)
 {
     (void)queue; (void)command; (void)wait;
     if (now_us + NETWORK_CONNECT_STEP > stop_at) longjmp(worker_exit, 1);
     now_us += NETWORK_CONNECT_STEP;
+    if (polling && now_us >= next_poll) {
+        httpd_req_t request = {.method = HTTP_GET, .address = ap_address};
+        assert(network_handler(&request) == ESP_OK);
+        next_poll = now_us + INT64_C(20000000);
+    }
     return 0;
 }
 #include "network_worker.inc"
@@ -168,6 +241,13 @@ static void reset(void)
     active_slot = persisted_slot = 0;
     writes = connects = configurations = 0;
     profiles_persisted = true;
+    slots[0] = profiles;
+    slots[1] = (network_profiles_t){0};
+    failure_step = nvs_step = 0;
+    fail_after_write = polling = false;
+    poll_authorized = poll_allowed = true;
+    ap_address = 42;
+    station_address = 0;
     now_us = management_until = 0;
     lease_address = 0;
     network_state_init(&state, true, 0);
@@ -182,8 +262,67 @@ static void command(network_action_t action, const char *ssid)
     run_command(&value);
 }
 
+static void test_interrupted_persistence(void)
+{
+    for (unsigned failure = 0; failure <= 4; failure++) {
+        for (unsigned after = 0; after < 2; after++) {
+            reset();
+            const network_profiles_t original = profiles;
+            const network_config_t previous_saved = saved;
+            network_profiles_t updated = profiles;
+            assert(network_profiles_select(&profiles, 1, &candidate));
+            assert(network_profiles_remember(&updated, &candidate));
+            failure_step = failure;
+            fail_after_write = after != 0;
+            assert(save_profiles(&updated) == (failure ? ESP_FAIL : ESP_OK));
+            assert(active_slot == (failure ? 0 : 1));
+            assert(memcmp(&profiles, failure ? &original : &updated, sizeof(profiles)) == 0);
+            if (failure) {
+                assert(storage_fault);
+                assert(memcmp(&saved, &previous_saved, sizeof(saved)) == 0);
+                unsigned previous_writes = writes;
+                assert(save_profiles(&updated) == ESP_ERR_INVALID_STATE && writes == previous_writes);
+            }
+            assert(nvs_step == (failure ? failure : 4));
+            assert(load_configuration() == ESP_OK);
+            assert(network_profiles_valid(&profiles));
+            assert(memcmp(&profiles, &original, sizeof(profiles)) == 0 ||
+                   memcmp(&profiles, &updated, sizeof(profiles)) == 0);
+            assert(active_slot == persisted_slot && profiles_persisted);
+        }
+    }
+}
+
+static void test_management_polling(void)
+{
+    reset();
+    recovery("network_not_found", true);
+    refresh_snapshot();
+    polling = true;
+    unsigned previous_configurations = configurations;
+    run_until(NETWORK_CONNECT_US * 6);
+    assert(management_until > now_us && connects == 0 && configurations == previous_configurations);
+    polling = false;
+    int64_t last_lease = management_until;
+    httpd_req_t request = {.method = HTTP_GET, .address = ap_address};
+    poll_authorized = false;
+    assert(network_handler(&request) == ESP_OK && management_until == last_lease);
+    poll_authorized = true;
+    poll_allowed = false;
+    assert(network_handler(&request) == ESP_OK && management_until == last_lease);
+    poll_allowed = true;
+    request.address = 99;
+    assert(network_handler(&request) == ESP_OK && management_until == last_lease);
+    run_until(last_lease + INT64_C(1000000));
+    assert(connects > 0 && strcmp(attempted[0], "recent") == 0);
+    run_until(last_lease + NETWORK_CONNECT_US + INT64_C(2000000));
+    assert(strcmp(driver_configuration.ssid, "office") == 0);
+}
+
 int main(void)
 {
+    test_interrupted_persistence();
+    test_management_polling();
     reset();
     run_until(NETWORK_CONNECT_US - NETWORK_CONNECT_STEP);
     for (unsigned index = 0; index < connects; index++) assert(strcmp(attempted[index], "recent") == 0);

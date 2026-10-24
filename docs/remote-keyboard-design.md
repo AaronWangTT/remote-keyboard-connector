@@ -223,6 +223,10 @@ preempted for a different saved network; automatic selection runs only on
 startup, wake, or connection loss. Explicit standalone AP mode preserves the
 list and disables automatic station attempts. Individual deletion and
 password-free manual selection are supported in the management page.
+Authenticated network-status polling renews the AP management lease, so a
+visible management page can remain open while credentials are being entered.
+Unauthenticated requests and requests on unknown local addresses do not renew
+it. Automatic recovery resumes after polling stops and the lease expires.
 
 The version-2 NVS record has an explicitly byte-sized layout shared with the USB
 tool, zero-padded strings, unique SSIDs, and validated unused entries. New slots

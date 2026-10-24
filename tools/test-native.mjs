@@ -143,6 +143,8 @@ await writeFile(".cache/tests/services_health.inc",
 const network = await normalizedSource("components/network/network.c");
 await writeFile(".cache/tests/network_defaults.inc",
   section(network, "static esp_err_t load_configuration(void)", "\nstatic bool stage_configuration"));
+await writeFile(".cache/tests/network_management.inc",
+  section(network, "void network_management_touch(uint32_t local_address)", "\nbool network_control_begin"));
 await writeFile(".cache/tests/network_persistence.inc",
   section(network, "static bool stage_configuration(", "\nstatic void wifi_event"));
 await writeFile(".cache/tests/network_recovery.inc",
@@ -152,6 +154,9 @@ await writeFile(".cache/tests/network_commands.inc",
 await writeFile(".cache/tests/network_worker.inc",
   section(network, "static void network_worker(", "\nbool network_service_healthy"));
 const web = await normalizedSource("components/web_server/web_server.c");
+await writeFile(".cache/tests/network_poll_http.inc",
+  section(web, "static esp_err_t network_handler(", "\n    expire_control(NULL);") +
+    "\n    return ESP_FAIL;\n}\n");
 await writeFile(".cache/tests/control_expiry.inc",
   section(web, "static void release_control(void)\n{", "\nstatic void control_tick"));
 await writeFile(".cache/tests/control_http.inc",

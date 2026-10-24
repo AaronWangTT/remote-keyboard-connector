@@ -1485,7 +1485,7 @@ test("storage faults reject writes immediately while status and scans remain usa
   await takeRequest(url, session);
 });
 
-test("abandoned handover becomes idle without another credential submission", { timeout: 10000 }, async context => {
+test("authenticated polling protects management until handover is abandoned", { timeout: 10000 }, async context => {
   const url = await startPreview(context, { PREVIEW_CONFIRM_TTL_MS: "300" });
   const session = await loginRequest(url);
   const headers = { Origin: url, Cookie: session.cookie, "X-CSRF-Token": session.csrf, "Content-Type": "application/json" };
@@ -1495,12 +1495,18 @@ test("abandoned handover becomes idle without another credential submission", { 
   assert.equal(response.status, 202);
   const status = async () => (await fetch(new URL("/api/v1/network/job", url), { headers })).json();
   await expect.poll(status).toMatchObject({ job: "awaiting_confirmation", busy: true, ap_active: true });
+  for (let poll = 0; poll < 6; poll++) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal((await status()).job, "awaiting_confirmation");
+  }
+  await new Promise(resolve => setTimeout(resolve, 800));
   await expect.poll(status, { intervals: [50] }).toMatchObject({ job: "succeeded", busy: false, ap_active: false, saved_ssid: "Home Wi-Fi" });
   const overlap = await fetch(new URL("/api/v1/network", url), {
     method: "POST", headers, body: JSON.stringify({ action: "connect", ssid: "overlap-network", password: "test-router-password" }),
   });
   assert.equal(overlap.status, 202);
   await expect.poll(status).toMatchObject({ job: "awaiting_ap_reconnect", busy: true, ap_reconnect_ip: "172.30.4.1" });
+  await new Promise(resolve => setTimeout(resolve, 800));
   await expect.poll(status, { intervals: [50] }).toMatchObject({ job: "failed", error: "confirmation_timeout", busy: false,
     ap_active: true, ap_ip: "192.168.4.1", ap_reconnect_ip: "", saved_ssid: "Home Wi-Fi" });
   await takeRequest(url, session);

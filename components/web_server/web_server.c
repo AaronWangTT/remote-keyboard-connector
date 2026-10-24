@@ -760,6 +760,7 @@ static esp_err_t network_handler(httpd_req_t *request)
     if (!request_allowed(request, request->method != HTTP_GET) ||
         request_session(request, request->method != HTTP_GET) == NULL) return ESP_OK;
     if (request->method == HTTP_GET) {
+        network_management_touch(local_address(request));
         cJSON *root = network_json();
         char *json = root != NULL ? cJSON_PrintUnformatted(root) : NULL;
         cJSON_Delete(root);

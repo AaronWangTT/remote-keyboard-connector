@@ -250,7 +250,10 @@ function finishNetwork(job, error = "") {
 
 async function networkRequest(request, response) {
   if (!authorized(request, response, request.method !== "GET")) return;
-  if (request.method === "GET") return sendJson(response, 200, network);
+  if (request.method === "GET") {
+    touchNetworkManagement();
+    return sendJson(response, 200, network);
+  }
   if (updateBusy()) return sendJson(response, 409, { error: "update_busy" });
   if (controller?.readyState === WebSocket.OPEN || pendingControl) return sendJson(response, 409, { error: "release_control_first" });
   const scan = request.url === "/api/v1/network/scan";
@@ -421,6 +424,13 @@ function requestAllowed(request, mutation = false) {
   return request.headers.host === host && (!mutation || request.headers.origin === `http://${host}`);
 }
 
+function touchNetworkManagement() {
+  if (!network.ap_active) return;
+  managementUntil = performance.now() + confirmationTtl;
+  powerManagementUntil = managementUntil + powerOffset;
+  powerWasBlocked = true;
+}
+
 function authorized(request, response, mutation = false) {
   if (!requestAllowed(request, mutation)) {
     sendJson(response, 403, { error: "origin_denied" });
@@ -435,11 +445,7 @@ function authorized(request, response, mutation = false) {
     sendJson(response, 403, { error: "csrf_denied" });
     return null;
   }
-  if (mutation && network.ap_active) {
-    managementUntil = performance.now() + confirmationTtl;
-    powerManagementUntil = managementUntil + powerOffset;
-    powerWasBlocked = true;
-  }
+  if (mutation) touchNetworkManagement();
   if (mutation && !powerMutations.has(response)) {
     powerMutations.add(response);
     const finished = () => powerMutations.delete(response);
